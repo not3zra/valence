@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cred
+
+# Cloud / Tooling
+.vscode/
+.idea/
+*.log
+.DS_Store
+
+# Build artifacts
+dist/
+build/
+*.xml.dist
+
+# Development agent / design docs (local only, not committed)
+/docs/
+/CONTEXT.md
+/AGENTS.md
