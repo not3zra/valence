@@ -20,6 +20,11 @@ Run + Firestore (+ Cloud Storage + Pub/Sub provisioned for later tickets).
 src/
   config.py          environment settings
   agent.py           the ADK agent + durable Firestore sessions + run_turn()
+  orders.py          order domain: status state machine + order events
+  money.py           two-tier draft money model (agreed rate > tier > catalog)
+  store.py           OrderStore seam (Firestore) + in-memory test double
+  core.py            the Order Processing Core (decision engine, ticket 2)
+  core_tool.py       the core exposed as a single ADK tool
   seed_data.py       canonical seed data (customers, products, routes, ...)
   seed_firestore.py  writes seed data into Firestore (emulator or real)
   web.py             FastAPI web layer (/, /healthz, /api/roundtrip)
@@ -30,6 +35,7 @@ cloudbuild.yaml      build + deploy on push to main
 scripts/
   run_local.sh       Firestore emulator + seed + uvicorn
   smoke_roundtrip.py real-Gemini message in -> reply out smoke test
+  feed_order.py      drive the Order Processing Core with no channel
 Dockerfile
 ```
 
@@ -69,6 +75,28 @@ pytest            # full suite (Gemini faked at the model boundary)
 ruff check .
 mypy src
 ```
+
+## Order Processing Core (ticket 2)
+
+The decision seam every channel feeds into. Given a structured order (phone,
+items, delivery location, confidence) it auto-approves a clean order or
+escalates it as a hard block with explicit reasons (unknown customer,
+unverified number, uncataloged product, missing field, low confidence, value
+over the cap, anomaly), computes the two-tier draft estimate, and appends every
+decision to the `order_events` audit trail. Thresholds are read from the
+Firestore `config` collection, never hardcoded. It is exposed to the ADK agent
+as a single `process_order` tool whose phone is pinned to the caller's session
+identity — a number the model extracts from a message can never credit a
+customer (ADR-0002).
+
+Drive it with no channel attached:
+
+```bash
+echo '{"phone": "+919812345001", "items": [{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}], "delivery_location": "Peenya Industrial Area", "confidence": 0.9}' \
+  | python scripts/feed_order.py --memory
+```
+
+Omit `--memory` to run it against the emulated Firestore.
 
 ## Provision the full GCP stack
 

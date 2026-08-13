@@ -37,7 +37,8 @@ class Product:
     unit: str
     aliases: list[str]  # aliases the customer might actually type / say
     current_price: float  # catalog price in INR per unit
-    stock_item: str  # Tally stock item this product + grade maps to
+    tier_price: float | None = None  # published pricing-tier rate in INR per unit
+    stock_item: str = "UNMAPPED"  # Tally stock item this product + grade maps to
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ PRODUCTS: list[Product] = [
         unit="kg",
         aliases=["sulfuric", "sulphuric acid", "sulphuric", "h2so4", "98% acid"],
         current_price=18.0,
+        tier_price=17.75,
         stock_item="SULFURIC ACID 98%",
     ),
     Product(
@@ -121,6 +123,7 @@ PRODUCTS: list[Product] = [
         unit="kg",
         aliases=["hydrochloric", "hcl", "muriatic acid", "32% hcl"],
         current_price=9.5,
+        tier_price=9.25,
         stock_item="HYDROCHLORIC ACID 32%",
     ),
     Product(

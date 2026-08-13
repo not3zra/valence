@@ -2,10 +2,10 @@
 
 One ADK Agent is the unified understanding layer for every intake channel
 (ADR-0001). It holds one durable session per sender (keyed by the sender id),
-calls Gemini to extract a structured order, and will expose the Order
-Processing Core as a tool from ticket 2 (#3). Sessions persist to Firestore via
-ADK's FirestoreSessionService so a Cloud Run restart never loses an in-flight
-clarifying conversation.
+calls Gemini to extract a structured order, and exposes the Order Processing
+Core as its single ``process_order`` tool (ticket 2, #3). Sessions persist to
+Firestore via ADK's FirestoreSessionService so a Cloud Run restart never loses
+an in-flight clarifying conversation.
 """
 
 from __future__ import annotations
@@ -21,27 +21,35 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from .config import settings
+from .core import OrderProcessingCore
+from .core_tool import build_process_order_tool
 
 AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
 distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
-of a handwritten order sheet, in any language. Your job in this scaffold is to \
-acknowledge the message, state that you have understood it as an order, and \
-ask for anything missing. Structured order extraction and the Order Processing \
-Core arrive in later iterations; reply in the customer's language and keep it \
-short."""
+of a handwritten order sheet, in any language. Understand the message as a \
+structured order and commit it by calling the process_order tool. Structured \
+extraction is wired from ticket 3 (#4); reply in the customer's language and \
+keep it short."""
 
 
-def build_agent(model: str | BaseLlm | None = None) -> Agent:
+def build_agent(model: str | BaseLlm | None = None, store=None) -> Agent:
     """Build the root ADK agent.
 
     ``model`` defaults to the configured Gemini model id and resolves through
     ADK's LLM registry to the Gemini API. Tests inject a fake ``BaseLlm`` here
     so the whole runner wiring runs without a network call (ADR testing seam).
+    ``store`` wires the Order Processing Core as the agent's single
+    ``process_order`` tool; tests pass the in-memory store so the tool runs
+    without Firestore.
     """
+    tools: list = []
+    if store is not None:
+        tools.append(build_process_order_tool(OrderProcessingCore(store)))
     return Agent(
         name=settings.app_name,
         model=model or settings.gemini_model,
         instruction=AGENT_INSTRUCTION,
+        tools=tools,
     )
 
 
