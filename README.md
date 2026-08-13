@@ -27,7 +27,10 @@ src/
   core_tool.py       the core exposed as a single ADK tool
   seed_data.py       canonical seed data (customers, products, routes, ...)
   seed_firestore.py  writes seed data into Firestore (emulator or real)
-  web.py             FastAPI web layer (/, /health, /api/roundtrip)
+  whatsapp.py        WhatsApp channel boundary: InboundMessage + sender seam
+  twilio_whatsapp.py Twilio adapter: form parsing + X-Twilio-Signature verify
+  web.py             FastAPI web layer (/, /health, /api/roundtrip,
+                     /api/whatsapp/webhook)
   main.py            production entry point (uvicorn)
 infra/
   provision.sh       one script to provision the full GCP stack
@@ -35,6 +38,7 @@ cloudbuild.yaml      build + deploy on push to main
 scripts/
   run_local.sh       Firestore emulator + seed + uvicorn
   smoke_roundtrip.py real-Gemini message in -> reply out smoke test
+  smoke_whatsapp_webhook.py  drive the WhatsApp webhook path with a real agent
   feed_order.py      drive the Order Processing Core with no channel
 Dockerfile
 ```
@@ -58,6 +62,7 @@ The service is now on http://localhost:8080:
 - `GET /` — health page
 - `GET /health` — liveness probe
 - `POST /api/roundtrip` — agent round trip, no Twilio needed:
+- `POST /api/whatsapp/webhook` — Twilio WhatsApp inbound webhook (ticket 3)
 
 ```bash
 curl -s localhost:8080/api/roundtrip \
@@ -97,6 +102,37 @@ echo '{"phone": "+919812345001", "items": [{"product": "sulfuric acid", "quantit
 ```
 
 Omit `--memory` to run it against the emulated Firestore.
+
+## WhatsApp text intake (ticket 3)
+
+Twilio's WhatsApp sandbox posts every inbound message to
+`/api/whatsapp/webhook` as `application/x-www-form-urlencoded`. The endpoint
+verifies the `X-Twilio-Signature` header against your AuthToken (HMAC-SHA1,
+per Twilio's documented algorithm, in the Twilio adapter), parses
+`From`/`Body` into a provider-neutral `InboundMessage`, then runs one ADK agent
+turn: Gemini extracts the structured order and the `process_order` tool commits
+it through the Order Processing Core. The agent's confirmation reply —
+including the estimated total from draft pricing — is delivered back over
+WhatsApp through the `WhatsAppSender` seam (`MockWhatsAppSender` in the demo,
+which records the reply; a real provider sender is a later swap).
+
+Twilio is a boundary adapter behind a seam: parsing, signature verification and
+provider config all live in `src/twilio_whatsapp.py`, never in the web layer,
+so a Meta Cloud API swap is a contained change (issue #4 design note).
+
+To register the webhook in the Twilio Console: WhatsApp → Sandbox settings →
+"When a message comes in" → `https://<service-url>/api/whatsapp/webhook`. The
+sandbox number, join code and credentials come from the provisioned secrets
+(`TWILIO_WHATSAPP_FROM`, `TWILIO_WHATSAPP_JOIN_CODE`, `TWILIO_AUTH_TOKEN`).
+
+Drive the whole path locally with a real agent (requires `GOOGLE_API_KEY` and
+`TWILIO_AUTH_TOKEN`, and the emulator running):
+
+```bash
+GOOGLE_API_KEY=... TWILIO_AUTH_TOKEN=... \
+  python scripts/smoke_whatsapp_webhook.py \
+  --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
+```
 
 ## Provision the full GCP stack
 
@@ -138,8 +174,13 @@ curl -s "$(gcloud run services describe valence --region=us-central1 --format='v
 
 - Sessions are **Firestore-backed** (ADK `FirestoreSessionService`) — in memory
   for local debugging only, via `SESSION_SERVICE=memory`.
-- The FastAPI web layer (review web view, ticket 5) and the Twilio WhatsApp
-  webhook (ticket 3) are served from this same Cloud Run instance.
+- The FastAPI web layer (review web view, ticket 5), the Twilio WhatsApp
+  webhook (ticket 3) and the agent round-trip probe are served from this same
+  Cloud Run instance.
+- The WhatsApp webhook rejects any request with a missing or invalid
+  `X-Twilio-Signature` (403) before anything is parsed or committed — the
+  endpoint is unauthenticated otherwise (a phone number is the identity, and a
+  spoofed webhook could mint orders).
 - Thresholds (value cap, confidence, dedup window, cutoff time, …) are data in
   Firestore, not code — the approval engine reads them from the `config`
   collection.
