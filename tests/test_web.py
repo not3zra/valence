@@ -49,6 +49,20 @@ def test_roundtrip_rejects_missing_fields(client):
     assert response.status_code == 422
 
 
+def test_roundtrip_rejects_non_e164_sender_id(client):
+    response = client.post(
+        "/api/roundtrip", json={"sender_id": "not-a-phone", "message": "hi"}
+    )
+    assert response.status_code == 422
+
+
+def test_roundtrip_rejects_empty_message(client):
+    response = client.post(
+        "/api/roundtrip", json={"sender_id": "+919812345001", "message": ""}
+    )
+    assert response.status_code == 422
+
+
 def test_sessions_survive_across_roundtrip_requests(client):
     client.post(
         "/api/roundtrip", json={"sender_id": "+919812345001", "message": "one"}

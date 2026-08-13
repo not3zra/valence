@@ -37,9 +37,16 @@ INDEX_HTML = """<!doctype html>
 """
 
 
+E164_PATTERN = r"^\+[1-9]\d{1,14}$"
+
+
 class RoundTripRequest(BaseModel):
-    sender_id: str = Field(description="Verified phone number of the sender")
-    message: str = Field(description="Inbound message text")
+    sender_id: str = Field(
+        pattern=E164_PATTERN,
+        min_length=3,
+        description="Verified phone number of the sender (E.164)",
+    )
+    message: str = Field(min_length=1, description="Inbound message text")
 
 
 class RoundTripResponse(BaseModel):
