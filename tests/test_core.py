@@ -106,8 +106,25 @@ async def test_item_without_quantity_escalates(core):
     assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
 
 
+async def test_non_finite_quantity_escalates(core):
+    decision = await core.process(
+        _order(items=[OrderItem(product="sulfuric acid", quantity=float("nan"))])
+    )
+    assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
+
+
 async def test_low_confidence_escalates(core):
     decision = await core.process(_order(confidence=0.3))
+    assert EscalationReason.LOW_CONFIDENCE.value in decision.escalation_reasons
+
+
+async def test_non_finite_confidence_escalates(core):
+    decision = await core.process(_order(confidence=float("nan")))
+    assert EscalationReason.LOW_CONFIDENCE.value in decision.escalation_reasons
+
+
+async def test_out_of_range_confidence_escalates(core):
+    decision = await core.process(_order(confidence=1.5))
     assert EscalationReason.LOW_CONFIDENCE.value in decision.escalation_reasons
 
 

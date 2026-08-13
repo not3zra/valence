@@ -31,19 +31,7 @@ def _parse_order(data: dict) -> Order:
         confidence=float(data.get("confidence", 0.0)),
         source_channel=str(data.get("source_channel", "whatsapp")),
         source_language=str(data.get("source_language", "en")),
-        items=[
-            OrderItem(
-                product=str(item.get("product", "")),
-                quantity=float(item.get("quantity", 0.0)),
-                unit=str(item.get("unit", "")),
-                rate_inr=(
-                    float(item["rate_inr"])
-                    if item.get("rate_inr") is not None
-                    else None
-                ),
-            )
-            for item in data.get("items", [])
-        ],
+        items=[OrderItem.from_dict(item) for item in data.get("items", [])],
     )
 
 

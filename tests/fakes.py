@@ -38,3 +38,40 @@ class FakeEchoLlm(BaseLlm):
                 parts=[types.Part(text=f"Echo: {last_user}")],
             )
         )
+
+
+class ToolCallingLlm(BaseLlm):
+    """Calls ``process_order`` once with a fixed clean order, then replies.
+
+    Exercises the real ADK tool path — declaration, model tool call, injected
+    tool context, tool result — without Gemini or Firestore.
+    """
+
+    model: str = "fake-toolcall"
+
+    def supported_models(self) -> list[str]:
+        return ["fake-toolcall.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        call = types.FunctionCall(
+            name="process_order",
+            args={
+                "items": [
+                    {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                ],
+                "confidence": 0.9,
+                "delivery_location": "Peenya Industrial Area",
+            },
+        )
+        model_part = types.Content(role="model", parts=[types.Part(function_call=call)])
+        function_response = types.Part(
+            function_response=types.FunctionResponse(
+                name="process_order", response={"ok": "committed"}
+            )
+        )
+        tool_part = types.Content(role="user", parts=[function_response])
+        done = types.Content(role="model", parts=[types.Part(text="Order committed.")])
+        for content in [model_part, tool_part, done]:
+            yield LlmResponse(content=content)

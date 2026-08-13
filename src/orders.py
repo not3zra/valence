@@ -71,6 +71,18 @@ class OrderItem:
     unit: str = ""
     rate_inr: float | None = None
 
+    @classmethod
+    def from_dict(cls, data: dict) -> OrderItem:
+        """Build a line from extracted JSON, tolerating missing keys."""
+        return cls(
+            product=str(data.get("product", "")),
+            quantity=float(data.get("quantity", 0.0)),
+            unit=str(data.get("unit", "")),
+            rate_inr=(
+                float(data["rate_inr"]) if data.get("rate_inr") is not None else None
+            ),
+        )
+
 
 @dataclass
 class Order:
