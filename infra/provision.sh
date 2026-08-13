@@ -136,6 +136,11 @@ gcloud run deploy "$SERVICE" \
   --platform=managed \
   --allow-unauthenticated \
   --service-account="$RUNTIME_SA_EMAIL" \
+  --set-secrets=GOOGLE_API_KEY=GEMINI_API_KEY:latest \
+  --set-secrets=TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest \
+  --set-secrets=TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest \
+  --set-secrets=TWILIO_WHATSAPP_FROM=TWILIO_WHATSAPP_FROM:latest \
+  --set-secrets=TWILIO_WHATSAPP_JOIN_CODE=TWILIO_WHATSAPP_JOIN_CODE:latest \
   --project="$PROJECT_ID"
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" \
@@ -148,6 +153,10 @@ gcloud run services add-iam-policy-binding "$SERVICE" \
   --region="$REGION" --platform=managed \
   --member="serviceAccount:${PUSH_SA_EMAIL}" \
   --role=roles/run.invoker --project="$PROJECT_ID" >/dev/null
+
+# The Cloud Scheduler -> Pub/Sub publisher binding (spec: Scheduler -> Pub/Sub
+# -> Cloud Run) lands with ticket 8, which creates the daily Cutoff job on this
+# topic — a publisher grant with no job would be speculative setup.
 
 log "Attaching the Cutoff push subscription endpoint (path lands with ticket 8)"
 if ! gcloud pubsub subscriptions describe "${TOPIC}-sub" --project="$PROJECT_ID" >/dev/null 2>&1; then
@@ -162,15 +171,16 @@ fi
 
 if [[ -n "$GITHUB_REPO" ]]; then
   log "Creating Cloud Build trigger: auto-deploy on push to main of $GITHUB_REPO"
-  gcloud builds triggers create github \
+  if ! gcloud builds triggers create github \
     --repo-owner="${GITHUB_REPO%/*}" \
     --repo-name="${GITHUB_REPO#*/}" \
     --branch-pattern='^main$' \
     --build-config=cloudbuild.yaml \
     --substitutions="_REGION=${REGION},_REPO=${REPO},_SERVICE=${SERVICE},_RUN_SA=${RUN_SA}" \
     --name="valence-deploy-main" \
-    --project="$PROJECT_ID" || \
-    echo "Trigger creation failed — connect your GitHub repo in the Cloud Build console, then re-run this section."
+    --project="$PROJECT_ID"; then
+    error "Trigger creation failed. Connect $GITHUB_REPO in the Cloud Build console, then re-run: gcloud builds triggers create github --repo-owner=${GITHUB_REPO%/*} --repo-name=${GITHUB_REPO#*/} --branch-pattern='^main$' --build-config=cloudbuild.yaml --name=valence-deploy-main."
+  fi
 else
   echo "Skipped GitHub auto-deploy trigger (set GITHUB_REPO=owner/name to create it)."
 fi

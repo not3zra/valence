@@ -4,7 +4,7 @@
 #
 #  1. starts the Cloud Firestore emulator on port 8686
 #  2. seeds Firestore with the canonical data (src.seed_firestore)
-#  3. runs uvicorn on PORT (default 8080)
+#  3. runs uvicorn on PORT (default 8080); Ctrl+C stops the emulator too
 #
 # Prereqs: gcloud CLI with the cloud-firestore-emulator component:
 #   gcloud components install cloud-firestore-emulator
@@ -28,18 +28,30 @@ gcloud beta emulators firestore start \
   --host-port="localhost:${EMULATOR_PORT}" \
   --project-id="$PROJECT_ID" >/tmp/firestore-emulator.log 2>&1 &
 EMULATOR_PID=$!
-trap 'kill "$EMULATOR_PID" 2>/dev/null || true' EXIT
 
+cleanup() {
+  echo "==> Stopping Firestore emulator (pid $EMULATOR_PID)"
+  kill "$EMULATOR_PID" 2>/dev/null || true
+  wait "$EMULATOR_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+up=false
 for _ in $(seq 1 30); do
   if curl -sf "http://localhost:${EMULATOR_PORT}/" >/dev/null 2>&1; then
+    up=true
     break
   fi
   sleep 1
 done
+if [[ "$up" != "true" ]]; then
+  echo "Firestore emulator did not come up on :$EMULATOR_PORT — see /tmp/firestore-emulator.log" >&2
+  exit 1
+fi
 
 echo "==> Seeding Firestore"
 python -m src.seed_firestore
 
-echo "==> Starting Valence on :$PORT"
+echo "==> Starting Valence on :$PORT (Ctrl+C to stop)"
 echo "    (Firestore emulator log: /tmp/firestore-emulator.log)"
-exec uvicorn src.main:app --host 0.0.0.0 --port "$PORT" --reload
+uvicorn src.main:app --host 0.0.0.0 --port "$PORT"

@@ -12,7 +12,7 @@ and the canonical ``ledger``/``stock_item`` names are what flows to Tally
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -219,23 +219,3 @@ COLLECTIONS: dict[str, Sequence[SeededDoc]] = {
     "delivery_locations": DELIVERY_LOCATIONS,
     "approvers": APPROVERS,
 }
-
-
-def customer_as_dict(customer: Customer) -> dict:
-    return asdict(customer)
-
-
-def product_as_dict(product: Product) -> dict:
-    return asdict(product)
-
-
-def route_as_dict(route: Route) -> dict:
-    return asdict(route)
-
-
-def delivery_location_as_dict(location: DeliveryLocation) -> dict:
-    return asdict(location)
-
-
-def approver_as_dict(approver: Approver) -> dict:
-    return asdict(approver)
