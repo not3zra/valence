@@ -28,7 +28,7 @@ INDEX_HTML = """<!doctype html>
   phone calls and photos of handwritten orders in any language, then runs a
   graduated human-checked approval loop.</p>
   <ul>
-    <li>Health: <a href="/healthz">/healthz</a></li>
+    <li>Health: <a href="/health">/health</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
   </ul>
@@ -69,8 +69,11 @@ def create_app(*, agent: Agent, session_service) -> FastAPI:
     def index() -> str:
         return INDEX_HTML
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    # NOTE: /healthz (and any path ending in "z") is intercepted by Cloud Run's
+    # edge — reserved for Google's own health probes — so the liveness probe is
+    # served at /health instead.
+    @app.get("/health")
+    def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.post("/api/roundtrip", response_model=RoundTripResponse)
