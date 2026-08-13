@@ -27,7 +27,7 @@ src/
   core_tool.py       the core exposed as a single ADK tool
   seed_data.py       canonical seed data (customers, products, routes, ...)
   seed_firestore.py  writes seed data into Firestore (emulator or real)
-  web.py             FastAPI web layer (/, /healthz, /api/roundtrip)
+  web.py             FastAPI web layer (/, /health, /api/roundtrip)
   main.py            production entry point (uvicorn)
 infra/
   provision.sh       one script to provision the full GCP stack
@@ -56,7 +56,7 @@ pip install -e ".[dev]"
 The service is now on http://localhost:8080:
 
 - `GET /` — health page
-- `GET /healthz` — liveness probe
+- `GET /health` — liveness probe
 - `POST /api/roundtrip` — agent round trip, no Twilio needed:
 
 ```bash
@@ -131,7 +131,7 @@ Verify the deploy:
 
 ```bash
 python scripts/smoke_roundtrip.py   # requires GOOGLE_API_KEY; or via HTTPS:
-curl -s "$(gcloud run services describe valence --region=us-central1 --format='value(status.url)')/healthz"
+curl -s "$(gcloud run services describe valence --region=us-central1 --format='value(status.url)')/health"
 ```
 
 ## Notes

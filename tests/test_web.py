@@ -27,10 +27,16 @@ def test_index_page_is_served(client):
     assert "Valence" in response.text
 
 
-def test_healthz(client):
-    response = client.get("/healthz")
+def test_health(client):
+    response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_healthz_is_reserved_by_cloud_run(client):
+    # Paths ending in "z" (/healthz) never reach the container on Cloud Run.
+    response = client.get("/healthz")
+    assert response.status_code == 404
 
 
 def test_roundtrip_returns_reply(client):

@@ -57,7 +57,7 @@ gcloud artifacts repositories create "$REPO" \
   --project="$PROJECT_ID" || true
 
 log "Creating Firestore database (native mode, default)"
-if ! gcloud firestore databases describe "(default)" --project="$PROJECT_ID" >/dev/null 2>&1; then
+if ! gcloud firestore databases describe --database="(default)" --project="$PROJECT_ID" >/dev/null 2>&1; then
   gcloud firestore databases create \
     --database="(default)" \
     --location="$REGION" \
@@ -186,7 +186,7 @@ else
 fi
 
 log "Seeding Firestore"
-python -m src.seed_firestore
+python3 -m src.seed_firestore
 
 log "Done. Verify:"
 echo "  1. Open the Cloud Run dashboard and open \$SERVICE_URL (health page)."
