@@ -85,7 +85,9 @@ unverified number, uncataloged product, missing field, low confidence, value
 over the cap, anomaly), computes the two-tier draft estimate, and appends every
 decision to the `order_events` audit trail. Thresholds are read from the
 Firestore `config` collection, never hardcoded. It is exposed to the ADK agent
-as a single `process_order` tool.
+as a single `process_order` tool whose phone is pinned to the caller's session
+identity — a number the model extracts from a message can never credit a
+customer (ADR-0002).
 
 Drive it with no channel attached:
 
