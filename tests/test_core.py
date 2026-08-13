@@ -11,7 +11,11 @@ from __future__ import annotations
 import pytest
 
 from src import seed_data
-from src.core import OrderProcessingCore, resolve_product
+from src.core import (
+    ConfigurationError,
+    OrderProcessingCore,
+    resolve_product,
+)
 from src.orders import EscalationReason, Order, OrderItem, OrderStatus
 from src.store import InMemoryOrderStore
 
@@ -199,6 +203,21 @@ async def test_draft_estimate_falls_back_to_catalog_price():
     assert decision.draft_value_inr == pytest.approx(62.0 * 100)
 
 
+async def test_draft_estimate_prefers_tier_price_over_catalog():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    decision = await core.process(
+        _order(
+            phone="+919812345003",  # c_swastik — no agreed rate for sulfuric acid
+            customer="Swastik Paints",
+            items=[OrderItem(product="sulfuric acid", quantity=100, unit="kg")],
+        )
+    )
+    # no agreed rate for sulfuric acid, so the published tier price (17.75)
+    # wins over the catalog price (18.0).
+    assert decision.draft_value_inr == pytest.approx(17.75 * 100)
+
+
 async def test_value_cap_is_read_from_config_not_hardcoded():
     store = InMemoryOrderStore(
         config={**seed_data.CONFIG, "value_cap_inr": 30000}
@@ -228,6 +247,20 @@ async def test_quantity_deviation_threshold_is_read_from_config_not_hardcoded():
     assert EscalationReason.ANOMALY.value in decision.escalation_reasons
 
 
+async def test_missing_config_key_fails_loudly():
+    config = dict(seed_data.CONFIG)
+    del config["value_cap_inr"]
+    core = OrderProcessingCore(InMemoryOrderStore(config=config))
+    with pytest.raises(ConfigurationError, match="value_cap_inr"):
+        await core.process(_order())
+
+
+async def test_empty_config_fails_loudly():
+    core = OrderProcessingCore(InMemoryOrderStore(config={}))
+    with pytest.raises(ConfigurationError):
+        await core.process(_order())
+
+
 def test_resolve_product_matches_alias_case_insensitively():
     product = resolve_product("Sulphuric Acid", seed_data.PRODUCTS)
     assert product is not None
@@ -242,3 +275,19 @@ def test_resolve_product_matches_by_canonical_id():
 
 def test_resolve_product_returns_none_for_unmatched_text():
     assert resolve_product("liquid nitrogen", seed_data.PRODUCTS) is None
+
+
+def test_resolve_product_fuzzy_matches_typo():
+    product = resolve_product("sulfric acid", seed_data.PRODUCTS)
+    assert product is not None
+    assert product.id == "p_sulfuric98"
+
+
+def test_resolve_product_fuzzy_matches_misspelled_alias():
+    product = resolve_product("sulphuric 98", seed_data.PRODUCTS)
+    assert product is not None
+    assert product.id == "p_sulfuric98"
+
+
+def test_resolve_product_fuzzy_rejects_unrelated_text():
+    assert resolve_product("paint thinner", seed_data.PRODUCTS) is None

@@ -11,6 +11,7 @@ behind the ``OrderStore`` seam and is faked in tests.
 
 from __future__ import annotations
 
+import difflib
 import math
 import uuid
 from dataclasses import dataclass
@@ -32,7 +33,26 @@ from .orders import (
 )
 from .store import OrderStore
 
-DEFAULT_CONFIG: dict[str, object] = dict(seed_data.CONFIG)
+# Every business-judgment threshold the engine reads at runtime (ADR-0002). The
+# store config must supply all of them — a missing key fails loudly instead of
+# silently falling back to hardcoded defaults.
+REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
+    "value_cap_inr",
+    "min_confidence",
+    "quantity_deviation_above_pct",
+    "rate_deviation_pct",
+)
+
+
+class ConfigurationError(RuntimeError):
+    """Raised when the store config is missing a key the engine requires."""
+
+
+# After the exact alias table misses (ADR-0003), the normalized product text is
+# matched case-insensitively against each product's name and aliases; a score at
+# or above this threshold resolves, anything below is an uncataloged product.
+FUZZY_MATCH_THRESHOLD = 0.6
+
 
 CANONICAL_REASON_ORDER: list[EscalationReason] = [
     EscalationReason.MISSING_FIELD,
@@ -72,13 +92,36 @@ def resolve_customer(
     return None
 
 
+def _fuzzy_score(needle: str, candidate: str) -> float:
+    return difflib.SequenceMatcher(None, needle, candidate).ratio()
+
+
 def resolve_product(
     text: str, products: list[seed_data.Product]
 ) -> seed_data.Product | None:
-    """Match catalog text by id, name, or alias, case-insensitively."""
+    """Match catalog text exactly by id, name, or alias, then case-insensitive fuzzy.
+
+    The exact alias table wins first (ADR-0003); on a miss the normalized text is
+    scored against every product's name and aliases. Text that clears
+    ``FUZZY_MATCH_THRESHOLD`` resolves to the closest product; anything below is
+    left as an uncataloged product.
+    """
     for product in products:
         if _match(text, [product.id, product.name, *product.aliases]):
             return product
+
+    needle = _normalize(text) if text else ""
+    if not needle:
+        return None
+    best: seed_data.Product | None = None
+    best_score = 0.0
+    for product in products:
+        for candidate in [product.name, *product.aliases]:
+            score = _fuzzy_score(needle, _normalize(candidate))
+            if score > best_score:
+                best, best_score = product, score
+    if best is not None and best_score >= FUZZY_MATCH_THRESHOLD:
+        return best
     return None
 
 
@@ -106,9 +149,15 @@ class OrderProcessingCore:
         Resolves the customer (phone-exact only), each item's product, and the
         delivery location; collects every escalation reason; computes the draft
         estimate; walks the state machine; persists the order; and appends the
-        decision to the audit trail. The thresholds come from the store config.
+        decision to the audit trail. The thresholds come from the store config;
+        a config missing any required key fails loudly (ADR-0002).
         """
-        config = {**DEFAULT_CONFIG, **(await self._store.get_config())}
+        config = await self._store.get_config()
+        missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
+        if missing:
+            raise ConfigurationError(
+                "store config missing required key(s): " + ", ".join(missing)
+            )
         customers = await self._store.get_customers()
         products = await self._store.get_products()
         locations = await self._store.get_delivery_locations()
@@ -146,7 +195,9 @@ class OrderProcessingCore:
             if line.product is None:
                 continue
             agreed = customer.agreed_rates.get(line.product.id) if customer else None
-            rate = estimate_rate(agreed, None, line.product.current_price)
+            rate = estimate_rate(
+                agreed, line.product.tier_price, line.product.current_price
+            )
             draft_total += rate * line.item.quantity
 
         value_cap = float(config["value_cap_inr"])
