@@ -27,11 +27,27 @@ class OrderStore(Protocol):
 
     async def get_delivery_locations(self) -> list[seed_data.DeliveryLocation]: ...
 
+    async def get_approvers(self) -> list[seed_data.Approver]: ...
+
     async def create_order(self, order: Order) -> None: ...
+
+    async def get_order(self, order_id: str) -> Order | None: ...
+
+    async def update_order(self, order: Order) -> None: ...
 
     async def append_order_event(self, event: OrderEvent) -> None: ...
 
     async def list_orders(self, *, phone: str) -> list[Order]: ...
+
+    async def get_pending_approval(self, approver_phone: str) -> str | None: ...
+
+    async def set_pending_approval(
+        self, approver_phone: str, order_id: str
+    ) -> None: ...
+
+    async def clear_pending_approval(self, approver_phone: str) -> None: ...
+
+    async def clear_pending_approvals_for_order(self, order_id: str) -> None: ...
 
 
 class FirestoreOrderStore:
@@ -67,7 +83,26 @@ class FirestoreOrderStore:
             locations.append(seed_data.DeliveryLocation(**data))
         return locations
 
+    async def get_approvers(self) -> list[seed_data.Approver]:
+        approvers = []
+        async for doc in self._client.collection("approvers").stream():
+            data = doc.to_dict() or {}
+            approvers.append(seed_data.Approver(**data))
+        return approvers
+
     async def create_order(self, order: Order) -> None:
+        await self._client.collection("orders").document(order.order_id).set(
+            order.to_dict()
+        )
+
+    async def get_order(self, order_id: str) -> Order | None:
+        doc = await self._client.collection("orders").document(order_id).get()
+        data = doc.to_dict() or {}
+        if not data:
+            return None
+        return Order.from_dict(data)
+
+    async def update_order(self, order: Order) -> None:
         await self._client.collection("orders").document(order.order_id).set(
             order.to_dict()
         )
@@ -86,6 +121,29 @@ class FirestoreOrderStore:
             orders.append(Order.from_dict(data))
         return orders
 
+    async def get_pending_approval(self, approver_phone: str) -> str | None:
+        doc = await self._client.collection("pending_approvals").document(
+            approver_phone
+        ).get()
+        data = doc.to_dict() or {}
+        return data.get("order_id")
+
+    async def set_pending_approval(self, approver_phone: str, order_id: str) -> None:
+        await self._client.collection("pending_approvals").document(
+            approver_phone
+        ).set({"approver_phone": approver_phone, "order_id": order_id})
+
+    async def clear_pending_approval(self, approver_phone: str) -> None:
+        await self._client.collection("pending_approvals").document(
+            approver_phone
+        ).delete()
+
+    async def clear_pending_approvals_for_order(self, order_id: str) -> None:
+        pending = self._client.collection("pending_approvals")
+        async for doc in pending.stream():
+            if (doc.to_dict() or {}).get("order_id") == order_id:
+                await doc.reference.delete()
+
 
 class InMemoryOrderStore:
     """OrderStore double over the seed data, recording orders and events in memory."""
@@ -96,6 +154,7 @@ class InMemoryOrderStore:
         customers: list[seed_data.Customer] | None = None,
         products: list[seed_data.Product] | None = None,
         delivery_locations: list[seed_data.DeliveryLocation] | None = None,
+        approvers: list[seed_data.Approver] | None = None,
         config: dict | None = None,
     ) -> None:
         self.customers = (
@@ -108,8 +167,10 @@ class InMemoryOrderStore:
             else seed_data.DELIVERY_LOCATIONS
         )
         self.config = config if config is not None else seed_data.CONFIG
+        self.approvers = approvers if approvers is not None else seed_data.APPROVERS
         self.orders: list[Order] = []
         self.events: list[OrderEvent] = []
+        self.pending_approvals: dict[str, str] = {}
 
     async def get_config(self) -> dict:
         return dict(self.config)
@@ -123,7 +184,23 @@ class InMemoryOrderStore:
     async def get_delivery_locations(self) -> list[seed_data.DeliveryLocation]:
         return list(self.delivery_locations)
 
+    async def get_approvers(self) -> list[seed_data.Approver]:
+        return list(self.approvers)
+
     async def create_order(self, order: Order) -> None:
+        self.orders.append(order)
+
+    async def get_order(self, order_id: str) -> Order | None:
+        for order in self.orders:
+            if order.order_id == order_id:
+                return order
+        return None
+
+    async def update_order(self, order: Order) -> None:
+        for i, existing in enumerate(self.orders):
+            if existing.order_id == order.order_id:
+                self.orders[i] = order
+                return
         self.orders.append(order)
 
     async def append_order_event(self, event: OrderEvent) -> None:
@@ -131,3 +208,17 @@ class InMemoryOrderStore:
 
     async def list_orders(self, *, phone: str) -> list[Order]:
         return [order for order in self.orders if order.phone == phone]
+
+    async def get_pending_approval(self, approver_phone: str) -> str | None:
+        return self.pending_approvals.get(approver_phone)
+
+    async def set_pending_approval(self, approver_phone: str, order_id: str) -> None:
+        self.pending_approvals[approver_phone] = order_id
+
+    async def clear_pending_approval(self, approver_phone: str) -> None:
+        self.pending_approvals.pop(approver_phone, None)
+
+    async def clear_pending_approvals_for_order(self, order_id: str) -> None:
+        for approver_phone, pending in list(self.pending_approvals.items()):
+            if pending == order_id:
+                self.pending_approvals.pop(approver_phone, None)

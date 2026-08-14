@@ -22,10 +22,12 @@ from datetime import datetime, timezone
 from . import seed_data
 from .money import estimate_rate, quantity_is_anomalous, rate_is_anomalous
 from .orders import (
+    EVENT_ORDER_APPROVED,
     EVENT_ORDER_AUTO_APPROVED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_DUPLICATE,
     EVENT_ORDER_ESCALATED,
+    EVENT_ORDER_REJECTED,
     EscalationReason,
     Order,
     OrderDecision,
@@ -33,6 +35,7 @@ from .orders import (
     OrderItem,
     OrderStatus,
     transition,
+    utcnow,
 )
 from .store import OrderStore
 
@@ -52,6 +55,10 @@ REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
 
 class ConfigurationError(RuntimeError):
     """Raised when the store config is missing a key the engine requires."""
+
+
+class ApprovalError(RuntimeError):
+    """Raised when a human approval/rejection cannot be applied to an order."""
 
 
 # After the exact alias table misses (ADR-0003), the normalized product text is
@@ -424,6 +431,64 @@ class OrderProcessingCore:
             "clarify_timeout_hours": float(config["clarify_timeout_hours"]),
             "clarify_turn_cap": int(config["clarify_turn_cap"]),
         }
+
+    async def approve_order(
+        self, order_id: str, *, approved: bool, by_phone: str
+    ) -> OrderDecision:
+        """Apply a human yes/no decision to an escalated order (issue #7).
+
+        Only an allowlisted approver may decide; only an order sitting in
+        ``pending_review`` (an escalation, never a clean order that was already
+        approved) may move. ``approved=True`` transitions to ``approved``,
+        ``approved=False`` to the terminal ``rejected`` status — no artifacts
+        are generated for a rejected order and it stays visible in the web view
+        for correction. Either way the decision is appended to the order's
+        audit trail as an ``order_approved`` / ``order_rejected`` event.
+        """
+        approvers = await self._store.get_approvers()
+        if not any(approver.phone == by_phone for approver in approvers):
+            raise ApprovalError(
+                f"{by_phone} is not an allowlisted approver (issue #7)"
+            )
+
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ApprovalError(f"order {order_id} not found")
+        if order.status is not OrderStatus.PENDING_REVIEW:
+            raise ApprovalError(
+                f"order {order_id} is {order.status.value}, not awaiting approval"
+            )
+
+        next_status = (
+            OrderStatus.APPROVED if approved else OrderStatus.REJECTED
+        )
+        order.status = transition(OrderStatus.PENDING_REVIEW, next_status)
+        order.updated_at = utcnow()
+        order_id = order.order_id or order_id
+
+        await self._store.update_order(order)
+        event_type = EVENT_ORDER_APPROVED if approved else EVENT_ORDER_REJECTED
+        await self._store.append_order_event(
+            OrderEvent(
+                order_id=order_id,
+                event_type=event_type,
+                payload={
+                    "approved_by": by_phone,
+                    "approved": approved,
+                },
+            )
+        )
+
+        return OrderDecision(
+            order_id=order_id,
+            status=order.status.value,
+            approved=approved,
+            escalation_reasons=[],
+            draft_value_inr=order.draft_value_inr,
+            customer_id=order.customer_id,
+            delivery_location_id=order.delivery_location_id,
+            items=[],
+        )
 
     async def _find_duplicate(
         self,

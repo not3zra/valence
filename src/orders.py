@@ -63,6 +63,9 @@ EVENT_ORDER_CREATED = "order_created"
 EVENT_ORDER_ESCALATED = "order_escalated"
 EVENT_ORDER_AUTO_APPROVED = "order_auto_approved"
 EVENT_ORDER_DUPLICATE = "order_duplicated"
+EVENT_ORDER_APPROVAL_REQUESTED = "order_approval_requested"
+EVENT_ORDER_APPROVED = "order_approved"
+EVENT_ORDER_REJECTED = "order_rejected"
 
 
 @dataclass(frozen=True)

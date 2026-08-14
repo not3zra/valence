@@ -14,8 +14,11 @@ from google.adk.sessions import InMemorySessionService
 
 from src.agent import build_agent, build_runner, run_turn
 from src.core import OrderProcessingCore
-from src.core_tool import build_process_order_tool
-from src.orders import OrderStatus
+from src.core_tool import (
+    build_approve_order_tool,
+    build_process_order_tool,
+)
+from src.orders import Order, OrderItem, OrderStatus
 from src.store import InMemoryOrderStore
 
 from .fakes import FakeEchoLlm, ToolCallingLlm
@@ -26,11 +29,19 @@ class FakeContext:
         self.user_id = user_id
 
 
-async def test_agent_with_store_exposes_single_process_order_tool():
+class _RecordingNotifier:
+    def __init__(self):
+        self.escalations: list[str] = []
+
+    async def on_order_escalated(self, order_id: str) -> None:
+        self.escalations.append(order_id)
+
+
+async def test_agent_with_store_exposes_process_and_approve_tools():
     agent = build_agent(model=FakeEchoLlm(), store=InMemoryOrderStore())
     assert isinstance(agent, Agent)
     names = [getattr(tool, "name", None) for tool in agent.tools]
-    assert names == ["process_order"]
+    assert names == ["process_order", "approve_order"]
 
 
 def test_runner_invokes_tool_and_pins_sender_identity():
@@ -153,3 +164,127 @@ async def test_process_order_tool_returns_error_on_unparseable_items():
 
     assert "error" in result
     assert store.orders == []
+
+
+async def _escalate(store) -> str:
+    core = OrderProcessingCore(store)
+    decision = await core.process(
+        Order(
+            phone="+919999999999",
+            customer=None,
+            items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
+            confidence=0.9,
+        ),
+        clarify=False,
+    )
+    assert not decision.approved
+    await store.set_pending_approval("+919845000001", decision.order_id)
+    return decision.order_id
+
+
+async def test_approve_order_tool_approves_the_approvers_pending_order():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    order_id = await _escalate(store)
+    tool = build_approve_order_tool(core, store)
+
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is True
+    assert result["order_id"] == order_id
+    assert (await store.get_order(order_id)).status is OrderStatus.APPROVED
+    assert await store.get_pending_approval("+919845000001") is None
+
+
+async def test_approve_order_tool_rejects_the_approvers_pending_order():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    tool = build_approve_order_tool(core, store)
+
+    result = await tool.func(
+        approved=False, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is False
+    assert result["status"] == OrderStatus.REJECTED.value
+
+
+async def test_approve_order_tool_returns_error_for_non_approver_number():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    tool = build_approve_order_tool(core, store)
+
+    # A real customer number that is not an allowlisted approver has nothing
+    # pending and can never act — the agent is told to ignore the reply.
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919812345001")
+    )
+
+    assert "error" in result
+    # Nothing was approved for that number's order.
+    assert not any(
+        o.status is OrderStatus.APPROVED for o in store.orders
+    )
+
+
+async def test_approve_order_tool_returns_error_without_identity():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_approve_order_tool(core, store)
+
+    result = await tool.func(approved=True)
+
+    assert "error" in result
+
+
+async def test_approve_order_tool_clears_pending_so_second_reply_cannot_act():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    tool = build_approve_order_tool(core, store)
+
+    await tool.func(approved=True, tool_context=FakeContext(user_id="+919845000001"))
+    second = await tool.func(
+        approved=False, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert "error" in second  # nothing pending for a second decision
+
+
+async def test_notifier_only_fires_for_escalations():
+    # A clean order is auto-approved and a duplicate never needs a human
+    # decision — neither should notify any approver (issue #7 seam contract).
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    notifier = _RecordingNotifier()
+    tool = build_process_order_tool(core, notifier=notifier)
+
+    clean = await tool.func(
+        tool_context=FakeContext(user_id="+919812345001"),
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+    )
+    assert clean["approved"] is True
+    assert notifier.escalations == []
+
+    duplicate = await tool.func(
+        tool_context=FakeContext(user_id="+919812345001"),
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+    )
+    assert duplicate["duplicate"] is True
+    assert notifier.escalations == []
+
+    escalated = await tool.func(
+        tool_context=FakeContext(user_id="+919999999999"),
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        confidence=0.9,
+    )
+    assert escalated["approved"] is False
+    assert notifier.escalations == [escalated["order_id"]]

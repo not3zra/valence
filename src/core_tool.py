@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from google.adk.tools import FunctionTool, ToolContext
 
-from .core import OrderProcessingCore
+from .approval import ApprovalNotifier
+from .core import ApprovalError, OrderProcessingCore
 from .orders import Order, OrderItem, utcnow
 
 # Session-state key that carries a partial order + clarify turn count across the
@@ -32,7 +33,9 @@ def _hours_since(start_iso: str, end_iso: str) -> float:
     return (end - start).total_seconds() / 3600
 
 
-def build_process_order_tool(core: OrderProcessingCore) -> FunctionTool:
+def build_process_order_tool(
+    core: OrderProcessingCore, notifier: ApprovalNotifier | None = None
+) -> FunctionTool:
     """Wrap the core as a single ``process_order`` ADK tool.
 
     The agent invokes it with the structured order extracted by Gemini and reads
@@ -42,6 +45,11 @@ def build_process_order_tool(core: OrderProcessingCore) -> FunctionTool:
     message the model reads), so extraction carries nothing that can credit a
     customer. The store behind the core is whatever the core was built with:
     Firestore in production, the in-memory double in tests.
+
+    ``notifier``, when supplied, is called for every escalation this tool
+    produces (issue #7): it tells every allowlisted approver the order needs a
+    yes/no decision. It is intentionally a separate seam so the tool stays
+    channel-agnostic and the notification is testable in isolation.
     """
 
     async def process_order(
@@ -128,12 +136,70 @@ def build_process_order_tool(core: OrderProcessingCore) -> FunctionTool:
                     "turn": turn,
                     "created_at": utcnow(),
                 }
-            return decision.to_dict()
+                return decision.to_dict()
 
         # The order committed (approved / escalated / duplicate): a fresh order,
         # so any held partial clarify state is no longer current.
         if state is not None and _read_pending(state) is not None:
             state[CLARIFY_STATE_KEY] = None
+
+        # An escalated order needs a human yes/no decision (issue #7). The
+        # notifier is a channel-agnostic seam: it tells every allowlisted
+        # approver and records the request on the audit trail. This fires once
+        # per committed escalation, including a clarify loop that promoted to
+        # escalation on its final turn.
+        if notifier is not None and not decision.approved and not decision.duplicate:
+            await notifier.on_order_escalated(decision.order_id)
+
         return decision.to_dict()
 
     return FunctionTool(process_order)
+
+
+def build_approve_order_tool(core: OrderProcessingCore, store) -> FunctionTool:
+    """Wrap the human approval path as an ``approve_order`` ADK tool.
+
+    An allowlisted approver's WhatsApp reply resolves to exactly one pending
+    order: the pending-approval registry keys approver phone -> order id (issue
+    #7). The tool reads that id back from the store, applies the yes/no
+    decision through the core (which re-checks the allowlist), and clears the
+    pending entry so a later reply cannot act twice — for this and every other
+    approver who was asked to decide the same order. A caller with nothing
+    pending — a non-allowlisted number, or an approver with no open request —
+    gets an error dict the agent is told to ignore, so it can never act on an
+    order it was not invited to decide.
+    """
+
+    async def approve_order(
+        approved: bool,
+        tool_context: ToolContext | None = None,
+    ) -> dict:
+        """Apply an approver's yes/no decision to the order awaiting them.
+
+        Args:
+            approved: True to approve the order, False to reject it.
+            tool_context: ADK invocation context; the approver's phone is the
+                caller's session identity, never anything from the message.
+
+        Returns:
+            The core's decision (status, approved flag) or an error dict.
+        """
+        phone = tool_context.user_id if tool_context is not None else None
+        if not phone:
+            return {"error": "no verified sender identity is available"}
+
+        order_id = await store.get_pending_approval(phone)
+        if order_id is None:
+            return {"error": f"{phone} has no order awaiting approval"}
+
+        try:
+            decision = await core.approve_order(
+                order_id, approved=approved, by_phone=phone
+            )
+        except ApprovalError as exc:
+            return {"error": str(exc)}
+
+        await store.clear_pending_approvals_for_order(decision.order_id)
+        return decision.to_dict()
+
+    return FunctionTool(approve_order)

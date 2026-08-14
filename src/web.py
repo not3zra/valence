@@ -9,7 +9,9 @@ callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request, Response
+import hmac
+
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from google.adk.agents import Agent
 from pydantic import BaseModel, Field
@@ -135,7 +137,17 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/api/roundtrip", response_model=RoundTripResponse)
-    def roundtrip(payload: RoundTripRequest) -> RoundTripResponse:
+    def roundtrip(request: Request, payload: RoundTripRequest) -> RoundTripResponse:
+        # Debug probe (issue #4): caller supplies the sender id, so when a
+        # shared secret is configured it must be presented or the probe is
+        # closed — otherwise an unauthenticated caller could drive the agent
+        # under an arbitrary identity (including an allowlisted approver, issue
+        # #7). The webhook path is the real sender-verified channel.
+        expected = f"Bearer {auth_token}" if auth_token else None
+        if expected and not hmac.compare_digest(
+            request.headers.get("Authorization", ""), expected
+        ):
+            raise HTTPException(status_code=401)
         reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 

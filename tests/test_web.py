@@ -50,6 +50,32 @@ def test_roundtrip_returns_reply(client):
     assert body["reply"] == "Echo: two drums of acid"
 
 
+def test_roundtrip_requires_shared_secret_when_configured():
+    # The roundtrip probe lets the caller supply the sender id, so when a
+    # shared secret (the Twilio auth token) is configured it must be presented
+    # — otherwise an unauthenticated caller could impersonate any phone,
+    # including an allowlisted approver (issue #7).
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm()),
+        session_service=InMemorySessionService(),
+        twilio_auth_token="secret-token",
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "hi"},
+    )
+    assert response.status_code == 401
+
+    response = client.post(
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "hi"},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 200
+
+
 def test_roundtrip_rejects_missing_fields(client):
     response = client.post("/api/roundtrip", json={"message": "no sender"})
     assert response.status_code == 422
