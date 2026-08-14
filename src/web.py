@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .agent import build_runner, run_turn
 from .config import settings
+from .media import MediaFetcher, TwilioMediaFetcher
 from .twilio_whatsapp import TwilioWhatsAppParser, verify_twilio_signature
 from .whatsapp import MockWhatsAppSender, WhatsAppSender, WhatsAppWebhookParser
 
@@ -74,6 +75,7 @@ def create_app(
     session_service,
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
+    media_fetcher: MediaFetcher | None = None,
     twilio_auth_token: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
@@ -84,8 +86,9 @@ def create_app(
 
     ``whatsapp_sender`` defaults to ``MockWhatsAppSender`` (the demo path,
     issue #4 design note); ``webhook_parser`` defaults to the Twilio adapter;
-    ``twilio_auth_token`` defaults to the configured value and is what the
-    webhook uses to verify the ``X-Twilio-Signature`` header.
+    ``media_fetcher`` defaults to ``TwilioMediaFetcher`` (the photo intake
+    path, issue #11); ``twilio_auth_token`` defaults to the configured value
+    and is what the webhook uses to verify the ``X-Twilio-Signature`` header.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -94,6 +97,9 @@ def create_app(
         twilio_auth_token
         if twilio_auth_token is not None
         else settings.twilio_auth_token
+    )
+    fetcher = media_fetcher or TwilioMediaFetcher(
+        settings.twilio_account_sid, auth_token
     )
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
@@ -124,6 +130,12 @@ def create_app(
         agent's confirmation — including the estimated total from draft
         pricing — back over WhatsApp through the sender seam. Returns an empty
         TwiML response; the reply travels out-of-band.
+
+        A message carrying a photo (issue #11) fetches the first media object
+        from the Twilio URL with the required basic auth and passes it to the
+        agent as an inline image, understood in the same Gemini call as text.
+        A media fetch that fails falls back to handling the text the message
+        carried, rather than failing the whole request.
         """
         form: dict[str, str] = {
             key: str(value) for key, value in (await request.form()).items()
@@ -134,9 +146,14 @@ def create_app(
         ):
             return _twiml(status_code=403)
         message = parser.parse(form)
-        if message is None or not message.body:
+        if message is None or (not message.body and not message.media):
             return _twiml()
-        reply = run_turn(runner, sender_id=message.sender, message=message.body)
+        media = (
+            fetcher.fetch(message.media[0]) if message.media else None
+        )
+        reply = run_turn(
+            runner, sender_id=message.sender, message=message.body, media=media
+        )
         if reply:
             sender.send(message.sender, reply)
         return _twiml()
