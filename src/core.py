@@ -45,6 +45,8 @@ REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
     "quantity_deviation_above_pct",
     "rate_deviation_pct",
     "dedup_window_minutes",
+    "clarify_timeout_hours",
+    "clarify_turn_cap",
 )
 
 
@@ -139,6 +141,31 @@ def resolve_delivery_location(
     return None
 
 
+def _missing_fields(order: Order) -> list[str]:
+    """The user-answerable gaps in an order, for the clarify loop (issue #5).
+
+    Only fields the customer can fill in by replying are listed: the item lines
+    (no items at all, or a line missing a product/quantity) and the delivery
+    location. The phone always comes from the session identity and never needs
+    clarifying.
+    """
+    missing: list[str] = []
+    if not order.items:
+        missing.append("items")
+    else:
+        for item in order.items:
+            if (
+                not item.product
+                or not math.isfinite(item.quantity)
+                or item.quantity <= 0
+            ):
+                missing.append("items")
+                break
+    if not order.delivery_location:
+        missing.append("delivery_location")
+    return missing
+
+
 def _new_order_id() -> str:
     return f"ord_{uuid.uuid4().hex[:12]}"
 
@@ -174,7 +201,9 @@ class OrderProcessingCore:
     def __init__(self, store: OrderStore) -> None:
         self._store = store
 
-    async def process(self, order: Order, *, now: str | None = None) -> OrderDecision:
+    async def process(
+        self, order: Order, *, now: str | None = None, clarify: bool = True
+    ) -> OrderDecision:
         """Commit one structured order and return its decision.
 
         Resolves the customer (phone-exact only), each item's product, and the
@@ -299,6 +328,34 @@ class OrderProcessingCore:
         approved = not escalation_reasons
 
         location = resolve_delivery_location(order.delivery_location, locations)
+
+        missing_fields = _missing_fields(order)
+        # Clarify only ever happens over WhatsApp (ADR-0004); a voice order is
+        # never held for an answer. And it only applies when the *only* problem
+        # is a missing customer-answerable field — any other hard reason
+        # (unknown customer, uncataloged product, low confidence, anomaly, over
+        # the cap) is an escalation a clarifying question cannot fix.
+        is_clarifiable = (
+            clarify
+            and order.source_channel == "whatsapp"
+            and not approved
+            and set(escalation_reasons) == {EscalationReason.MISSING_FIELD.value}
+            and bool(missing_fields)
+        )
+        if is_clarifiable:
+            return OrderDecision(
+                order_id=order.order_id or _new_order_id(),
+                status=OrderStatus.PENDING_REVIEW.value,
+                approved=False,
+                escalation_reasons=[],
+                draft_value_inr=draft_total,
+                customer_id=customer.id if customer else None,
+                delivery_location_id=location.id if location else None,
+                items=[_resolved_item(line) for line in resolved],
+                clarify=True,
+                missing_fields=missing_fields,
+            )
+
         order.order_id = order.order_id or _new_order_id()
         order.customer_id = customer.id if customer else None
         order.delivery_location_id = location.id if location else None
@@ -347,6 +404,26 @@ class OrderProcessingCore:
             delivery_location_id=order.delivery_location_id,
             items=[_resolved_item(line) for line in resolved],
         )
+
+    async def clarify_policy(self) -> dict:
+        """Return the clarify-loop limits read from the store config (ADR-0002).
+
+        A missing key fails loudly, like every other threshold the engine reads.
+        """
+        config = await self._store.get_config()
+        missing = [
+            key
+            for key in ("clarify_timeout_hours", "clarify_turn_cap")
+            if key not in config
+        ]
+        if missing:
+            raise ConfigurationError(
+                "store config missing required key(s): " + ", ".join(missing)
+            )
+        return {
+            "clarify_timeout_hours": float(config["clarify_timeout_hours"]),
+            "clarify_turn_cap": int(config["clarify_turn_cap"]),
+        }
 
     async def _find_duplicate(
         self,
