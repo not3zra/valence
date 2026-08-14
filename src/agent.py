@@ -47,6 +47,10 @@ image into the same structured order as text. Never guess an order you cannot \
 read: if the handwriting is illegible, call process_order with low confidence \
 and no items so it escalates to a human instead of shipping a fabricated \
 order. \
+For a recorded phone call (source_channel "voice"), understand the audio into \
+the same structured order as text. Always pass source_channel "voice" — a \
+voice order with a missing field is never clarified; it escalates to a human \
+instead (ADR-0004). \
 Keep replies short and natural."""
 
 
@@ -117,9 +121,10 @@ def run_turn(
 
     The session id is the sender id, so consecutive messages from the same
     sender continue the same durable session (ADR-0001: one session keyed per
-    WhatsApp sender). ``media``, when present, is attached as an inline image
-    part so a photo of a handwritten order is understood in the same Gemini
-    call as text (issue #11) — one agent, a third channel.
+    WhatsApp sender, or per voice caller, issue #10). ``media``, when present,
+    is attached as an inline media part — an image for a photo of a handwritten
+    order (issue #11), audio for a recorded call (issue #10) — understood in
+    the same Gemini call as text: one agent, every channel.
     """
     parts = [types.Part(text=message)]
     if media is not None:

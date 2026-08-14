@@ -3,16 +3,13 @@
 Everything Twilio-specific lives here, behind the seam defined in
 ``src.whatsapp`` (issue #4 design note): parsing turns Twilio's form-encoded
 ``Body``/``From`` shape into a provider-neutral ``InboundMessage``, and
-signature verification is isolated to this adapter so the webhook routing layer
+signature verification is shared with the Voice callback in ``src.twilio``
+(one HMAC-SHA1 algorithm for every Twilio webhook) so the webhook routing layer
 stays provider-free. Swapping to Meta Cloud API later is a contained change to
 this module, not a rewrite.
 """
 
 from __future__ import annotations
-
-import base64
-import hashlib
-import hmac
 
 from .whatsapp import InboundMessage
 
@@ -52,34 +49,3 @@ class TwilioWhatsAppParser:
             body=(form.get("Body") or ""),
             media=tuple(media),
         )
-
-
-def build_twilio_signature(
-    url: str, params: dict[str, str], auth_token: str
-) -> str:
-    """Compute the ``X-Twilio-Signature`` for a webhook request.
-
-    Algorithm (Twilio docs, "Validate Twilio requests"): take the full request
-    URL, append each POST parameter sorted by name as ``keyvalue`` with no
-    delimiters, HMAC-SHA1 the result with the AuthToken as the key, and
-    base64-encode it.
-    """
-    canonical = url + "".join(f"{key}{params[key]}" for key in sorted(params))
-    digest = hmac.new(
-        auth_token.encode(), canonical.encode(), hashlib.sha1
-    ).digest()
-    return base64.b64encode(digest).decode()
-
-
-def verify_twilio_signature(
-    url: str, params: dict[str, str], signature: str, auth_token: str
-) -> bool:
-    """True when ``signature`` is a valid ``X-Twilio-Signature`` for the request.
-
-    A missing signature header, or an empty auth token (unconfigured env), is
-    always rejected.
-    """
-    if not signature or not auth_token:
-        return False
-    expected = build_twilio_signature(url, params, auth_token)
-    return hmac.compare_digest(expected, signature)
