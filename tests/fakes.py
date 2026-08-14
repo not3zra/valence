@@ -14,6 +14,21 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
+from src.media import MediaObject
+
+
+class FakeMediaFetcher:
+    """MediaFetcher double: returns a fixed ``MediaObject`` (or None) and
+    records the URLs the webhook asked it to fetch."""
+
+    def __init__(self, media: MediaObject | None = None) -> None:
+        self.media = media
+        self.requested_urls: list[str] = []
+
+    def fetch(self, url: str) -> MediaObject | None:
+        self.requested_urls.append(url)
+        return self.media
+
 
 class FakeEchoLlm(BaseLlm):
     """Echoes the last user part back, prefixed, with a fixed system nudge."""
@@ -232,6 +247,15 @@ class ClarifyingToolCallingLlm(BaseLlm):
 
 def _has_inline_image(contents) -> bool:
     """True when the most recent user content carries an inline image part."""
+    return _has_inline_media(contents)
+
+
+def _has_inline_media(contents) -> bool:
+    """True when the most recent user content carries an inline media part.
+
+    An image for photo intake (issue #11), audio for a recorded call (issue
+    #10) — both travel as an inline-data blob.
+    """
     for content in contents:
         if content.role != "user":
             continue
@@ -366,6 +390,143 @@ class UnreadablePhotoLlm(BaseLlm):
                 "items": [],
                 "confidence": 0.1,
                 "source_channel": "photo",
+            },
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
+
+
+class VoiceReadingLlm(BaseLlm):
+    """Understands a call recording into the same order shape as text (issue #10).
+
+    Pins the voice intake contract: when the inbound message carries an inline
+    audio part the agent understands it into a clean ``source_channel="voice"``
+    order, calls ``process_order``, and confirms with the estimated total —
+    the same one-agent, second-channel flow as photo intake.
+    """
+
+    model: str = "fake-voice"
+
+    def supported_models(self) -> list[str]:
+        return ["fake-voice.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
+
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            approved = bool(result["approved"])
+            draft_value_inr = float(result["draft_value_inr"])
+            if approved:
+                text = f"Order confirmed. Estimated total: {draft_value_inr:,.0f} INR."
+            else:
+                total = f"{draft_value_inr:,.0f} INR."
+                text = f"Your order is under approval. Estimated total: {total}"
+            yield LlmResponse(
+                content=types.Content(
+                    role="model", parts=[types.Part(text=text)]
+                )
+            )
+            return
+
+        if _has_inline_media(contents):
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [
+                        {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                    ],
+                    "confidence": 0.9,
+                    "delivery_location": "Peenya Industrial Area",
+                    "source_channel": "voice",
+                },
+            )
+        else:
+            # No audio seen — the model has nothing to understand.
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [],
+                    "confidence": 0.1,
+                    "source_channel": "voice",
+                },
+            )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
+
+
+class VoiceMissingFieldLlm(BaseLlm):
+    """A call recording whose order is missing a field (issue #10, ADR-0004).
+
+    Pins the never-clarify contract for voice: the agent commits the partial
+    order with ``source_channel="voice"`` and the core escalates it as flagged
+    — it is never held for a clarifying question the way a WhatsApp order would
+    be.
+    """
+
+    model: str = "fake-voice-missing"
+
+    def supported_models(self) -> list[str]:
+        return ["fake-voice-missing.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
+
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            draft_value_inr = float(result["draft_value_inr"])
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            text=(
+                                "I could not confirm a delivery location from "
+                                f"the call. Your order is under approval. "
+                                f"Estimated total: {draft_value_inr:,.0f} INR."
+                            )
+                        )
+                    ],
+                )
+            )
+            return
+
+        call = types.FunctionCall(
+            name="process_order",
+            args={
+                "items": [
+                    {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                ],
+                "confidence": 0.8,
+                "source_channel": "voice",
             },
         )
         yield LlmResponse(
