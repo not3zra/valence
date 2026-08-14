@@ -114,3 +114,25 @@ def test_webhook_rejects_missing_signature(webhook):
     assert response.status_code == 403
     assert store.orders == []
     assert sender.sent == []
+
+
+def test_webhook_repeat_within_window_replies_already_received(webhook):
+    client, sender, store = webhook
+    form = {
+        "From": "whatsapp:+919812345001",
+        "Body": "2 drums sulfuric acid chahiye",
+        "NumMedia": "0",
+    }
+    for _ in range(2):
+        response = client.post(
+            WEBHOOK_URL,
+            data=form,
+            headers={"X-Twilio-Signature": _sign(form)},
+        )
+        assert response.status_code == 200
+
+    assert len(store.orders) == 1
+    assert store.orders[0].status.value == "approved"
+    assert sender.sent[0][1].startswith("Order confirmed.")
+    assert "already been received" in sender.sent[-1][1]
+    assert sender.sent[-1][1] not in sender.sent[0][1]

@@ -62,6 +62,7 @@ def is_terminal(status: OrderStatus) -> bool:
 EVENT_ORDER_CREATED = "order_created"
 EVENT_ORDER_ESCALATED = "order_escalated"
 EVENT_ORDER_AUTO_APPROVED = "order_auto_approved"
+EVENT_ORDER_DUPLICATE = "order_duplicated"
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,27 @@ class Order:
             "updated_at": self.updated_at,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> Order:
+        """Rebuild an Order from a stored document (``to_dict`` round-trip)."""
+        return cls(
+            order_id=data.get("id"),
+            phone=str(data.get("phone", "")),
+            customer=data.get("customer"),
+            customer_id=data.get("customer_id"),
+            delivery_location=data.get("delivery_location"),
+            delivery_location_id=data.get("delivery_location_id"),
+            items=[OrderItem.from_dict(item) for item in data.get("items", [])],
+            confidence=float(data.get("confidence", 0.0)),
+            source_channel=str(data.get("source_channel", "whatsapp")),
+            source_language=str(data.get("source_language", "en")),
+            status=OrderStatus(data.get("status", OrderStatus.PENDING_REVIEW.value)),
+            escalation_reasons=list(data.get("escalation_reasons", [])),
+            draft_value_inr=float(data.get("draft_value_inr", 0.0)),
+            created_at=str(data.get("created_at", utcnow())),
+            updated_at=str(data.get("updated_at", utcnow())),
+        )
+
 
 @dataclass
 class OrderEvent:
@@ -150,6 +172,8 @@ class OrderDecision:
     customer_id: str | None
     delivery_location_id: str | None
     items: list[dict]
+    duplicate: bool = False
+    duplicate_of_order_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -161,4 +185,6 @@ class OrderDecision:
             "customer_id": self.customer_id,
             "delivery_location_id": self.delivery_location_id,
             "items": list(self.items),
+            "duplicate": self.duplicate,
+            "duplicate_of_order_id": self.duplicate_of_order_id,
         }

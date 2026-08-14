@@ -39,6 +39,19 @@ class _DocumentReference:
         self._client.docs[(self._collection, self._doc_id)] = data
 
 
+class _Query:
+    def __init__(self, client, collection: str, field: str, value):
+        self._client = client
+        self._collection = collection
+        self._field = field
+        self._value = value
+
+    async def stream(self):
+        for (collection, _doc_id), data in self._client.docs.items():
+            if collection == self._collection and data.get(self._field) == self._value:
+                yield _Snapshot(data)
+
+
 class _Collection:
     def __init__(self, client, name: str):
         self._client = client
@@ -46,6 +59,9 @@ class _Collection:
 
     def document(self, doc_id: str) -> _DocumentReference:
         return _DocumentReference(self._client, self._name, doc_id)
+
+    def where(self, field: str, op: str, value) -> _Query:
+        return _Query(self._client, self._name, field, value)
 
     async def stream(self):
         for (collection, _doc_id), data in self._client.docs.items():
@@ -149,6 +165,34 @@ async def test_firestore_store_appends_order_event_document(fake_client):
     assert stored["order_id"] == "ord_test"
     assert stored["event_type"] == "order_created"
     assert stored["payload"] == {"order_id": "ord_test"}
+
+
+async def test_firestore_store_lists_orders_for_a_phone(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.create_order(
+        Order(
+            order_id="ord_chemfab",
+            phone="+919812345001",
+            items=[OrderItem(product="p_sulfuric98", quantity=2000, unit="kg")],
+            status=OrderStatus.APPROVED,
+            created_at="2026-08-13T12:00:00+00:00",
+        )
+    )
+    await store.create_order(
+        Order(
+            order_id="ord_other",
+            phone="+919812345002",
+            items=[OrderItem(product="p_sulfuric98", quantity=500, unit="kg")],
+            status=OrderStatus.APPROVED,
+            created_at="2026-08-13T12:05:00+00:00",
+        )
+    )
+
+    orders = await store.list_orders(phone="+919812345001")
+
+    assert [o.order_id for o in orders] == ["ord_chemfab"]
+    assert orders[0].items[0].quantity == 2000.0
+    assert orders[0].status is OrderStatus.APPROVED
 
 
 def test_in_memory_store_exposes_seed_data():
