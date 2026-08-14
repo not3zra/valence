@@ -121,3 +121,52 @@ async def test_rejected_order_stays_visible_for_correction(store, core):
     persisted = await store.get_order(order.order_id)
     assert persisted is not None  # still queryable in the web view
     assert persisted.status is OrderStatus.REJECTED
+
+
+async def test_web_approve_transitions_escalated_order_to_approved(store, core):
+    order = await _escalated_order(store)
+    assert order.status is OrderStatus.PENDING_REVIEW
+
+    decision = await core.approve_order_web(order.order_id, approved=True)
+
+    assert decision.approved is True
+    assert decision.status == OrderStatus.APPROVED.value
+    persisted = await store.get_order(order.order_id)
+    assert persisted.status is OrderStatus.APPROVED
+    # The same audit event the WhatsApp path writes, recorded with the web actor.
+    assert store.events[-1].event_type == EVENT_ORDER_APPROVED
+    assert store.events[-1].payload["approved_by"] == "web"
+
+
+async def test_web_reject_transitions_escalated_order_to_terminal_rejected(store, core):
+    order = await _escalated_order(store)
+
+    decision = await core.approve_order_web(order.order_id, approved=False)
+
+    assert decision.approved is False
+    assert decision.status == OrderStatus.REJECTED.value
+    persisted = await store.get_order(order.order_id)
+    assert persisted.status is OrderStatus.REJECTED
+    assert store.events[-1].event_type == EVENT_ORDER_REJECTED
+
+
+async def test_web_approve_missing_order_raises(core):
+    with pytest.raises(ApprovalError):
+        await core.approve_order_web("ord_missing", approved=True)
+
+
+async def test_web_approve_already_decided_order_raises(store, core):
+    order = await _escalated_order(store)
+    await core.approve_order_web(order.order_id, approved=True)
+
+    with pytest.raises(ApprovalError):
+        await core.approve_order_web(order.order_id, approved=False)
+
+
+async def test_web_approve_missing_order_requires_pending_review(store, core):
+    clean = _order()  # a clean order auto-approves to approved
+    decision = await core.process(clean)
+    assert decision.approved is True
+
+    with pytest.raises(ApprovalError):
+        await core.approve_order_web(decision.order_id, approved=False)

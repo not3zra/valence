@@ -164,6 +164,17 @@ class OrderEvent:
             "created_at": self.created_at,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> OrderEvent:
+        """Rebuild an OrderEvent from a stored document (``to_dict`` round-trip)."""
+        return cls(
+            order_id=str(data.get("order_id", "")),
+            event_type=str(data.get("event_type", "")),
+            payload=dict(data.get("payload", {})),
+            created_at=str(data.get("created_at", utcnow())),
+            event_id=str(data.get("id", uuid.uuid4().hex)),
+        )
+
 
 @dataclass(frozen=True)
 class OrderDecision:

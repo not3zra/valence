@@ -9,9 +9,12 @@ from .config import settings
 from .store import FirestoreOrderStore
 from .web import create_app
 
+store = FirestoreOrderStore()
+
 app = create_app(
-    agent=build_agent(store=FirestoreOrderStore()),
+    agent=build_agent(store=store),
     session_service=build_session_service(),
+    store=store,
 )
 
 if __name__ == "__main__":

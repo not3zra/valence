@@ -9,16 +9,22 @@ callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+from datetime import time
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from google.adk.agents import Agent
 from pydantic import BaseModel, Field
 
+from . import review
 from .agent import build_runner, run_turn
 from .config import settings
+from .core import OrderProcessingCore
 from .media import MediaFetcher, TwilioMediaFetcher
+from .orders import Order, OrderStatus
+from .store import OrderStore
 from .twilio import verify_twilio_signature
 from .twilio_voice import TwilioVoiceCallbackParser
 from .twilio_whatsapp import TwilioWhatsAppParser
@@ -59,6 +65,8 @@ INDEX_HTML = """<!doctype html>
   graduated human-checked approval loop.</p>
   <ul>
     <li>Health: <a href="/health">/health</a></li>
+    <li>Review web view (escalation queue):
+    <a href="/review">/review</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
     <li>Twilio Voice recording-status callback (recorded order calls):
@@ -95,6 +103,7 @@ def create_app(
     media_fetcher: MediaFetcher | None = None,
     twilio_auth_token: str | None = None,
     voice_parser: VoiceCallbackParser | None = None,
+    store: OrderStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -230,4 +239,159 @@ def create_app(
         )
         return _twiml()
 
+    if store is not None:
+        _register_review_routes(app, store)
+
     return app
+
+
+def _passcode_digest(passcode: str) -> str:
+    """Deterministic token proving knowledge of the demo passcode.
+
+    The cookie carries this digest, never the passcode itself; the gate
+    recomputes it from the configured passcode and compares constant-time.
+    """
+    return hashlib.sha256(passcode.encode()).hexdigest()
+
+
+def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
+    """Register the passcode-gated review web view (issue #6).
+
+    Every ``/review`` route is gated by a single demo passcode read from the
+    store config; a request without a valid session cookie is redirected to the
+    login page (or rejected, for JSON/POST endpoints). The web decision path
+    calls ``approve_order_web`` on the same Order Processing Core the ADK agent
+    uses, so web and WhatsApp approvals stay in sync and share one audit trail.
+    """
+    core = OrderProcessingCore(store)
+
+    async def _passcode() -> str:
+        config = await store.get_config()
+        value = config.get("web_passcode")
+        if not value:
+            raise HTTPException(status_code=503, detail="review view is not configured")
+        return str(value)
+
+    async def _authorized(request: Request) -> bool:
+        expected = _passcode_digest(await _passcode())
+        cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
+        return bool(cookie) and hmac.compare_digest(cookie, expected)
+
+    async def _require(request: Request) -> None:
+        if not await _authorized(request):
+            raise HTTPException(status_code=401)
+
+    async def _orders() -> list[Order]:
+        orders = await store.list_all_orders()
+        orders.sort(key=lambda o: o.created_at, reverse=True)
+        return orders
+
+    async def _searchable_text(order: Order) -> str:
+        order_id = order.order_id or ""
+        events = await store.list_order_events(order_id)
+        fields = " ".join(
+            [
+                order_id,
+                order.phone,
+                order.customer or "",
+                order.delivery_location or "",
+                *(e.event_type for e in events),
+                *(str(e.payload) for e in events),
+            ]
+        )
+        return fields.lower()
+
+    async def _stats() -> dict[str, int]:
+        config = await store.get_config()
+        cutoff = str(config.get("cutoff_time"))
+        hour, minute = (int(part) for part in cutoff.split(":")) if cutoff else (
+            review.DEFAULT_CUTOFF_TIME.hour,
+            review.DEFAULT_CUTOFF_TIME.minute,
+        )
+        return review.compute_stats(
+            await _orders(), cutoff_time=time(hour, minute)
+        )
+
+    @app.get("/review", response_class=HTMLResponse)
+    async def review_index(request: Request):
+        if not await _authorized(request):
+            return review.login_page()
+        escalated = [
+            o for o in await _orders()
+            if o.status is OrderStatus.PENDING_REVIEW
+        ]
+        return review.queue_page(escalated, await _stats())
+
+    @app.get("/review/orders", response_class=HTMLResponse)
+    async def review_orders(request: Request, q: str | None = None):
+        if not await _authorized(request):
+            return review.login_page()
+        orders = await _orders()
+        if q:
+            needle = q.strip().lower()
+            matches = []
+            for o in orders:
+                if needle in await _searchable_text(o):
+                    matches.append(o)
+            orders = matches
+        return review.queue_page(orders, await _stats(), q=q)
+
+    @app.get("/review/orders/{order_id}", response_class=HTMLResponse)
+    async def review_order_detail(
+        request: Request, order_id: str, message: str | None = None
+    ):
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404)
+        events = await store.list_order_events(order_id)
+        events.sort(key=lambda e: e.created_at)
+        return review.order_page(order, events, message=message)
+
+    @app.post("/review/login", response_class=HTMLResponse)
+    async def review_login(request: Request):
+        form = await request.form()
+        submitted = str(form.get("passcode", ""))
+        if not hmac.compare_digest(submitted, await _passcode()):
+            return review.login_page(error="Incorrect passcode.")
+        response = RedirectResponse("/review", status_code=303)
+        response.set_cookie(
+            review.PASSCODE_COOKIE,
+            _passcode_digest(await _passcode()),
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    @app.post("/review/logout")
+    async def review_logout():
+        response = RedirectResponse("/review", status_code=303)
+        response.delete_cookie(review.PASSCODE_COOKIE)
+        return response
+
+    @app.get("/review/stats")
+    async def review_stats(request: Request):
+        await _require(request)
+        return await _stats()
+
+    async def _decide(
+        request: Request, order_id: str, approved: bool
+    ) -> RedirectResponse:
+        await _require(request)
+        action = "approve" if approved else "reject"
+        try:
+            await core.approve_order_web(order_id, approved=approved)
+        except Exception:
+            return RedirectResponse(
+                f"/review/orders/{order_id}?message=Could not {action} this order.",
+                status_code=303,
+            )
+        return RedirectResponse(f"/review/orders/{order_id}", status_code=303)
+
+    @app.post("/review/orders/{order_id}/approve")
+    async def review_approve(request: Request, order_id: str):
+        return await _decide(request, order_id, approved=True)
+
+    @app.post("/review/orders/{order_id}/reject")
+    async def review_reject(request: Request, order_id: str):
+        return await _decide(request, order_id, approved=False)

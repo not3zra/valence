@@ -216,6 +216,113 @@ async def test_firestore_store_lists_orders_for_a_phone(fake_client):
     assert orders[0].status is OrderStatus.APPROVED
 
 
+async def test_firestore_store_lists_all_orders(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.create_order(
+        Order(
+            order_id="ord_a",
+            phone="+919812345001",
+            items=[],
+            status=OrderStatus.APPROVED,
+        )
+    )
+    await store.create_order(
+        Order(
+            order_id="ord_b",
+            phone="+919812345002",
+            items=[],
+            status=OrderStatus.PENDING_REVIEW,
+        )
+    )
+
+    orders = await store.list_all_orders()
+
+    assert {o.order_id for o in orders} == {"ord_a", "ord_b"}
+
+
+async def test_firestore_store_lists_order_events_for_an_order(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_a1",
+            order_id="ord_a",
+            event_type="order_created",
+            payload={"order_id": "ord_a"},
+            created_at="2026-08-13T12:00:00+00:00",
+        )
+    )
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_b1",
+            order_id="ord_b",
+            event_type="order_created",
+            payload={"order_id": "ord_b"},
+            created_at="2026-08-13T12:01:00+00:00",
+        )
+    )
+
+    events = await store.list_order_events("ord_a")
+
+    assert [e.event_id for e in events] == ["evt_a1"]
+    assert [e.event_type for e in events] == ["order_created"]
+
+
+async def test_in_memory_store_lists_all_orders():
+    store = InMemoryOrderStore()
+    await store.create_order(
+        Order(order_id="ord_a", phone="+919812345001", items=[])
+    )
+    await store.create_order(
+        Order(order_id="ord_b", phone="+919812345002", items=[])
+    )
+
+    orders = await store.list_all_orders()
+
+    assert {o.order_id for o in orders} == {"ord_a", "ord_b"}
+
+
+async def test_in_memory_store_lists_order_events_for_an_order():
+    store = InMemoryOrderStore()
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_a",
+            order_id="ord_a",
+            event_type="order_created",
+            payload={},
+        )
+    )
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_b",
+            order_id="ord_b",
+            event_type="order_created",
+            payload={},
+        )
+    )
+
+    events = await store.list_order_events("ord_a")
+
+    assert [e.event_id for e in events] == ["evt_a"]
+
+
+def test_order_event_round_trips_through_from_dict():
+    event = OrderEvent(
+        event_id="evt_1",
+        order_id="ord_a",
+        event_type="order_escalated",
+        payload={"reasons": ["unknown_customer"]},
+        created_at="2026-08-13T12:00:00+00:00",
+    )
+
+    rebuilt = OrderEvent.from_dict(event.to_dict())
+
+    assert rebuilt.event_id == "evt_1"
+    assert rebuilt.order_id == "ord_a"
+    assert rebuilt.event_type == "order_escalated"
+    assert rebuilt.payload == {"reasons": ["unknown_customer"]}
+    assert rebuilt.created_at == "2026-08-13T12:00:00+00:00"
+
+
 def test_in_memory_store_exposes_seed_data():
     store = InMemoryOrderStore()
     assert store.config["value_cap_inr"] == seed_data.CONFIG["value_cap_inr"]
