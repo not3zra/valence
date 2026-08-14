@@ -228,3 +228,148 @@ class ClarifyingToolCallingLlm(BaseLlm):
                 role="model", parts=[types.Part(function_call=call)]
             )
         )
+
+
+def _has_inline_image(contents) -> bool:
+    """True when the most recent user content carries an inline image part."""
+    for content in contents:
+        if content.role != "user":
+            continue
+        if any(part.inline_data is not None for part in content.parts):
+            return True
+    return False
+
+
+class PhotoReadingLlm(BaseLlm):
+    """Reads a photo into the same structured order shape as text (issue #11).
+
+    Pins the photo intake contract: when the inbound message carries an inline
+    image the agent reads it into a clean ``source_channel="photo"`` order,
+    calls ``process_order``, and confirms with the estimated total. Never
+    clarifies — a photo order flows through the core exactly like any other.
+    """
+
+    model: str = "fake-photo"
+
+    def supported_models(self) -> list[str]:
+        return ["fake-photo.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
+
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            approved = bool(result["approved"])
+            draft_value_inr = float(result["draft_value_inr"])
+            if approved:
+                text = f"Order confirmed. Estimated total: {draft_value_inr:,.0f} INR."
+            else:
+                total = f"{draft_value_inr:,.0f} INR."
+                text = f"Your order is under approval. Estimated total: {total}"
+            yield LlmResponse(
+                content=types.Content(
+                    role="model", parts=[types.Part(text=text)]
+                )
+            )
+            return
+
+        if _has_inline_image(contents):
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [
+                        {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                    ],
+                    "confidence": 0.9,
+                    "delivery_location": "Peenya Industrial Area",
+                    "source_channel": "photo",
+                },
+            )
+        else:
+            # No image seen — the model has nothing to read.
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [],
+                    "confidence": 0.1,
+                    "source_channel": "photo",
+                },
+            )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
+
+
+class UnreadablePhotoLlm(BaseLlm):
+    """A photo whose handwriting cannot be read (issue #11).
+
+    Pins the fallback: instead of guessing an order, the agent commits what it
+    can determine with a low confidence and no items — the core escalates the
+    photo order to a human rather than shipping a guessed order. ``source_channel``
+    is ``photo``, so it is never held for a clarifying answer (ADR-0004 spirit).
+    """
+
+    model: str = "fake-unreadable-photo"
+
+    def supported_models(self) -> list[str]:
+        return ["fake-unreadable-photo.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
+
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            draft_value_inr = float(result["draft_value_inr"])
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            text=(
+                                "I could not read the photo. "
+                                f"Your order is under approval. Estimated total: "
+                                f"{draft_value_inr:,.0f} INR."
+                            )
+                        )
+                    ],
+                )
+            )
+            return
+
+        call = types.FunctionCall(
+            name="process_order",
+            args={
+                "items": [],
+                "confidence": 0.1,
+                "source_channel": "photo",
+            },
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
