@@ -31,6 +31,8 @@ class OrderStore(Protocol):
 
     async def append_order_event(self, event: OrderEvent) -> None: ...
 
+    async def list_orders(self, *, phone: str) -> list[Order]: ...
+
 
 class FirestoreOrderStore:
     """OrderStore backed by Firestore, using whatever project the client resolves."""
@@ -75,6 +77,15 @@ class FirestoreOrderStore:
             event.to_dict()
         )
 
+    async def list_orders(self, *, phone: str) -> list[Order]:
+        orders = []
+        async for doc in self._client.collection("orders").where(
+            "phone", "==", phone
+        ).stream():
+            data = doc.to_dict() or {}
+            orders.append(Order.from_dict(data))
+        return orders
+
 
 class InMemoryOrderStore:
     """OrderStore double over the seed data, recording orders and events in memory."""
@@ -117,3 +128,6 @@ class InMemoryOrderStore:
 
     async def append_order_event(self, event: OrderEvent) -> None:
         self.events.append(event)
+
+    async def list_orders(self, *, phone: str) -> list[Order]:
+        return [order for order in self.orders if order.phone == phone]

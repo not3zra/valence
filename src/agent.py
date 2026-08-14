@@ -32,6 +32,10 @@ process_order returns the decision with the draft_value_inr estimated total; \
 after a successful commit, confirm the order to the customer in their own \
 language and include the estimated total from the tool result. If the order \
 was escalated (approved is false), tell the customer it is under approval. \
+If the decision says duplicate is true, the customer already sent this same \
+order inside the dedup window — never create a new order, never ask for \
+clarification, and never say it is under approval; just tell them the order \
+was already received. \
 Keep replies short and natural."""
 
 
