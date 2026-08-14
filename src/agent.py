@@ -36,6 +36,11 @@ If the decision says duplicate is true, the customer already sent this same \
 order inside the dedup window — never create a new order, never ask for \
 clarification, and never say it is under approval; just tell them the order \
 was already received. \
+If the decision says clarify is true, the order is missing a field the \
+customer can supply — never confirm it and never say it is under approval. \
+Ask, in the customer's own language, for exactly the missing_fields listed \
+(usually items or delivery_location) so they can fill the gap; a partial order \
+stays open in the session and their reply resumes it. \
 Keep replies short and natural."""
 
 

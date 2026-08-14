@@ -94,25 +94,35 @@ async def test_uncataloged_product_escalates(core):
 
 
 async def test_missing_delivery_location_escalates(core):
-    decision = await core.process(_order(delivery_location=None))
+    decision = await core.process(
+        _order(source_channel="phone", delivery_location=None)
+    )
     assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
 
 
 async def test_empty_items_escalates(core):
-    decision = await core.process(_order(items=[]))
+    decision = await core.process(
+        _order(source_channel="phone", items=[])
+    )
     assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
 
 
 async def test_item_without_quantity_escalates(core):
     decision = await core.process(
-        _order(items=[OrderItem(product="sulfuric acid", quantity=0, unit="kg")])
+        _order(
+            source_channel="phone",
+            items=[OrderItem(product="sulfuric acid", quantity=0, unit="kg")],
+        )
     )
     assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
 
 
 async def test_non_finite_quantity_escalates(core):
     decision = await core.process(
-        _order(items=[OrderItem(product="sulfuric acid", quantity=float("nan"))])
+        _order(
+            source_channel="phone",
+            items=[OrderItem(product="sulfuric acid", quantity=float("nan"))],
+        )
     )
     assert EscalationReason.MISSING_FIELD.value in decision.escalation_reasons
 
