@@ -61,6 +61,7 @@ The service is now on http://localhost:8080:
 
 - `GET /` — health page
 - `GET /health` — liveness probe
+- `GET /review` — the review web view (passcode-gated escalation queue)
 - `POST /api/roundtrip` — agent round trip, no Twilio needed:
 - `POST /api/whatsapp/webhook` — Twilio WhatsApp inbound webhook (ticket 3)
 
@@ -133,6 +134,19 @@ GOOGLE_API_KEY=... TWILIO_AUTH_TOKEN=... \
   python scripts/smoke_whatsapp_webhook.py \
   --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
 ```
+
+## Review web view (ticket 5)
+
+The human interface for escalated orders, served from the same FastAPI web
+layer at `/review`. Gated by a single demo passcode read from the store config
+(`web_passcode`, seeded as `valence-demo`), it shows an escalation queue with a
+reason badge per order, an order detail page with a searchable Order Event
+timeline, and a live stat bar (pending escalations, approved today, billed
+today, late orders) that refreshes without a page reload. Approve / reject from
+the web view call `approve_order_web` on the same Order Processing Core as the
+WhatsApp approval path, so web and WhatsApp decisions stay in sync and share one
+audit trail. Editing order fields, overriding GST, and resolving unknowns is the
+remaining piece of this ticket.
 
 ## Provision the full GCP stack
 

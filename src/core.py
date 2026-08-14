@@ -450,7 +450,23 @@ class OrderProcessingCore:
             raise ApprovalError(
                 f"{by_phone} is not an allowlisted approver (issue #7)"
             )
+        return await self._apply_human_decision(order_id, approved, by_phone)
 
+    async def approve_order_web(
+        self, order_id: str, *, approved: bool
+    ) -> OrderDecision:
+        """Apply a yes/no decision from the review web view (issue #6).
+
+        The web layer is gated by its own demo passcode, so there is no phone to
+        allowlist — the same core decision path as the WhatsApp approval (issue
+        #7) is reused, so web and WhatsApp decisions stay in sync and feed the
+        same audit trail, with the actor recorded as ``web``.
+        """
+        return await self._apply_human_decision(order_id, approved, "web")
+
+    async def _apply_human_decision(
+        self, order_id: str, approved: bool, by: str
+    ) -> OrderDecision:
         order = await self._store.get_order(order_id)
         if order is None:
             raise ApprovalError(f"order {order_id} not found")
@@ -473,7 +489,7 @@ class OrderProcessingCore:
                 order_id=order_id,
                 event_type=event_type,
                 payload={
-                    "approved_by": by_phone,
+                    "approved_by": by,
                     "approved": approved,
                 },
             )

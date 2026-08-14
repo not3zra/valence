@@ -39,6 +39,10 @@ class OrderStore(Protocol):
 
     async def list_orders(self, *, phone: str) -> list[Order]: ...
 
+    async def list_all_orders(self) -> list[Order]: ...
+
+    async def list_order_events(self, order_id: str) -> list[OrderEvent]: ...
+
     async def get_pending_approval(self, approver_phone: str) -> str | None: ...
 
     async def set_pending_approval(
@@ -120,6 +124,22 @@ class FirestoreOrderStore:
             data = doc.to_dict() or {}
             orders.append(Order.from_dict(data))
         return orders
+
+    async def list_all_orders(self) -> list[Order]:
+        orders = []
+        async for doc in self._client.collection("orders").stream():
+            data = doc.to_dict() or {}
+            orders.append(Order.from_dict(data))
+        return orders
+
+    async def list_order_events(self, order_id: str) -> list[OrderEvent]:
+        events = []
+        async for doc in self._client.collection("order_events").where(
+            "order_id", "==", order_id
+        ).stream():
+            data = doc.to_dict() or {}
+            events.append(OrderEvent.from_dict(data))
+        return events
 
     async def get_pending_approval(self, approver_phone: str) -> str | None:
         doc = await self._client.collection("pending_approvals").document(
@@ -208,6 +228,12 @@ class InMemoryOrderStore:
 
     async def list_orders(self, *, phone: str) -> list[Order]:
         return [order for order in self.orders if order.phone == phone]
+
+    async def list_all_orders(self) -> list[Order]:
+        return list(self.orders)
+
+    async def list_order_events(self, order_id: str) -> list[OrderEvent]:
+        return [event for event in self.events if event.order_id == order_id]
 
     async def get_pending_approval(self, approver_phone: str) -> str | None:
         return self.pending_approvals.get(approver_phone)

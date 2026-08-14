@@ -72,6 +72,7 @@ def test_config_thresholds_are_present_and_sane():
         "clarify_turn_cap",
         "cutoff_time",
         "dispatch_whatsapp_number",
+        "web_passcode",
     ]
     for key in required:
         assert key in seed_data.CONFIG, f"config missing {key}"
