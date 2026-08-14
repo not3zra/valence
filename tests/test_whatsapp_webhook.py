@@ -20,7 +20,7 @@ from src.twilio_whatsapp import build_twilio_signature
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 
-from .fakes import ConfirmingToolCallingLlm
+from .fakes import ClarifyingToolCallingLlm, ConfirmingToolCallingLlm
 
 WEBHOOK_URL = "/api/whatsapp/webhook"
 AUTH_TOKEN = "test-auth-token"
@@ -136,3 +136,52 @@ def test_webhook_repeat_within_window_replies_already_received(webhook):
     assert sender.sent[0][1].startswith("Order confirmed.")
     assert "already been received" in sender.sent[-1][1]
     assert sender.sent[-1][1] not in sender.sent[0][1]
+
+
+def test_webhook_missing_field_asks_then_completes_on_reply():
+    sender = MockWhatsAppSender()
+    store = InMemoryOrderStore()
+    app = create_app(
+        agent=build_agent(model=ClarifyingToolCallingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        whatsapp_sender=sender,
+        twilio_auth_token=AUTH_TOKEN,
+    )
+    client = TestClient(app)
+
+    # First message: missing delivery location -> a clarifying question is sent,
+    # nothing is persisted and nothing escalates.
+    form = {
+        "From": "whatsapp:+919812345001",
+        "Body": "2 drums sulfuric acid chahiye",
+        "NumMedia": "0",
+    }
+    response = client.post(
+        WEBHOOK_URL,
+        data=form,
+        headers={"X-Twilio-Signature": _sign(form)},
+    )
+    assert response.status_code == 200
+    assert store.orders == []
+    assert store.events == []
+    assert sender.sent[0][1] == "Where should we deliver? Please share the location."
+
+    # Customer replies with the location; the same session resumes and the
+    # completed order commits.
+    reply = {
+        "From": "whatsapp:+919812345001",
+        "Body": "Peenya Industrial Area",
+        "NumMedia": "0",
+    }
+    response = client.post(
+        WEBHOOK_URL,
+        data=reply,
+        headers={"X-Twilio-Signature": _sign(reply)},
+    )
+    assert response.status_code == 200
+
+    assert len(store.orders) == 1
+    order = store.orders[0]
+    assert order.status.value == "approved"
+    assert order.delivery_location_id == "dl_peenya"
+    assert "Order confirmed" in sender.sent[-1][1]

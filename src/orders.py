@@ -174,6 +174,8 @@ class OrderDecision:
     items: list[dict]
     duplicate: bool = False
     duplicate_of_order_id: str | None = None
+    clarify: bool = False
+    missing_fields: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -187,4 +189,6 @@ class OrderDecision:
             "items": list(self.items),
             "duplicate": self.duplicate,
             "duplicate_of_order_id": self.duplicate_of_order_id,
+            "clarify": self.clarify,
+            "missing_fields": list(self.missing_fields),
         }
