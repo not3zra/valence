@@ -147,3 +147,84 @@ class ConfirmingToolCallingLlm(BaseLlm):
                 role="model", parts=[types.Part(function_call=call)]
             )
         )
+
+
+class ClarifyingToolCallingLlm(BaseLlm):
+    """Drives the clarify loop: partial order first, completion on the reply.
+
+    On the first inbound message it calls ``process_order`` with a partial
+    order (missing the delivery location), reads back the ``clarify`` decision,
+    and asks for the missing field. On the next inbound message in the same
+    durable session it calls ``process_order`` with the completed order and
+    confirms. This pins the issue #5 webhook contract: a missing field is asked
+    for, never escalated, and the customer's reply resumes the same session to
+    completion.
+    """
+
+    model: str = "fake-clarify"
+
+    _saw_partial = False
+
+    def supported_models(self) -> list[str]:
+        return ["fake-clarify.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
+
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            if result.get("clarify"):
+                text = "Where should we deliver? Please share the location."
+            else:
+                total = float(result["draft_value_inr"])
+                text = f"Order confirmed. Estimated total: {total:,.0f} INR."
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text=text)],
+                )
+            )
+            return
+
+        if not self._saw_partial:
+            self._saw_partial = True
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [
+                        {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                    ],
+                    "confidence": 0.9,
+                    "source_language": "hi",
+                    "source_channel": "whatsapp",
+                },
+            )
+        else:
+            call = types.FunctionCall(
+                name="process_order",
+                args={
+                    "items": [
+                        {"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}
+                    ],
+                    "delivery_location": "Peenya Industrial Area",
+                    "confidence": 0.9,
+                    "source_language": "hi",
+                    "source_channel": "whatsapp",
+                },
+            )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
