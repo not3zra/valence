@@ -23,6 +23,7 @@ from google.genai import types
 from .config import settings
 from .core import OrderProcessingCore
 from .core_tool import build_process_order_tool
+from .media import MediaObject, media_to_inline_part
 
 AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
 distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
@@ -41,6 +42,11 @@ customer can supply — never confirm it and never say it is under approval. \
 Ask, in the customer's own language, for exactly the missing_fields listed \
 (usually items or delivery_location) so they can fill the gap; a partial order \
 stays open in the session and their reply resumes it. \
+For a photo of a handwritten order sheet (source_channel "photo"), read the \
+image into the same structured order as text. Never guess an order you cannot \
+read: if the handwriting is illegible, call process_order with low confidence \
+and no items so it escalates to a human instead of shipping a fabricated \
+order. \
 Keep replies short and natural."""
 
 
@@ -100,14 +106,25 @@ def _event_text(event) -> str:
     return "".join(part.text or "" for part in event.content.parts if part.text)
 
 
-def run_turn(runner: Runner, *, sender_id: str, message: str) -> str:
+def run_turn(
+    runner: Runner,
+    *,
+    sender_id: str,
+    message: str,
+    media: MediaObject | None = None,
+) -> str:
     """Run one agent turn for ``sender_id`` and return the final reply text.
 
     The session id is the sender id, so consecutive messages from the same
     sender continue the same durable session (ADR-0001: one session keyed per
-    WhatsApp sender).
+    WhatsApp sender). ``media``, when present, is attached as an inline image
+    part so a photo of a handwritten order is understood in the same Gemini
+    call as text (issue #11) — one agent, a third channel.
     """
-    content = types.Content(role="user", parts=[types.Part(text=message)])
+    parts = [types.Part(text=message)]
+    if media is not None:
+        parts.append(media_to_inline_part(media))
+    content = types.Content(role="user", parts=parts)
     for event in runner.run(
         user_id=sender_id,
         session_id=sender_id,
