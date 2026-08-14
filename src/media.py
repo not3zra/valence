@@ -1,11 +1,12 @@
-"""The media boundary for photo intake (issue #11).
+"""The media boundary for channel media (photos and call recordings).
 
-Twilio WhatsApp media URLs are not public: retrieving the photo requires HTTP
-basic auth (the Account SID as username and the Auth Token as password). That
-fetch lives behind the ``MediaFetcher`` seam, returning a neutral
-``MediaObject`` (bytes + mime type) so the webhook and agent never touch the
-provider. A failed or unauthenticated fetch returns ``None`` and the webhook
-falls back to handling whatever text the message carried.
+Twilio WhatsApp media and Voice recordings are not public: retrieving them
+requires HTTP basic auth (the Account SID as username and the Auth Token as
+password). That fetch lives behind the ``MediaFetcher`` seam, returning a
+neutral ``MediaObject`` (bytes + mime type) so the webhook and agent never
+touch the provider. A failed or unauthenticated fetch returns ``None``; the
+photo webhook then falls back to handling whatever text the message carried,
+and the voice webhook acknowledges the callback so Twilio can retry.
 """
 
 from __future__ import annotations

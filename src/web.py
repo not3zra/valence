@@ -2,8 +2,9 @@
 
 Serves the health page, a liveness probe for Cloud Run, the round-trip probe
 that exercises the deployed agent (message in -> reply out), and the Twilio
-WhatsApp webhook that receives inbound orders (ticket 3, #4). The
-approver-facing review web view is ticket 5 (#6).
+webhooks that receive inbound orders: the WhatsApp "When a message comes in"
+callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
+#10). The approver-facing review web view is ticket 5 (#6).
 """
 
 from __future__ import annotations
@@ -16,7 +17,10 @@ from pydantic import BaseModel, Field
 from .agent import build_runner, run_turn
 from .config import settings
 from .media import MediaFetcher, TwilioMediaFetcher
-from .twilio_whatsapp import TwilioWhatsAppParser, verify_twilio_signature
+from .twilio import verify_twilio_signature
+from .twilio_voice import TwilioVoiceCallbackParser
+from .twilio_whatsapp import TwilioWhatsAppParser
+from .voice import VoiceCallbackParser
 from .whatsapp import MockWhatsAppSender, WhatsAppSender, WhatsAppWebhookParser
 
 
@@ -29,6 +33,15 @@ def _twiml(status_code: int = 200) -> Response:
         media_type="application/xml",
         status_code=status_code,
     )
+
+
+# The voice webhook has no customer text to read, only the recording. This
+# nudge tells the model the inline audio is a call in which an order was placed
+# (issue #10); the agent instruction (src.agent) drives how it is understood.
+VOICE_NUDGE = (
+    "This audio is a recording of a phone call in which the caller placed an "
+    "order. Understand the recording and commit it as a structured order."
+)
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -46,6 +59,8 @@ INDEX_HTML = """<!doctype html>
     <li>Health: <a href="/health">/health</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
+    <li>Twilio Voice recording-status callback (recorded order calls):
+    <code>POST /api/voice/callback</code></li>
   </ul>
 </body>
 </html>
@@ -77,6 +92,7 @@ def create_app(
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
     twilio_auth_token: str | None = None,
+    voice_parser: VoiceCallbackParser | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -85,10 +101,12 @@ def create_app(
     (`src.main`) wires the real Gemini agent + Firestore session service.
 
     ``whatsapp_sender`` defaults to ``MockWhatsAppSender`` (the demo path,
-    issue #4 design note); ``webhook_parser`` defaults to the Twilio adapter;
-    ``media_fetcher`` defaults to ``TwilioMediaFetcher`` (the photo intake
-    path, issue #11); ``twilio_auth_token`` defaults to the configured value
-    and is what the webhook uses to verify the ``X-Twilio-Signature`` header.
+    issue #4 design note); ``webhook_parser`` defaults to the Twilio WhatsApp
+    adapter; ``voice_parser`` defaults to the Twilio Voice recording-status
+    adapter (issue #10); ``media_fetcher`` defaults to ``TwilioMediaFetcher``
+    (the photo/recording retrieval path); ``twilio_auth_token`` defaults to the
+    configured value and is what both webhooks use to verify the
+    ``X-Twilio-Signature`` header.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -101,6 +119,7 @@ def create_app(
     fetcher = media_fetcher or TwilioMediaFetcher(
         settings.twilio_account_sid, auth_token
     )
+    callback_parser = voice_parser or TwilioVoiceCallbackParser()
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
 
@@ -156,6 +175,47 @@ def create_app(
         )
         if reply:
             sender.send(message.sender, reply)
+        return _twiml()
+
+    @app.post("/api/voice/callback")
+    async def voice_callback(request: Request) -> Response:
+        """Twilio Voice's recording-status callback (ticket 9, #10).
+
+        When a call recording completes, Twilio POSTs the callback carrying the
+        recording's URL. This endpoint verifies the ``X-Twilio-Signature``
+        header (the same HMAC-SHA1 algorithm the WhatsApp webhook uses), fetches
+        the recording from the Twilio URL through the ``MediaFetcher`` seam
+        (basic auth, allowlisted host, no redirects, size-capped — the same
+        guards behind photo intake, issue #11), and passes it to the same ADK
+        agent as inline audio, understood through the same Gemini call as text.
+        The agent commits ``source_channel="voice"``, so a voice order with a
+        missing field is escalated as flagged — it never waits on a clarifying
+        question (ADR-0004). There is no outbound voice channel in this build,
+        so the agent's reply is not delivered anywhere.
+
+        Only a completed recording is processed. A non-completed callback is
+        acknowledged and ignored. A fetch that fails returns an error status so
+        Twilio retries the recording-status callback rather than losing the
+        order — there is no message text to fall back to on the voice channel.
+        """
+        form: dict[str, str] = {
+            key: str(value) for key, value in (await request.form()).items()
+        }
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not verify_twilio_signature(str(request.url), form, signature, auth_token):
+            return _twiml(status_code=403)
+        recording = callback_parser.parse(form)
+        if recording is None:
+            return _twiml()
+        media = fetcher.fetch(recording.recording_url)
+        if media is None:
+            return Response(status_code=500)
+        run_turn(
+            runner,
+            sender_id=recording.caller,
+            message=VOICE_NUDGE,
+            media=media,
+        )
         return _twiml()
 
     return app

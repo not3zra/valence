@@ -16,7 +16,7 @@ from google.adk.sessions import InMemorySessionService
 
 from src.agent import build_agent
 from src.store import InMemoryOrderStore
-from src.twilio_whatsapp import build_twilio_signature
+from src.twilio import build_twilio_signature
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 

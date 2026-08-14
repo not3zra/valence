@@ -3,18 +3,16 @@ outbound sender seam (issue #4).
 
 Twilio is a boundary adapter behind a seam (per the channel-adapter design note
 on issue #4): the parser turns Twilio's form-encoded ``Body``/``From`` shape
-into a provider-neutral ``InboundMessage``, signature verification lives in the
-adapter, and the outbound side is a ``WhatsAppSender`` interface whose demo
-wiring is ``MockWhatsAppSender`` — a real provider sender is a later swap.
+into a provider-neutral ``InboundMessage``, signature verification is the
+shared ``src.twilio`` algorithm (the same HMAC-SHA1 the Voice callback uses),
+and the outbound side is a ``WhatsAppSender`` interface whose demo wiring is
+``MockWhatsAppSender`` — a real provider sender is a later swap.
 """
 
 from __future__ import annotations
 
-from src.twilio_whatsapp import (
-    TwilioWhatsAppParser,
-    build_twilio_signature,
-    verify_twilio_signature,
-)
+from src.twilio import build_twilio_signature, verify_twilio_signature
+from src.twilio_whatsapp import TwilioWhatsAppParser
 from src.whatsapp import MockWhatsAppSender
 
 # --- Inbound parsing ---------------------------------------------------------

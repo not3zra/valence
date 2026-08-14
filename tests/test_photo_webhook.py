@@ -16,24 +16,14 @@ from google.adk.sessions import InMemorySessionService
 from src.agent import build_agent
 from src.media import MediaObject
 from src.store import InMemoryOrderStore
-from src.twilio_whatsapp import build_twilio_signature
+from src.twilio import build_twilio_signature
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 
-from .fakes import PhotoReadingLlm, UnreadablePhotoLlm
+from .fakes import FakeMediaFetcher, PhotoReadingLlm, UnreadablePhotoLlm
 
 WEBHOOK_URL = "/api/whatsapp/webhook"
 AUTH_TOKEN = "test-auth-token"
-
-
-class FakeMediaFetcher:
-    def __init__(self, media: MediaObject | None = None) -> None:
-        self.media = media
-        self.requested_urls: list[str] = []
-
-    def fetch(self, url: str) -> MediaObject | None:
-        self.requested_urls.append(url)
-        return self.media
 
 
 def _sign(form: dict[str, str]) -> str:
