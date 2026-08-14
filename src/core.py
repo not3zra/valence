@@ -5,8 +5,10 @@ Given a structured order the core decides, under the graduated approval policy
 reasons; computes the draft estimate from the two-tier money model (driving the
 value cap and anomaly checks only — never authoritative); walks the linear
 status machine; and appends every decision to the ``order_events`` audit trail.
-The thresholds come from the store's config, never hardcoded. Firestore lives
-behind the ``OrderStore`` seam and is faked in tests.
+A repeat of the same order from the same sender inside the configured window
+(issue #12) short-circuits to a ``duplicate`` decision — no new order, no
+escalation. The thresholds come from the store's config, never hardcoded.
+Firestore lives behind the ``OrderStore`` seam and is faked in tests.
 """
 
 from __future__ import annotations
@@ -15,12 +17,14 @@ import difflib
 import math
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from . import seed_data
 from .money import estimate_rate, quantity_is_anomalous, rate_is_anomalous
 from .orders import (
     EVENT_ORDER_AUTO_APPROVED,
     EVENT_ORDER_CREATED,
+    EVENT_ORDER_DUPLICATE,
     EVENT_ORDER_ESCALATED,
     EscalationReason,
     Order,
@@ -29,7 +33,6 @@ from .orders import (
     OrderItem,
     OrderStatus,
     transition,
-    utcnow,
 )
 from .store import OrderStore
 
@@ -41,6 +44,7 @@ REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
     "min_confidence",
     "quantity_deviation_above_pct",
     "rate_deviation_pct",
+    "dedup_window_minutes",
 )
 
 
@@ -139,18 +143,53 @@ def _new_order_id() -> str:
     return f"ord_{uuid.uuid4().hex[:12]}"
 
 
+def _iso_to_dt(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def _first_item_matches(
+    candidate: OrderItem, prior: OrderItem, products: list[seed_data.Product]
+) -> bool:
+    """True when two orders share a first line: same product + quantity.
+
+    Cataloged text resolves through the alias table so "Sulphuric Acid" and
+    "  sulfuric  acid  " are the same first item (ADR-0003); quantity must
+    match exactly — a changed quantity is a fresh order, not a re-send. An
+    uncataloged first line is matched by its normalized text, so re-sending
+    the same unknown item still dedups.
+    """
+    if candidate.quantity != prior.quantity:
+        return False
+    candidate_product = resolve_product(candidate.product, products)
+    prior_product = resolve_product(prior.product, products)
+    if candidate_product is None and prior_product is None:
+        needle = _normalize(candidate.product)
+        return bool(needle) and needle == _normalize(prior.product)
+    if candidate_product is None or prior_product is None:
+        return False
+    return candidate_product.id == prior_product.id
+
+
 class OrderProcessingCore:
     def __init__(self, store: OrderStore) -> None:
         self._store = store
 
-    async def process(self, order: Order) -> OrderDecision:
+    async def process(self, order: Order, *, now: str | None = None) -> OrderDecision:
         """Commit one structured order and return its decision.
 
         Resolves the customer (phone-exact only), each item's product, and the
         delivery location; collects every escalation reason; computes the draft
         estimate; walks the state machine; persists the order; and appends the
         decision to the audit trail. The thresholds come from the store config;
-        a config missing any required key fails loudly (ADR-0002).
+        a config missing any required key fails loudly (ADR-0002). ``now`` pins
+        the intake timestamp for deterministic tests; it defaults to the wall
+        clock.
+
+        A repeat of the same order — same sender, matching first item and
+        quantity, inside ``dedup_window_minutes`` — is answered with a
+        ``duplicate`` decision (issue #12): no order is persisted and no
+        escalation reasons are collected, so the agent replies "already
+        received" instead of confirming or escalating.
         """
         config = await self._store.get_config()
         missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
@@ -158,8 +197,42 @@ class OrderProcessingCore:
             raise ConfigurationError(
                 "store config missing required key(s): " + ", ".join(missing)
             )
-        customers = await self._store.get_customers()
         products = await self._store.get_products()
+        if now is None:
+            now_dt = datetime.now(timezone.utc)
+        else:
+            now_dt = _iso_to_dt(now)
+        intake_time = now_dt.isoformat()
+        order.created_at = intake_time
+        order.updated_at = intake_time
+
+        window_minutes = float(config["dedup_window_minutes"])
+        duplicate_of = await self._find_duplicate(
+            order, products, now_dt, window_minutes
+        )
+        if duplicate_of is not None:
+            prior_id = duplicate_of.order_id or _new_order_id()
+            await self._store.append_order_event(
+                OrderEvent(
+                    order_id=prior_id,
+                    event_type=EVENT_ORDER_DUPLICATE,
+                    payload={"order_id": prior_id, "phone": order.phone},
+                )
+            )
+            return OrderDecision(
+                order_id=order.order_id or _new_order_id(),
+                status=OrderStatus.PENDING_REVIEW.value,
+                approved=False,
+                escalation_reasons=[],
+                draft_value_inr=0.0,
+                customer_id=None,
+                delivery_location_id=None,
+                items=[],
+                duplicate=True,
+                duplicate_of_order_id=prior_id,
+            )
+
+        customers = await self._store.get_customers()
         locations = await self._store.get_delivery_locations()
 
         reasons: set[str] = set()
@@ -236,7 +309,6 @@ class OrderProcessingCore:
             if approved
             else OrderStatus.PENDING_REVIEW
         )
-        order.updated_at = utcnow()
 
         await self._store.create_order(order)
         await self._store.append_order_event(
@@ -275,6 +347,42 @@ class OrderProcessingCore:
             delivery_location_id=order.delivery_location_id,
             items=[_resolved_item(line) for line in resolved],
         )
+
+    async def _find_duplicate(
+        self,
+        order: Order,
+        products: list[seed_data.Product],
+        now_dt: datetime,
+        window_minutes: float,
+    ) -> Order | None:
+        """Return the prior order this one duplicates, if any (issue #12).
+
+        A prior order from the same sender whose first item and quantity match
+        and whose age is strictly inside the configured window makes the new
+        order a duplicate. Only the sender's own orders count, so one customer
+        re-sending never affects another.
+        """
+        if not order.items:
+            return None
+        prior = await self._store.list_orders(phone=order.phone)
+        if not prior:
+            return None
+        first_line = order.items[0]
+        best: Order | None = None
+        best_at: datetime | None = None
+        for earlier in prior:
+            if not earlier.items:
+                continue
+            try:
+                earlier_at = _iso_to_dt(earlier.created_at)
+            except ValueError:
+                continue
+            if (now_dt - earlier_at).total_seconds() >= window_minutes * 60:
+                continue
+            if _first_item_matches(first_line, earlier.items[0], products):
+                if best is None or (best_at is not None and earlier_at > best_at):
+                    best, best_at = earlier, earlier_at
+        return best
 
 
 def _resolved_item(line: ResolvedLine) -> dict:

@@ -85,7 +85,11 @@ class ConfirmingToolCallingLlm(BaseLlm):
     flag) and composes a confirmation that reflects it — the behavior the agent
     instruction pins for the WhatsApp channel (issue #4: the confirmation reply
     includes the estimated total from draft pricing; escalated orders are told
-    they are under approval).
+    they are under approval; a ``duplicate`` decision is answered with an
+    "already received" message, issue #12). Turn-aware: it only answers a tool
+    result that arrived after the most recent inbound text, so a repeated
+    message in the same durable session triggers a fresh tool call instead of
+    re-answering the previous turn's result.
     """
 
     model: str = "fake-confirm"
@@ -96,23 +100,30 @@ class ConfirmingToolCallingLlm(BaseLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        draft_value_inr: float | None = None
-        approved: bool | None = None
-        for content in llm_request.contents:
-            for part in content.parts:
-                fr = part.function_response
-                if fr and isinstance(fr.response, dict):
-                    if "draft_value_inr" in fr.response:
-                        draft_value_inr = float(fr.response["draft_value_inr"])
-                    if "approved" in fr.response:
-                        approved = bool(fr.response["approved"])
+        contents = llm_request.contents
+        last_inbound = -1
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and not any(
+                part.function_response for part in content.parts
+            ):
+                last_inbound = i
+            elif content.role == "user":
+                last_result = i
 
-        if draft_value_inr is not None:
-            total = f"{draft_value_inr:,.0f} INR."
-            if approved is False:
-                text = f"Your order is under approval. Estimated total: {total}"
+        if last_result > last_inbound:
+            result = contents[last_result].parts[0].function_response.response
+            duplicate = bool(result.get("duplicate"))
+            draft_value_inr = float(result["draft_value_inr"])
+            approved = bool(result["approved"])
+
+            if duplicate:
+                text = "Your order has already been received — no need to resend."
+            elif approved:
+                text = f"Order confirmed. Estimated total: {draft_value_inr:,.0f} INR."
             else:
-                text = f"Order confirmed. Estimated total: {total}"
+                total = f"{draft_value_inr:,.0f} INR."
+                text = f"Your order is under approval. Estimated total: {total}"
             yield LlmResponse(
                 content=types.Content(
                     role="model",
