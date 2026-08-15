@@ -39,9 +39,11 @@ Remediated:
   (`WEB_PASSCODE`, no public seed); the session cookie is an HMAC-SHA256 digest
   keyed by `WEB_PASSCODE_SALT`, unforgeable without the salt; cookie hardened
   with `secure` + `max_age`; state-changing `/review` POSTs reject cross-origin
-  requests (Origin must match the service's base URL). Remaining judgment calls:
-  the local demo passcode is still `valence-demo` behind `run_local.sh` (clearly
-  local-only), cookie rotation/expiry-on-restart not implemented.
+  requests (Origin hostname vs request Host header — the Host is set by the LB
+  to the public host, so Cloud Run's proxy scheme skew can't false-reject).
+  Remaining judgment calls: the local demo passcode is still `valence-demo` behind
+  `run_local.sh` (clearly local-only), cookie rotation/expiry-on-restart not
+  implemented, web decisions still log actor `"web"` with no per-user identity.
 - **#28 — Unauthenticated `/api/roundtrip` probe**: the probe now requires a
   dedicated `ROUNDTRIP_TOKEN` Bearer token and returns 503 when none is
   configured — never open. Decoupled from `TWILIO_AUTH_TOKEN`.

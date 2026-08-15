@@ -184,12 +184,15 @@ def create_app(
         # arbitrary identity (including an allowlisted approver, issue #7,
         # security #28). The webhook path is the real sender-verified channel.
         expected = f"Bearer {probe_token}"
-        if not probe_token or not hmac.compare_digest(
+        if not probe_token:
+            raise HTTPException(
+                status_code=503, detail="roundtrip probe is not configured"
+            )
+        if not hmac.compare_digest(
             request.headers.get("Authorization", ""), expected
         ):
             raise HTTPException(
-                status_code=503 if not probe_token else 401,
-                detail="roundtrip probe is not configured",
+                status_code=401, detail="invalid bearer token"
             )
         reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
