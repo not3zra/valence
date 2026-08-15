@@ -173,6 +173,36 @@ async def test_edit_sets_and_clears_gst_override(core, store):
     assert [e.event_type for e in store.events].count("order_edited") == 2
 
 
+async def test_edit_resolve_customer_overrides_phone_exact_match(core, store):
+    core = OrderProcessingCore(store)
+    decision = await core.process(
+        Order(
+            phone="+919812345001",  # phone-exact c_chemfab
+            customer="ChemFab Industries",
+            items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
+            delivery_location=None,
+            confidence=0.9,
+            source_channel="phone",
+        )
+    )
+    order_id = decision.order_id
+    assert store.orders[-1].customer_id == "c_chemfab"
+
+    updated = await core.edit_order(
+        order_id,
+        changes={
+            "delivery_location": "Whitefield",
+            "customer_id": "c_maruthi",
+        },
+    )
+
+    # The approver's explicit mapping is the exception path (ADR-0002): it wins
+    # over the phone-exact match and the customer name follows it.
+    assert updated.customer_id == "c_maruthi"
+    assert updated.customer == "Maruthi Coatings"
+    assert updated.escalation_reasons == []
+
+
 async def test_edit_invalid_gst_override_errors(core, store):
     order_id = await _escalated_order(store)
     with pytest.raises(ApprovalError, match="GST"):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import time
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -429,7 +430,12 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
         form = await request.form()
         try:
             await core.edit_order(order_id, changes=_parse_edit_form(form))
-        except (ApprovalError, ConfigurationError, ValueError, TypeError):
+        except (ApprovalError, ConfigurationError) as exc:
+            return RedirectResponse(
+                f"/review/orders/{order_id}?message={quote(str(exc))}",
+                status_code=303,
+            )
+        except (ValueError, TypeError):
             return RedirectResponse(
                 f"/review/orders/{order_id}?message=Could not save changes.",
                 status_code=303,

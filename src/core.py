@@ -118,6 +118,13 @@ def _product_by_id(
     return None
 
 
+def _record_change(
+    diff: dict[str, object], field: str, old: object, new: object
+) -> None:
+    """Record a before/after change into the ``order_edited`` event payload."""
+    diff[field] = {"from": old, "to": new}
+
+
 def _normalize(text: str) -> str:
     return " ".join(text.strip().lower().split())
 
@@ -409,10 +416,11 @@ class OrderProcessingCore:
         Shared by ``process`` (fresh intake) and ``edit_order`` (human
         correction, issue #6), so a web edit re-runs exactly the policy the
         agent ran at intake. A human-resolved ``customer_id`` — set only by the
-        web edit path, never at intake — is honored as verified identity, so an
-        approver explicitly assigning a catalog customer to an unknown number
-        clears the unknown/unverified reasons (ADR-0002: the approver is the
-        verification).
+        web edit path, never at intake — is authoritative identity: an
+        approver explicitly assigning a catalog customer to an order clears
+        the unknown/unverified reasons and wins over a phone-exact match
+        (ADR-0002: the approver is the verification, and their explicit
+        mapping is the exception path).
         """
         if products is None:
             products = await self._store.get_products()
@@ -429,9 +437,13 @@ class OrderProcessingCore:
         if not math.isfinite(order.confidence) or not 0 <= order.confidence <= 1:
             reasons.add(EscalationReason.LOW_CONFIDENCE.value)
 
-        customer = resolve_customer(order.phone, customers)
-        if customer is None and order.customer_id:
-            customer = _customer_by_id(order.customer_id, customers)
+        customer = (
+            _customer_by_id(order.customer_id, customers)
+            if order.customer_id is not None
+            else None
+        )
+        if customer is None:
+            customer = resolve_customer(order.phone, customers)
         if customer is None:
             if order.customer:
                 reasons.add(EscalationReason.UNVERIFIED_NUMBER.value)
@@ -545,7 +557,7 @@ class OrderProcessingCore:
                 None if customer is None else str(customer).strip() or None
             )
             if new_customer != order.customer:
-                diff["customer"] = {"from": order.customer, "to": new_customer}
+                _record_change(diff, "customer", order.customer, new_customer)
                 order.customer = new_customer
 
         delivery = changes.get("delivery_location", _UNSET)
@@ -554,20 +566,21 @@ class OrderProcessingCore:
                 None if delivery is None else str(delivery).strip() or None
             )
             if new_delivery != order.delivery_location:
-                diff["delivery_location"] = {
-                    "from": order.delivery_location,
-                    "to": new_delivery,
-                }
+                _record_change(
+                    diff, "delivery_location", order.delivery_location, new_delivery
+                )
                 order.delivery_location = new_delivery
 
         if "items" in changes:
             items = [OrderItem.from_dict(item) for item in changes["items"]]
             items = [item for item in items if item.product.strip()]
             if items != order.items:
-                diff["items"] = {
-                    "from": [asdict(item) for item in order.items],
-                    "to": [asdict(item) for item in items],
-                }
+                _record_change(
+                    diff,
+                    "items",
+                    [asdict(item) for item in order.items],
+                    [asdict(item) for item in items],
+                )
                 order.items = items
 
         gst = changes.get("gst_override_pct", _UNSET)
@@ -580,10 +593,9 @@ class OrderProcessingCore:
                     "GST override must be a percentage between 0 and 100"
                 )
             if new_gst != order.gst_override_pct:
-                diff["gst_override_pct"] = {
-                    "from": order.gst_override_pct,
-                    "to": new_gst,
-                }
+                _record_change(
+                    diff, "gst_override_pct", order.gst_override_pct, new_gst
+                )
                 order.gst_override_pct = new_gst
 
         customers = await self._store.get_customers()
@@ -595,10 +607,9 @@ class OrderProcessingCore:
                 if resolved_customer is None:
                     raise ApprovalError(f"unknown customer id {customer_id}")
                 if order.customer_id != resolved_customer.id:
-                    diff["customer"] = {
-                        "from": order.customer,
-                        "to": resolved_customer.name,
-                    }
+                    _record_change(
+                        diff, "customer", order.customer, resolved_customer.name
+                    )
                     diff["resolved_customer_id"] = resolved_customer.id
                     order.customer_id = resolved_customer.id
                     order.customer = resolved_customer.name
@@ -650,7 +661,7 @@ class OrderProcessingCore:
             # not a move of the linear state machine (rejected stays terminal
             # there); it makes the order decidable again after the fix.
             order.status = OrderStatus.PENDING_REVIEW
-            diff["status"] = {"from": "rejected", "to": "pending_review"}
+            _record_change(diff, "status", "rejected", "pending_review")
         order.updated_at = utcnow()
 
         await self._store.update_order(order)
