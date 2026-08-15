@@ -16,16 +16,19 @@ from __future__ import annotations
 import difflib
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from . import seed_data
 from .money import estimate_rate, quantity_is_anomalous, rate_is_anomalous
 from .orders import (
+    EVENT_ORDER_APPROVED,
     EVENT_ORDER_AUTO_APPROVED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_DUPLICATE,
+    EVENT_ORDER_EDITED,
     EVENT_ORDER_ESCALATED,
+    EVENT_ORDER_REJECTED,
     EscalationReason,
     Order,
     OrderDecision,
@@ -33,6 +36,7 @@ from .orders import (
     OrderItem,
     OrderStatus,
     transition,
+    utcnow,
 )
 from .store import OrderStore
 
@@ -52,6 +56,10 @@ REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
 
 class ConfigurationError(RuntimeError):
     """Raised when the store config is missing a key the engine requires."""
+
+
+class ApprovalError(RuntimeError):
+    """Raised when a human approval/rejection cannot be applied to an order."""
 
 
 # After the exact alias table misses (ADR-0003), the normalized product text is
@@ -75,6 +83,46 @@ CANONICAL_REASON_ORDER: list[EscalationReason] = [
 class ResolvedLine:
     item: OrderItem
     product: seed_data.Product | None
+
+
+@dataclass(frozen=True)
+class _Evaluation:
+    """The graduated-policy outcome for an order (shared by process/edit)."""
+
+    escalation_reasons: list[str]
+    draft_total: float
+    customer: seed_data.Customer | None
+    location: seed_data.DeliveryLocation | None
+    resolved: list[ResolvedLine]
+
+
+# Sentinel distinguishing "key absent" from "explicitly cleared" in edit_order.
+_UNSET = object()
+
+
+def _customer_by_id(
+    customer_id: str, customers: list[seed_data.Customer]
+) -> seed_data.Customer | None:
+    for customer in customers:
+        if customer.id == customer_id:
+            return customer
+    return None
+
+
+def _product_by_id(
+    product_id: str, products: list[seed_data.Product]
+) -> seed_data.Product | None:
+    for product in products:
+        if product.id == product_id:
+            return product
+    return None
+
+
+def _record_change(
+    diff: dict[str, object], field: str, old: object, new: object
+) -> None:
+    """Record a before/after change into the ``order_edited`` event payload."""
+    diff[field] = {"from": old, "to": new}
 
 
 def _normalize(text: str) -> str:
@@ -264,70 +312,19 @@ class OrderProcessingCore:
         customers = await self._store.get_customers()
         locations = await self._store.get_delivery_locations()
 
-        reasons: set[str] = set()
-
-        if not order.phone or not order.items:
-            reasons.add(EscalationReason.MISSING_FIELD.value)
-
-        if not math.isfinite(order.confidence) or not 0 <= order.confidence <= 1:
-            reasons.add(EscalationReason.LOW_CONFIDENCE.value)
-
-        customer = resolve_customer(order.phone, customers)
-        if customer is None:
-            if order.customer:
-                reasons.add(EscalationReason.UNVERIFIED_NUMBER.value)
-            else:
-                reasons.add(EscalationReason.UNKNOWN_CUSTOMER.value)
-
-        resolved: list[ResolvedLine] = []
-        for item in order.items:
-            product = resolve_product(item.product, products)
-            missing_quantity = not math.isfinite(item.quantity) or item.quantity <= 0
-            if not item.product or missing_quantity:
-                reasons.add(EscalationReason.MISSING_FIELD.value)
-            if product is None:
-                reasons.add(EscalationReason.UNCATALOGED_PRODUCT.value)
-            resolved.append(ResolvedLine(item=item, product=product))
-
-        if not order.delivery_location:
-            reasons.add(EscalationReason.MISSING_FIELD.value)
-
-        draft_total = 0.0
-        for line in resolved:
-            if line.product is None:
-                continue
-            agreed = customer.agreed_rates.get(line.product.id) if customer else None
-            rate = estimate_rate(
-                agreed, line.product.tier_price, line.product.current_price
-            )
-            draft_total += rate * line.item.quantity
-
-        value_cap = float(config["value_cap_inr"])
-        if draft_total > value_cap:
-            reasons.add(EscalationReason.OVER_VALUE_CAP.value)
-
-        min_confidence = float(config["min_confidence"])
-        if order.confidence < min_confidence:
-            reasons.add(EscalationReason.LOW_CONFIDENCE.value)
-
-        qty_deviation = float(config["quantity_deviation_above_pct"])
-        rate_deviation = float(config["rate_deviation_pct"])
-        for line in resolved:
-            if customer is None or line.product is None:
-                continue
-            max_quantity = customer.max_quantities.get(line.product.id)
-            if quantity_is_anomalous(line.item.quantity, max_quantity, qty_deviation):
-                reasons.add(EscalationReason.ANOMALY.value)
-            agreed = customer.agreed_rates.get(line.product.id)
-            if rate_is_anomalous(line.item.rate_inr, agreed, rate_deviation):
-                reasons.add(EscalationReason.ANOMALY.value)
-
-        escalation_reasons: list[str] = [
-            reason.value for reason in CANONICAL_REASON_ORDER if reason.value in reasons
-        ]
+        evaluation = await self._evaluate(
+            order,
+            config=config,
+            products=products,
+            customers=customers,
+            locations=locations,
+        )
+        escalation_reasons = evaluation.escalation_reasons
         approved = not escalation_reasons
-
-        location = resolve_delivery_location(order.delivery_location, locations)
+        customer = evaluation.customer
+        location = evaluation.location
+        resolved = evaluation.resolved
+        draft_total = evaluation.draft_total
 
         missing_fields = _missing_fields(order)
         # Clarify only ever happens over WhatsApp (ADR-0004); a voice order is
@@ -405,6 +402,282 @@ class OrderProcessingCore:
             items=[_resolved_item(line) for line in resolved],
         )
 
+    async def _evaluate(
+        self,
+        order: Order,
+        *,
+        config: dict,
+        products: list[seed_data.Product] | None = None,
+        customers: list[seed_data.Customer] | None = None,
+        locations: list[seed_data.DeliveryLocation] | None = None,
+    ) -> _Evaluation:
+        """Recompute the graduated-policy outcome for an order.
+
+        Shared by ``process`` (fresh intake) and ``edit_order`` (human
+        correction, issue #6), so a web edit re-runs exactly the policy the
+        agent ran at intake. A human-resolved ``customer_id`` — set only by the
+        web edit path, never at intake — is authoritative identity: an
+        approver explicitly assigning a catalog customer to an order clears
+        the unknown/unverified reasons and wins over a phone-exact match
+        (ADR-0002: the approver is the verification, and their explicit
+        mapping is the exception path).
+        """
+        if products is None:
+            products = await self._store.get_products()
+        if customers is None:
+            customers = await self._store.get_customers()
+        if locations is None:
+            locations = await self._store.get_delivery_locations()
+
+        reasons: set[str] = set()
+
+        if not order.phone or not order.items:
+            reasons.add(EscalationReason.MISSING_FIELD.value)
+
+        if not math.isfinite(order.confidence) or not 0 <= order.confidence <= 1:
+            reasons.add(EscalationReason.LOW_CONFIDENCE.value)
+
+        customer = (
+            _customer_by_id(order.customer_id, customers)
+            if order.customer_id is not None
+            else None
+        )
+        if customer is None:
+            customer = resolve_customer(order.phone, customers)
+        if customer is None:
+            if order.customer:
+                reasons.add(EscalationReason.UNVERIFIED_NUMBER.value)
+            else:
+                reasons.add(EscalationReason.UNKNOWN_CUSTOMER.value)
+
+        resolved: list[ResolvedLine] = []
+        for item in order.items:
+            product = resolve_product(item.product, products)
+            missing_quantity = not math.isfinite(item.quantity) or item.quantity <= 0
+            if not item.product or missing_quantity:
+                reasons.add(EscalationReason.MISSING_FIELD.value)
+            if product is None:
+                reasons.add(EscalationReason.UNCATALOGED_PRODUCT.value)
+            resolved.append(ResolvedLine(item=item, product=product))
+
+        if not order.delivery_location:
+            reasons.add(EscalationReason.MISSING_FIELD.value)
+
+        draft_total = 0.0
+        for line in resolved:
+            if line.product is None:
+                continue
+            agreed = customer.agreed_rates.get(line.product.id) if customer else None
+            rate = estimate_rate(
+                agreed, line.product.tier_price, line.product.current_price
+            )
+            draft_total += rate * line.item.quantity
+
+        value_cap = float(config["value_cap_inr"])
+        if draft_total > value_cap:
+            reasons.add(EscalationReason.OVER_VALUE_CAP.value)
+
+        min_confidence = float(config["min_confidence"])
+        if order.confidence < min_confidence:
+            reasons.add(EscalationReason.LOW_CONFIDENCE.value)
+
+        qty_deviation = float(config["quantity_deviation_above_pct"])
+        rate_deviation = float(config["rate_deviation_pct"])
+        for line in resolved:
+            if customer is None or line.product is None:
+                continue
+            max_quantity = customer.max_quantities.get(line.product.id)
+            if quantity_is_anomalous(line.item.quantity, max_quantity, qty_deviation):
+                reasons.add(EscalationReason.ANOMALY.value)
+            agreed = customer.agreed_rates.get(line.product.id)
+            if rate_is_anomalous(line.item.rate_inr, agreed, rate_deviation):
+                reasons.add(EscalationReason.ANOMALY.value)
+
+        escalation_reasons: list[str] = [
+            reason.value for reason in CANONICAL_REASON_ORDER if reason.value in reasons
+        ]
+        location = resolve_delivery_location(order.delivery_location, locations)
+        return _Evaluation(
+            escalation_reasons=escalation_reasons,
+            draft_total=draft_total,
+            customer=customer,
+            location=location,
+            resolved=resolved,
+        )
+
+    async def edit_order(self, order_id: str, *, changes: dict) -> Order:
+        """Apply an approver's corrections to an order (issue #6, follow-up).
+
+        The review web view's edit actions go through this same Order
+        Processing Core the agent and WhatsApp decisions use, so corrections
+        stay in sync and land on the shared audit trail as an ``order_edited``
+        Order Event. Only an escalated (``pending_review``) or rejected order
+        is editable — an approved/dispatched/billed order is locked. An edit to
+        a rejected order reopens it to ``pending_review`` for a fresh decision
+        (issue #7: rejected orders stay visible for correction).
+
+        ``changes`` may carry any of:
+
+        - ``customer`` / ``delivery_location``: replace the field text (an
+          empty string clears it).
+        - ``items``: the full replacement line list.
+        - ``gst_override_pct``: set (a finite 0..100 percentage) or clear
+          (``None``) the per-order GST override the billing path honors
+          (issue #8).
+        - ``customer_id``: explicitly resolve an unknown customer to a seeded
+          catalog customer.
+        - ``product_resolutions``: ``[{"index", "product_id"}]`` mapping
+          uncataloged item lines to catalog products.
+
+        After any change the order is re-run through the same graduated policy,
+        so the approver sees exactly which hard escalation reasons remain; the
+        updated ``draft_value_inr`` reflects the corrected lines. ``changes``
+        applied with nothing different records no event.
+        """
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ApprovalError(f"order {order_id} not found")
+        if order.status not in (OrderStatus.PENDING_REVIEW, OrderStatus.REJECTED):
+            raise ApprovalError(
+                f"order {order_id} is {order.status.value}, not editable"
+            )
+
+        config = await self._store.get_config()
+        missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
+        if missing:
+            raise ConfigurationError(
+                "store config missing required key(s): " + ", ".join(missing)
+            )
+
+        diff: dict[str, object] = {}
+
+        customer = changes.get("customer", _UNSET)
+        if customer is not _UNSET:
+            new_customer = (
+                None if customer is None else str(customer).strip() or None
+            )
+            if new_customer != order.customer:
+                _record_change(diff, "customer", order.customer, new_customer)
+                order.customer = new_customer
+
+        delivery = changes.get("delivery_location", _UNSET)
+        if delivery is not _UNSET:
+            new_delivery = (
+                None if delivery is None else str(delivery).strip() or None
+            )
+            if new_delivery != order.delivery_location:
+                _record_change(
+                    diff, "delivery_location", order.delivery_location, new_delivery
+                )
+                order.delivery_location = new_delivery
+
+        if "items" in changes:
+            items = [OrderItem.from_dict(item) for item in changes["items"]]
+            items = [item for item in items if item.product.strip()]
+            if items != order.items:
+                _record_change(
+                    diff,
+                    "items",
+                    [asdict(item) for item in order.items],
+                    [asdict(item) for item in items],
+                )
+                order.items = items
+
+        gst = changes.get("gst_override_pct", _UNSET)
+        if gst is not _UNSET:
+            new_gst = None if gst is None else float(gst)
+            if new_gst is not None and (
+                not math.isfinite(new_gst) or not 0 <= new_gst <= 100
+            ):
+                raise ApprovalError(
+                    "GST override must be a percentage between 0 and 100"
+                )
+            if new_gst != order.gst_override_pct:
+                _record_change(
+                    diff, "gst_override_pct", order.gst_override_pct, new_gst
+                )
+                order.gst_override_pct = new_gst
+
+        customers = await self._store.get_customers()
+        customer_id = changes.get("customer_id", _UNSET)
+        if customer_id is not _UNSET:
+            customer_id = str(customer_id).strip() or None
+            if customer_id is not None:
+                resolved_customer = _customer_by_id(customer_id, customers)
+                if resolved_customer is None:
+                    raise ApprovalError(f"unknown customer id {customer_id}")
+                if order.customer_id != resolved_customer.id:
+                    _record_change(
+                        diff, "customer", order.customer, resolved_customer.name
+                    )
+                    diff["resolved_customer_id"] = resolved_customer.id
+                    order.customer_id = resolved_customer.id
+                    order.customer = resolved_customer.name
+
+        products = await self._store.get_products()
+        product_resolutions = changes.get("product_resolutions", [])
+        products_resolved: list[dict[str, object]] = []
+        for resolution in product_resolutions:
+            index = int(resolution["index"])
+            if not 0 <= index < len(order.items):
+                raise ApprovalError(f"no item at index {index} to resolve")
+            product = _product_by_id(str(resolution["product_id"]), products)
+            if product is None:
+                raise ApprovalError(
+                    f"unknown product id {resolution['product_id']}"
+                )
+            item = order.items[index]
+            if item.product != product.name:
+                products_resolved.append(
+                    {"index": index, "from": item.product, "to": product.name}
+                )
+                # The stated rate for an unknown product is meaningless once
+                # mapped; the authoritative draft price applies instead.
+                order.items[index] = OrderItem(
+                    product=product.name,
+                    quantity=item.quantity,
+                    unit=item.unit,
+                    rate_inr=None,
+                )
+        if products_resolved:
+            diff["products_resolved"] = products_resolved
+
+        if not diff:
+            return order
+
+        evaluation = await self._evaluate(
+            order, config=config, products=products, customers=customers
+        )
+        order.escalation_reasons = evaluation.escalation_reasons
+        order.draft_value_inr = evaluation.draft_total
+        order.customer_id = evaluation.customer.id if evaluation.customer else None
+        order.delivery_location_id = (
+            evaluation.location.id if evaluation.location else None
+        )
+
+        reopened = order.status is OrderStatus.REJECTED
+        if reopened:
+            # Reopening a rejected order is an explicit approver correction,
+            # not a move of the linear state machine (rejected stays terminal
+            # there); it makes the order decidable again after the fix.
+            order.status = OrderStatus.PENDING_REVIEW
+            _record_change(diff, "status", "rejected", "pending_review")
+        order.updated_at = utcnow()
+
+        await self._store.update_order(order)
+        await self._store.append_order_event(
+            OrderEvent(
+                order_id=order.order_id or order_id,
+                event_type=EVENT_ORDER_EDITED,
+                payload={
+                    "changes": diff,
+                    "status": order.status.value,
+                    "reopened": reopened,
+                },
+            )
+        )
+        return order
+
     async def clarify_policy(self) -> dict:
         """Return the clarify-loop limits read from the store config (ADR-0002).
 
@@ -424,6 +697,80 @@ class OrderProcessingCore:
             "clarify_timeout_hours": float(config["clarify_timeout_hours"]),
             "clarify_turn_cap": int(config["clarify_turn_cap"]),
         }
+
+    async def approve_order(
+        self, order_id: str, *, approved: bool, by_phone: str
+    ) -> OrderDecision:
+        """Apply a human yes/no decision to an escalated order (issue #7).
+
+        Only an allowlisted approver may decide; only an order sitting in
+        ``pending_review`` (an escalation, never a clean order that was already
+        approved) may move. ``approved=True`` transitions to ``approved``,
+        ``approved=False`` to the terminal ``rejected`` status — no artifacts
+        are generated for a rejected order and it stays visible in the web view
+        for correction. Either way the decision is appended to the order's
+        audit trail as an ``order_approved`` / ``order_rejected`` event.
+        """
+        approvers = await self._store.get_approvers()
+        if not any(approver.phone == by_phone for approver in approvers):
+            raise ApprovalError(
+                f"{by_phone} is not an allowlisted approver (issue #7)"
+            )
+        return await self._apply_human_decision(order_id, approved, by_phone)
+
+    async def approve_order_web(
+        self, order_id: str, *, approved: bool
+    ) -> OrderDecision:
+        """Apply a yes/no decision from the review web view (issue #6).
+
+        The web layer is gated by its own demo passcode, so there is no phone to
+        allowlist — the same core decision path as the WhatsApp approval (issue
+        #7) is reused, so web and WhatsApp decisions stay in sync and feed the
+        same audit trail, with the actor recorded as ``web``.
+        """
+        return await self._apply_human_decision(order_id, approved, "web")
+
+    async def _apply_human_decision(
+        self, order_id: str, approved: bool, by: str
+    ) -> OrderDecision:
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ApprovalError(f"order {order_id} not found")
+        if order.status is not OrderStatus.PENDING_REVIEW:
+            raise ApprovalError(
+                f"order {order_id} is {order.status.value}, not awaiting approval"
+            )
+
+        next_status = (
+            OrderStatus.APPROVED if approved else OrderStatus.REJECTED
+        )
+        order.status = transition(OrderStatus.PENDING_REVIEW, next_status)
+        order.updated_at = utcnow()
+        order_id = order.order_id or order_id
+
+        await self._store.update_order(order)
+        event_type = EVENT_ORDER_APPROVED if approved else EVENT_ORDER_REJECTED
+        await self._store.append_order_event(
+            OrderEvent(
+                order_id=order_id,
+                event_type=event_type,
+                payload={
+                    "approved_by": by,
+                    "approved": approved,
+                },
+            )
+        )
+
+        return OrderDecision(
+            order_id=order_id,
+            status=order.status.value,
+            approved=approved,
+            escalation_reasons=[],
+            draft_value_inr=order.draft_value_inr,
+            customer_id=order.customer_id,
+            delivery_location_id=order.delivery_location_id,
+            items=[],
+        )
 
     async def _find_duplicate(
         self,

@@ -16,11 +16,16 @@ from src.store import FirestoreOrderStore, InMemoryOrderStore
 
 
 class _Snapshot:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, reference=None):
         self._data = data
+        self._reference = reference
 
     def to_dict(self) -> dict:
         return self._data
+
+    @property
+    def reference(self):
+        return self._reference
 
 
 class _DocumentReference:
@@ -38,6 +43,9 @@ class _DocumentReference:
     async def set(self, data: dict) -> None:
         self._client.docs[(self._collection, self._doc_id)] = data
 
+    async def delete(self) -> None:
+        self._client.docs.pop((self._collection, self._doc_id), None)
+
 
 class _Query:
     def __init__(self, client, collection: str, field: str, value):
@@ -49,7 +57,11 @@ class _Query:
     async def stream(self):
         for (collection, _doc_id), data in self._client.docs.items():
             if collection == self._collection and data.get(self._field) == self._value:
-                yield _Snapshot(data)
+                yield _Snapshot(
+                    data, reference=_DocumentReference(
+                        self._client, self._collection, _doc_id
+                    )
+                )
 
 
 class _Collection:
@@ -64,9 +76,13 @@ class _Collection:
         return _Query(self._client, self._name, field, value)
 
     async def stream(self):
-        for (collection, _doc_id), data in self._client.docs.items():
+        for (collection, _doc_id), data in list(self._client.docs.items()):
             if collection == self._name:
-                yield _Snapshot(data)
+                yield _Snapshot(
+                    data, reference=_DocumentReference(
+                        self._client, self._name, _doc_id
+                    )
+                )
 
 
 class _Client:
@@ -94,6 +110,11 @@ def fake_client():
         "id": "order_processing",
         **seed_data.CONFIG,
     }
+    for approver in seed_data.APPROVERS:
+        client.docs[("approvers", approver.id)] = {
+            "id": approver.id,
+            **{k: v for k, v in vars(approver).items() if k != "id"},
+        }
     return client
 
 
@@ -195,6 +216,113 @@ async def test_firestore_store_lists_orders_for_a_phone(fake_client):
     assert orders[0].status is OrderStatus.APPROVED
 
 
+async def test_firestore_store_lists_all_orders(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.create_order(
+        Order(
+            order_id="ord_a",
+            phone="+919812345001",
+            items=[],
+            status=OrderStatus.APPROVED,
+        )
+    )
+    await store.create_order(
+        Order(
+            order_id="ord_b",
+            phone="+919812345002",
+            items=[],
+            status=OrderStatus.PENDING_REVIEW,
+        )
+    )
+
+    orders = await store.list_all_orders()
+
+    assert {o.order_id for o in orders} == {"ord_a", "ord_b"}
+
+
+async def test_firestore_store_lists_order_events_for_an_order(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_a1",
+            order_id="ord_a",
+            event_type="order_created",
+            payload={"order_id": "ord_a"},
+            created_at="2026-08-13T12:00:00+00:00",
+        )
+    )
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_b1",
+            order_id="ord_b",
+            event_type="order_created",
+            payload={"order_id": "ord_b"},
+            created_at="2026-08-13T12:01:00+00:00",
+        )
+    )
+
+    events = await store.list_order_events("ord_a")
+
+    assert [e.event_id for e in events] == ["evt_a1"]
+    assert [e.event_type for e in events] == ["order_created"]
+
+
+async def test_in_memory_store_lists_all_orders():
+    store = InMemoryOrderStore()
+    await store.create_order(
+        Order(order_id="ord_a", phone="+919812345001", items=[])
+    )
+    await store.create_order(
+        Order(order_id="ord_b", phone="+919812345002", items=[])
+    )
+
+    orders = await store.list_all_orders()
+
+    assert {o.order_id for o in orders} == {"ord_a", "ord_b"}
+
+
+async def test_in_memory_store_lists_order_events_for_an_order():
+    store = InMemoryOrderStore()
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_a",
+            order_id="ord_a",
+            event_type="order_created",
+            payload={},
+        )
+    )
+    await store.append_order_event(
+        OrderEvent(
+            event_id="evt_b",
+            order_id="ord_b",
+            event_type="order_created",
+            payload={},
+        )
+    )
+
+    events = await store.list_order_events("ord_a")
+
+    assert [e.event_id for e in events] == ["evt_a"]
+
+
+def test_order_event_round_trips_through_from_dict():
+    event = OrderEvent(
+        event_id="evt_1",
+        order_id="ord_a",
+        event_type="order_escalated",
+        payload={"reasons": ["unknown_customer"]},
+        created_at="2026-08-13T12:00:00+00:00",
+    )
+
+    rebuilt = OrderEvent.from_dict(event.to_dict())
+
+    assert rebuilt.event_id == "evt_1"
+    assert rebuilt.order_id == "ord_a"
+    assert rebuilt.event_type == "order_escalated"
+    assert rebuilt.payload == {"reasons": ["unknown_customer"]}
+    assert rebuilt.created_at == "2026-08-13T12:00:00+00:00"
+
+
 def test_in_memory_store_exposes_seed_data():
     store = InMemoryOrderStore()
     assert store.config["value_cap_inr"] == seed_data.CONFIG["value_cap_inr"]
@@ -223,3 +351,74 @@ async def test_in_memory_store_records_orders_and_events():
 
     assert [o.order_id for o in store.orders] == ["ord_1"]
     assert [e.event_type for e in store.events] == ["order_created"]
+
+
+async def test_firestore_store_reads_approvers(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    approvers = await store.get_approvers()
+    assert [a.phone for a in approvers] == [a.phone for a in seed_data.APPROVERS]
+
+
+async def test_firestore_store_gets_an_order_by_id(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.create_order(
+        Order(
+            order_id="ord_get",
+            phone="+919812345001",
+            items=[OrderItem(product="p_sulfuric98", quantity=2000, unit="kg")],
+            status=OrderStatus.PENDING_REVIEW,
+        )
+    )
+
+    order = await store.get_order("ord_get")
+    assert order is not None
+    assert order.order_id == "ord_get"
+    assert order.status is OrderStatus.PENDING_REVIEW
+
+
+async def test_firestore_store_get_missing_order_returns_none(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    assert await store.get_order("ord_missing") is None
+
+
+async def test_firestore_store_updates_order_status(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    order = Order(
+        order_id="ord_upd",
+        phone="+919812345001",
+        items=[OrderItem(product="p_sulfuric98", quantity=2000, unit="kg")],
+        status=OrderStatus.PENDING_REVIEW,
+    )
+    await store.create_order(order)
+    order.status = OrderStatus.APPROVED
+    await store.update_order(order)
+
+    stored = fake_client.docs[("orders", "ord_upd")]
+    assert stored["status"] == OrderStatus.APPROVED.value
+
+
+async def test_firestore_store_pending_approval_round_trip(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    assert await store.get_pending_approval("+919845000001") is None
+
+    await store.set_pending_approval("+919845000001", "ord_approve")
+    assert await store.get_pending_approval("+919845000001") == "ord_approve"
+
+    await store.clear_pending_approval("+919845000001")
+    assert await store.get_pending_approval("+919845000001") is None
+
+
+async def test_firestore_store_clears_pending_for_all_approvers_of_order(
+    fake_client,
+):
+    store = FirestoreOrderStore(fake_client)
+    await store.set_pending_approval("+919845000001", "ord_approve")
+    await store.set_pending_approval("+919845000002", "ord_approve")
+    await store.set_pending_approval("+919845000003", "ord_other")
+
+    await store.clear_pending_approvals_for_order("ord_approve")
+
+    assert await store.get_pending_approval("+919845000001") is None
+    assert await store.get_pending_approval("+919845000002") is None
+    # An unrelated pending order is untouched.
+    assert await store.get_pending_approval("+919845000003") == "ord_other"

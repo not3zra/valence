@@ -9,14 +9,23 @@ callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse
+import hashlib
+import hmac
+from datetime import time
+from urllib.parse import quote, urlparse
+
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from google.adk.agents import Agent
 from pydantic import BaseModel, Field
 
+from . import review
 from .agent import build_runner, run_turn
 from .config import settings
+from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .media import MediaFetcher, TwilioMediaFetcher
+from .orders import Order, OrderStatus
+from .store import OrderStore
 from .twilio import verify_twilio_signature
 from .twilio_voice import TwilioVoiceCallbackParser
 from .twilio_whatsapp import TwilioWhatsAppParser
@@ -57,6 +66,8 @@ INDEX_HTML = """<!doctype html>
   graduated human-checked approval loop.</p>
   <ul>
     <li>Health: <a href="/health">/health</a></li>
+    <li>Review web view (escalation queue):
+    <a href="/review">/review</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
     <li>Twilio Voice recording-status callback (recorded order calls):
@@ -93,6 +104,11 @@ def create_app(
     media_fetcher: MediaFetcher | None = None,
     twilio_auth_token: str | None = None,
     voice_parser: VoiceCallbackParser | None = None,
+    store: OrderStore | None = None,
+    roundtrip_token: str | None = None,
+    web_passcode: str | None = None,
+    web_passcode_salt: str | None = None,
+    web_cookie_secure: bool | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -107,6 +123,14 @@ def create_app(
     (the photo/recording retrieval path); ``twilio_auth_token`` defaults to the
     configured value and is what both webhooks use to verify the
     ``X-Twilio-Signature`` header.
+
+    ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
+    ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
+    closed — an unauthenticated probe could drive the agent under an arbitrary
+    identity including an allowlisted approver (issue #7, security #28).
+    ``web_passcode`` / ``web_passcode_salt`` gate the review web view; the
+    salt makes the session cookie unforgeable without the per-deploy secret
+    (security #27). Both default to their environment settings.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -120,6 +144,24 @@ def create_app(
         settings.twilio_account_sid, auth_token
     )
     callback_parser = voice_parser or TwilioVoiceCallbackParser()
+    probe_token = (
+        roundtrip_token
+        if roundtrip_token is not None
+        else settings.roundtrip_token
+    )
+    passcode = (
+        web_passcode if web_passcode is not None else settings.web_passcode
+    )
+    passcode_salt = (
+        web_passcode_salt
+        if web_passcode_salt is not None
+        else settings.web_passcode_salt
+    )
+    cookie_secure = (
+        web_cookie_secure
+        if web_cookie_secure is not None
+        else settings.web_cookie_secure
+    )
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
 
@@ -135,7 +177,23 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/api/roundtrip", response_model=RoundTripResponse)
-    def roundtrip(payload: RoundTripRequest) -> RoundTripResponse:
+    def roundtrip(request: Request, payload: RoundTripRequest) -> RoundTripResponse:
+        # Debug probe (issue #4): the caller supplies the sender id, so the
+        # probe is gated by a dedicated bearer token that must be configured —
+        # otherwise an unauthenticated caller could drive the agent under an
+        # arbitrary identity (including an allowlisted approver, issue #7,
+        # security #28). The webhook path is the real sender-verified channel.
+        expected = f"Bearer {probe_token}"
+        if not probe_token:
+            raise HTTPException(
+                status_code=503, detail="roundtrip probe is not configured"
+            )
+        if not hmac.compare_digest(
+            request.headers.get("Authorization", ""), expected
+        ):
+            raise HTTPException(
+                status_code=401, detail="invalid bearer token"
+            )
         reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
@@ -218,4 +276,294 @@ def create_app(
         )
         return _twiml()
 
+    if store is not None:
+        _register_review_routes(app, store, passcode, passcode_salt, cookie_secure)
+
     return app
+
+
+def _passcode_digest(passcode: str, salt: str) -> str:
+    """Deterministic token proving knowledge of the review-web passcode.
+
+    The cookie carries this digest, never the passcode itself; the gate
+    recomputes it from the configured passcode + salt and compares constant-
+    time. The salt is a per-deploy secret, so the digest cannot be forged
+    offline even if the passcode leaks (security #27).
+    """
+    return hmac.new(salt.encode(), passcode.encode(), hashlib.sha256).hexdigest()
+
+
+def _as_number(value: str) -> float | None:
+    value = value.strip()
+    return float(value) if value else None
+
+
+def _parse_edit_form(form) -> dict:
+    """Turn the order-edit form fields into the core's ``edit_order`` changes.
+
+    Text fields always submit (blank clears); the resolve selects and the item
+    rows only submit when the approver used them. Item rows whose product is
+    blank are dropped (deleted lines / unused extra rows).
+    """
+    changes: dict = {
+        "customer": str(form.get("customer", "")).strip(),
+        "delivery_location": str(form.get("delivery_location", "")).strip(),
+        "gst_override_pct": _as_number(str(form.get("gst_override_pct", ""))),
+    }
+    customer_id = str(form.get("customer_id", "")).strip()
+    if customer_id:
+        changes["customer_id"] = customer_id
+
+    items: list[dict] = []
+    resolutions: list[dict] = []
+    index = 0
+    while f"items[{index}][product]" in form:
+        product = str(form.get(f"items[{index}][product]", "")).strip()
+        if product:
+            items.append(
+                {
+                    "product": product,
+                    "quantity": _as_number(
+                        str(form.get(f"items[{index}][quantity]", ""))
+                    )
+                    or 0.0,
+                    "unit": str(form.get(f"items[{index}][unit]", "")).strip(),
+                    "rate_inr": _as_number(
+                        str(form.get(f"items[{index}][rate_inr]", ""))
+                    ),
+                }
+            )
+            product_id = str(form.get(f"items[{index}][product_id]", "")).strip()
+            if product_id:
+                resolutions.append(
+                    {"index": len(items) - 1, "product_id": product_id}
+                )
+        index += 1
+    changes["items"] = items
+    if resolutions:
+        changes["product_resolutions"] = resolutions
+    return changes
+
+
+def _register_review_routes(
+    app: FastAPI,
+    store: OrderStore,
+    passcode: str,
+    passcode_salt: str,
+    cookie_secure: bool = True,
+) -> None:
+    """Register the passcode-gated review web view (issue #6).
+
+    Every ``/review`` route is gated by a passcode supplied by the deployer
+    (env ``WEB_PASSCODE`` + salt ``WEB_PASSCODE_SALT``, security #27); a
+    request without a valid session cookie is redirected to the login page (or
+    rejected, for JSON/POST endpoints). The web decision path calls
+    ``approve_order_web`` on the same Order Processing Core the ADK agent uses,
+    so web and WhatsApp approvals stay in sync and share one audit trail.
+    """
+    core = OrderProcessingCore(store)
+
+    async def _passcode() -> str:
+        if not passcode or not passcode_salt:
+            raise HTTPException(status_code=503, detail="review view is not configured")
+        return passcode
+
+    async def _authorized(request: Request) -> bool:
+        expected = _passcode_digest(await _passcode(), passcode_salt)
+        cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
+        return bool(cookie) and hmac.compare_digest(cookie, expected)
+
+    async def _require(request: Request) -> None:
+        if not await _authorized(request):
+            raise HTTPException(status_code=401)
+
+    async def _same_origin(request: Request) -> None:
+        # CSRF guard (security #27 judgment call): the decision/edit/login
+        # POSTs are state-changing, so reject requests that do not come from
+        # this service's own origin. Browsers always send Origin on POST; a
+        # missing or mismatched header is refused. The origin is matched on
+        # the request Host header (set by the load balancer to the public
+        # host), not on base_url, so the scheme skew behind Cloud Run's proxy
+        # (Origin https vs internal http base_url) can't false-reject or
+        # false-allow.
+        origin = request.headers.get("origin")
+        if not origin:
+            raise HTTPException(status_code=403, detail="cross-origin request")
+        try:
+            origin_host = urlparse(origin).hostname
+        except ValueError:
+            raise HTTPException(
+                status_code=403, detail="cross-origin request"
+            ) from None
+        host = request.headers.get("host", "")
+        host = host.split(":")[0] if host else ""
+        if not origin_host or not host or origin_host != host:
+            raise HTTPException(status_code=403, detail="cross-origin request")
+
+    async def _orders() -> list[Order]:
+        orders = await store.list_all_orders()
+        orders.sort(key=lambda o: o.created_at, reverse=True)
+        return orders
+
+    async def _searchable_text(order: Order) -> str:
+        order_id = order.order_id or ""
+        events = await store.list_order_events(order_id)
+        fields = " ".join(
+            [
+                order_id,
+                order.phone,
+                order.customer or "",
+                order.delivery_location or "",
+                *(e.event_type for e in events),
+                *(str(e.payload) for e in events),
+            ]
+        )
+        return fields.lower()
+
+    async def _stats() -> dict[str, int]:
+        config = await store.get_config()
+        cutoff = str(config.get("cutoff_time"))
+        hour, minute = (int(part) for part in cutoff.split(":")) if cutoff else (
+            review.DEFAULT_CUTOFF_TIME.hour,
+            review.DEFAULT_CUTOFF_TIME.minute,
+        )
+        return review.compute_stats(
+            await _orders(), cutoff_time=time(hour, minute)
+        )
+
+    @app.get("/review", response_class=HTMLResponse)
+    async def review_index(request: Request):
+        if not await _authorized(request):
+            return review.login_page()
+        escalated = [
+            o for o in await _orders()
+            if o.status is OrderStatus.PENDING_REVIEW
+        ]
+        return review.queue_page(escalated, await _stats())
+
+    @app.get("/review/orders", response_class=HTMLResponse)
+    async def review_orders(request: Request, q: str | None = None):
+        if not await _authorized(request):
+            return review.login_page()
+        orders = await _orders()
+        if q:
+            needle = q.strip().lower()
+            matches = []
+            for o in orders:
+                if needle in await _searchable_text(o):
+                    matches.append(o)
+            orders = matches
+        return review.queue_page(orders, await _stats(), q=q)
+
+    @app.get("/review/orders/{order_id}", response_class=HTMLResponse)
+    async def review_order_detail(
+        request: Request,
+        order_id: str,
+        message: str | None = None,
+        notice: str | None = None,
+    ):
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404)
+        events = await store.list_order_events(order_id)
+        events.sort(key=lambda e: e.created_at)
+        return review.order_page(order, events, message=message, notice=notice)
+
+    @app.get("/review/orders/{order_id}/edit", response_class=HTMLResponse)
+    async def review_edit_page(
+        request: Request, order_id: str, message: str | None = None
+    ):
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404)
+        customers = await store.get_customers()
+        products = await store.get_products()
+        return review.edit_page(order, customers, products, message=message)
+
+    @app.post("/review/orders/{order_id}/edit")
+    async def review_edit_order(request: Request, order_id: str):
+        """Apply an approver's corrections through the Order Processing Core.
+
+        The edit goes through the same core the ADK agent uses, so web and
+        WhatsApp decisions stay in sync and every change lands on the shared
+        audit trail as an ``order_edited`` Order Event.
+        """
+        await _require(request)
+        await _same_origin(request)
+        if await store.get_order(order_id) is None:
+            raise HTTPException(status_code=404)
+        form = await request.form()
+        try:
+            await core.edit_order(order_id, changes=_parse_edit_form(form))
+        except (ApprovalError, ConfigurationError) as exc:
+            return RedirectResponse(
+                f"/review/orders/{quote(order_id)}?message={quote(str(exc))}",
+                status_code=303,
+            )
+        except (ValueError, TypeError):
+            return RedirectResponse(
+                f"/review/orders/{quote(order_id)}?message=Could not save changes.",
+                status_code=303,
+            )
+        return RedirectResponse(
+            f"/review/orders/{quote(order_id)}?notice=Order updated.",
+            status_code=303,
+        )
+
+    @app.post("/review/login", response_class=HTMLResponse)
+    async def review_login(request: Request):
+        await _same_origin(request)
+        form = await request.form()
+        submitted = str(form.get("passcode", ""))
+        if not hmac.compare_digest(submitted, await _passcode()):
+            return review.login_page(error="Incorrect passcode.")
+        response = RedirectResponse("/review", status_code=303)
+        response.set_cookie(
+            review.PASSCODE_COOKIE,
+            _passcode_digest(await _passcode(), passcode_salt),
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure,
+            max_age=43200,
+        )
+        return response
+
+    @app.post("/review/logout")
+    async def review_logout(request: Request):
+        await _same_origin(request)
+        response = RedirectResponse("/review", status_code=303)
+        response.delete_cookie(review.PASSCODE_COOKIE)
+        return response
+
+    @app.get("/review/stats")
+    async def review_stats(request: Request):
+        await _require(request)
+        return await _stats()
+
+    async def _decide(
+        request: Request, order_id: str, approved: bool
+    ) -> RedirectResponse:
+        await _require(request)
+        await _same_origin(request)
+        action = "approve" if approved else "reject"
+        try:
+            await core.approve_order_web(order_id, approved=approved)
+        except Exception:
+            return RedirectResponse(
+                f"/review/orders/{quote(order_id)}?message="
+                f"{quote(f'Could not {action} this order.')}",
+                status_code=303,
+            )
+        return RedirectResponse(
+            f"/review/orders/{quote(order_id)}", status_code=303
+        )
+
+    @app.post("/review/orders/{order_id}/approve")
+    async def review_approve(request: Request, order_id: str):
+        return await _decide(request, order_id, approved=True)
+
+    @app.post("/review/orders/{order_id}/reject")
+    async def review_reject(request: Request, order_id: str):
+        return await _decide(request, order_id, approved=False)

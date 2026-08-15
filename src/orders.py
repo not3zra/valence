@@ -63,6 +63,10 @@ EVENT_ORDER_CREATED = "order_created"
 EVENT_ORDER_ESCALATED = "order_escalated"
 EVENT_ORDER_AUTO_APPROVED = "order_auto_approved"
 EVENT_ORDER_DUPLICATE = "order_duplicated"
+EVENT_ORDER_APPROVAL_REQUESTED = "order_approval_requested"
+EVENT_ORDER_APPROVED = "order_approved"
+EVENT_ORDER_REJECTED = "order_rejected"
+EVENT_ORDER_EDITED = "order_edited"
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ class Order:
     customer_id: str | None = None
     delivery_location_id: str | None = None
     draft_value_inr: float = 0.0
+    gst_override_pct: float | None = None
     created_at: str = field(default_factory=utcnow)
     updated_at: str = field(default_factory=utcnow)
 
@@ -118,6 +123,7 @@ class Order:
             "status": self.status.value,
             "escalation_reasons": list(self.escalation_reasons),
             "draft_value_inr": self.draft_value_inr,
+            "gst_override_pct": self.gst_override_pct,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -139,6 +145,11 @@ class Order:
             status=OrderStatus(data.get("status", OrderStatus.PENDING_REVIEW.value)),
             escalation_reasons=list(data.get("escalation_reasons", [])),
             draft_value_inr=float(data.get("draft_value_inr", 0.0)),
+            gst_override_pct=(
+                float(data["gst_override_pct"])
+                if data.get("gst_override_pct") is not None
+                else None
+            ),
             created_at=str(data.get("created_at", utcnow())),
             updated_at=str(data.get("updated_at", utcnow())),
         )
@@ -160,6 +171,17 @@ class OrderEvent:
             "payload": dict(self.payload),
             "created_at": self.created_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> OrderEvent:
+        """Rebuild an OrderEvent from a stored document (``to_dict`` round-trip)."""
+        return cls(
+            order_id=str(data.get("order_id", "")),
+            event_type=str(data.get("event_type", "")),
+            payload=dict(data.get("payload", {})),
+            created_at=str(data.get("created_at", utcnow())),
+            event_id=str(data.get("id", uuid.uuid4().hex)),
+        )
 
 
 @dataclass(frozen=True)

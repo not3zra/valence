@@ -28,6 +28,10 @@ class Settings:
         self.service_port: int = int(_env("PORT", "8080"))
         self.twilio_account_sid: str = _env("TWILIO_ACCOUNT_SID", "")
         self.twilio_auth_token: str = _env("TWILIO_AUTH_TOKEN", "")
+        self.roundtrip_token: str = _env("ROUNDTRIP_TOKEN", "")
+        self.web_passcode: str = _env("WEB_PASSCODE", "")
+        self.web_passcode_salt: str = _env("WEB_PASSCODE_SALT", "")
+        self.web_cookie_secure: bool = _env("WEB_COOKIE_SECURE", "1") != "0"
 
 
 settings = Settings()

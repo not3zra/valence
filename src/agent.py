@@ -20,10 +20,16 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from .approval import ApprovalNotifier
 from .config import settings
 from .core import OrderProcessingCore
-from .core_tool import build_process_order_tool
+from .core_tool import (
+    build_approve_order_tool,
+    build_process_order_tool,
+)
 from .media import MediaObject, media_to_inline_part
+from .store import OrderStore
+from .whatsapp import MockWhatsAppSender, WhatsAppSender
 
 AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
 distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
@@ -51,22 +57,40 @@ For a recorded phone call (source_channel "voice"), understand the audio into \
 the same structured order as text. Always pass source_channel "voice" — a \
 voice order with a missing field is never clarified; it escalates to a human \
 instead (ADR-0004). \
+An escalated order is sent to an allowlisted approver for a pure yes/no \
+decision. If the sender is an allowlisted approver answering that request with \
+a confirm verb (confirm / approve / ok / done / theek hai) or a reject verb \
+(reject / cancel / no), call the approve_order tool with approved true or \
+false. approve_order resolves the order awaiting that sender itself; if it \
+returns an error, the sender is not an allowlisted approver with a pending \
+request — ignore the message and do nothing. A rejected order is marked \
+rejected and is never shipped; confirm the decision briefly to the approver. \
 Keep replies short and natural."""
 
 
-def build_agent(model: str | BaseLlm | None = None, store=None) -> Agent:
+def build_agent(
+    model: str | BaseLlm | None = None,
+    store: OrderStore | None = None,
+    whatsapp_sender: WhatsAppSender | None = None,
+) -> Agent:
     """Build the root ADK agent.
 
     ``model`` defaults to the configured Gemini model id and resolves through
     ADK's LLM registry to the Gemini API. Tests inject a fake ``BaseLlm`` here
     so the whole runner wiring runs without a network call (ADR testing seam).
-    ``store`` wires the Order Processing Core as the agent's single
-    ``process_order`` tool; tests pass the in-memory store so the tool runs
-    without Firestore.
+    ``store`` wires the Order Processing Core as the agent's ``process_order``
+    and ``approve_order`` tools; tests pass the in-memory store so the tool
+    runs without Firestore. ``whatsapp_sender`` backs the escalation notifier
+    (issue #7) that tells allowlisted approvers an order needs a yes/no
+    decision; it defaults to ``MockWhatsAppSender`` so the agent stays runnable
+    in a fresh clone.
     """
     tools: list = []
     if store is not None:
-        tools.append(build_process_order_tool(OrderProcessingCore(store)))
+        core = OrderProcessingCore(store)
+        notifier = ApprovalNotifier(store, whatsapp_sender or MockWhatsAppSender())
+        tools.append(build_process_order_tool(core, notifier=notifier))
+        tools.append(build_approve_order_tool(core, store))
     return Agent(
         name=settings.app_name,
         model=model or settings.gemini_model,

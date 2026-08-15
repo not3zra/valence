@@ -77,3 +77,6 @@ def test_config_thresholds_are_present_and_sane():
         assert key in seed_data.CONFIG, f"config missing {key}"
     assert seed_data.CONFIG["min_confidence"] <= 1.0
     assert seed_data.CONFIG["clarify_turn_cap"] >= 2
+    # The review-web passcode is a per-deploy secret (env WEB_PASSCODE), never
+    # a public seed (security #27) — a committed default would be forgeable.
+    assert "web_passcode" not in seed_data.CONFIG

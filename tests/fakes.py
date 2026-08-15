@@ -534,3 +534,58 @@ class VoiceMissingFieldLlm(BaseLlm):
                 role="model", parts=[types.Part(function_call=call)]
             )
         )
+
+
+class ApprovingToolCallingLlm(BaseLlm):
+    """Approver reply path: calls ``approve_order`` with the parsed verb.
+
+    Pins the issue #7 webhook contract: an allowlisted approver's reply is a
+    message to the same agent, which parses a confirm verb (``approved=True``)
+    or a reject verb (``approved=False``) and invokes the approve tool on the
+    Order Processing Core. The order it decides is resolved by the tool from
+    the approver's pending approval, so the fake only needs to pass the bool.
+    """
+
+    model: str = "fake-approver"
+    approved: bool = True
+
+    def supported_models(self) -> list[str]:
+        return ["fake-approver.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents
+        last_result = -1
+        for i, content in enumerate(contents):
+            if content.role == "user" and any(
+                part.function_response for part in content.parts
+            ):
+                last_result = i
+
+        if last_result >= 0:
+            result = contents[last_result].parts[0].function_response.response
+            approved = bool(result.get("approved"))
+            status = result.get("status", "")
+            if approved:
+                text = f"Order {result.get('order_id', '')} approved."
+            elif status == "rejected":
+                text = f"Order {result.get('order_id', '')} rejected."
+            else:
+                text = "I could not act on that."
+            yield LlmResponse(
+                content=types.Content(
+                    role="model", parts=[types.Part(text=text)]
+                )
+            )
+            return
+
+        call = types.FunctionCall(
+            name="approve_order",
+            args={"approved": self.approved},
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
