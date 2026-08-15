@@ -20,11 +20,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from . import seed_data
+from .loading import is_late_for, parse_business_tz, parse_cutoff
 from .money import estimate_rate, quantity_is_anomalous, rate_is_anomalous
 from .orders import (
     EVENT_ORDER_APPROVED,
     EVENT_ORDER_AUTO_APPROVED,
     EVENT_ORDER_CREATED,
+    EVENT_ORDER_DISPATCHED,
     EVENT_ORDER_DUPLICATE,
     EVENT_ORDER_EDITED,
     EVENT_ORDER_ESCALATED,
@@ -35,6 +37,7 @@ from .orders import (
     OrderEvent,
     OrderItem,
     OrderStatus,
+    iso_to_dt,
     transition,
     utcnow,
 )
@@ -218,10 +221,6 @@ def _new_order_id() -> str:
     return f"ord_{uuid.uuid4().hex[:12]}"
 
 
-def _iso_to_dt(value: str) -> datetime:
-    return datetime.fromisoformat(value)
-
-
 def _first_item_matches(
     candidate: OrderItem, prior: OrderItem, products: list[seed_data.Product]
 ) -> bool:
@@ -278,7 +277,7 @@ class OrderProcessingCore:
         if now is None:
             now_dt = datetime.now(timezone.utc)
         else:
-            now_dt = _iso_to_dt(now)
+            now_dt = iso_to_dt(now)
         intake_time = now_dt.isoformat()
         order.created_at = intake_time
         order.updated_at = intake_time
@@ -307,6 +306,7 @@ class OrderProcessingCore:
                 items=[],
                 duplicate=True,
                 duplicate_of_order_id=prior_id,
+                late=False,
             )
 
         customers = await self._store.get_customers()
@@ -351,6 +351,7 @@ class OrderProcessingCore:
                 items=[_resolved_item(line) for line in resolved],
                 clarify=True,
                 missing_fields=missing_fields,
+                late=False,
             )
 
         order.order_id = order.order_id or _new_order_id()
@@ -390,7 +391,13 @@ class OrderProcessingCore:
                 payload=payload,
             )
         )
-
+        late = False
+        if approved:
+            config = await self._store.get_config()
+            cutoff = parse_cutoff(config)
+            business_tz = parse_business_tz(config)
+            delivery_day = iso_to_dt(order.updated_at).astimezone(business_tz).date()
+            late = is_late_for(order, delivery_day, cutoff, business_tz)
         return OrderDecision(
             order_id=order.order_id,
             status=order.status.value,
@@ -400,6 +407,7 @@ class OrderProcessingCore:
             customer_id=order.customer_id,
             delivery_location_id=order.delivery_location_id,
             items=[_resolved_item(line) for line in resolved],
+            late=late,
         )
 
     async def _evaluate(
@@ -772,6 +780,28 @@ class OrderProcessingCore:
             items=[],
         )
 
+    async def mark_dispatched(self, order_id: str) -> Order:
+        """Transition an approved order to dispatched and record the event.
+
+        The order must be in ``approved`` status; the transition to ``dispatched``
+        is validated by the state machine (ADR-0002). An ``order_dispatched``
+        event is appended to the audit trail. Returns the updated order.
+        """
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ValueError(f"order {order_id} not found")
+        order.status = transition(order.status, OrderStatus.DISPATCHED)
+        order.updated_at = utcnow()
+        await self._store.update_order(order)
+        await self._store.append_order_event(
+            OrderEvent(
+                order_id=order_id,
+                event_type=EVENT_ORDER_DISPATCHED,
+                payload={"order_id": order_id},
+            )
+        )
+        return order
+
     async def _find_duplicate(
         self,
         order: Order,
@@ -798,7 +828,7 @@ class OrderProcessingCore:
             if not earlier.items:
                 continue
             try:
-                earlier_at = _iso_to_dt(earlier.created_at)
+                earlier_at = iso_to_dt(earlier.created_at)
             except ValueError:
                 continue
             if (now_dt - earlier_at).total_seconds() >= window_minutes * 60:

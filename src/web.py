@@ -4,14 +4,17 @@ Serves the health page, a liveness probe for Cloud Run, the round-trip probe
 that exercises the deployed agent (message in -> reply out), and the Twilio
 webhooks that receive inbound orders: the WhatsApp "When a message comes in"
 callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
-#10). The approver-facing review web view is ticket 5 (#6).
+#10). The approver-facing review web view is ticket 5 (#6) and the
+dispatch-facing Loading List web view is ticket 8 (#9).
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
-from datetime import time
+import json
+from datetime import date, time
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -23,6 +26,14 @@ from . import review
 from .agent import build_runner, run_turn
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
+from .loading import (
+    PASSCODE_COOKIE as LOADING_PASSCODE_COOKIE,
+)
+from .loading import (
+    load_loading_list,
+    loading_login_page,
+    render_loading_list_html,
+)
 from .media import MediaFetcher, TwilioMediaFetcher
 from .orders import Order, OrderStatus
 from .store import OrderStore
@@ -68,6 +79,8 @@ INDEX_HTML = """<!doctype html>
     <li>Health: <a href="/health">/health</a></li>
     <li>Review web view (escalation queue):
     <a href="/review">/review</a></li>
+    <li>Loading List (dispatch):
+    <a href="/loading">/loading</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
     <li>Twilio Voice recording-status callback (recorded order calls):
@@ -131,6 +144,13 @@ def create_app(
     ``web_passcode`` / ``web_passcode_salt`` gate the review web view; the
     salt makes the session cookie unforgeable without the per-deploy secret
     (security #27). Both default to their environment settings.
+
+    ``store``, when supplied, registers the passcode-gated review web view
+    (``/review``, issue #6), the dispatch-facing Loading List web view
+    (``/loading``, issue #9) behind the same passcode, and the secret-gated
+    Cutoff render endpoint (``/api/cutoff``). The Loading List web view and the
+    Cutoff endpoint run off the same ``load_loading_list`` render the ADK tool
+    uses.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -278,12 +298,14 @@ def create_app(
 
     if store is not None:
         _register_review_routes(app, store, passcode, passcode_salt, cookie_secure)
+        _register_loading_routes(app, store, passcode, passcode_salt, cookie_secure)
+        _register_cutoff_endpoint(app, store)
 
     return app
 
 
 def _passcode_digest(passcode: str, salt: str) -> str:
-    """Deterministic token proving knowledge of the review-web passcode.
+    """Deterministic token proving knowledge of a web-view passcode.
 
     The cookie carries this digest, never the passcode itself; the gate
     recomputes it from the configured passcode + salt and compares constant-
@@ -296,6 +318,20 @@ def _passcode_digest(passcode: str, salt: str) -> str:
 def _as_number(value: str) -> float | None:
     value = value.strip()
     return float(value) if value else None
+
+
+def _parse_day(value: str | None) -> date | None:
+    """Parse a delivery-day query/param, rejecting malformed input with 400.
+
+    A bad day string (e.g. ``?day=not-a-date``) currently surfaces as an
+    uncaught 500; turn it into a clean client error instead.
+    """
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid delivery day") from None
 
 
 def _parse_edit_form(form) -> dict:
@@ -345,6 +381,29 @@ def _parse_edit_form(form) -> dict:
     return changes
 
 
+def _same_origin(request: Request) -> None:
+    # CSRF guard (security #27 judgment call): the decision/edit/login POSTs are
+    # state-changing, so reject requests that do not come from this service's own
+    # origin. Browsers always send Origin on POST; a missing or mismatched header
+    # is refused. The origin is matched on the request Host header (set by the
+    # load balancer to the public host), not on base_url, so the scheme skew
+    # behind Cloud Run's proxy (Origin https vs internal http base_url) can't
+    # false-reject or false-allow.
+    origin = request.headers.get("origin")
+    if not origin:
+        raise HTTPException(status_code=403, detail="cross-origin request")
+    try:
+        origin_host = urlparse(origin).hostname
+    except ValueError:
+        raise HTTPException(
+            status_code=403, detail="cross-origin request"
+        ) from None
+    host = request.headers.get("host", "")
+    host = host.split(":")[0] if host else ""
+    if not origin_host or not host or origin_host != host:
+        raise HTTPException(status_code=403, detail="cross-origin request")
+
+
 def _register_review_routes(
     app: FastAPI,
     store: OrderStore,
@@ -363,42 +422,14 @@ def _register_review_routes(
     """
     core = OrderProcessingCore(store)
 
-    async def _passcode() -> str:
-        if not passcode or not passcode_salt:
-            raise HTTPException(status_code=503, detail="review view is not configured")
-        return passcode
-
     async def _authorized(request: Request) -> bool:
-        expected = _passcode_digest(await _passcode(), passcode_salt)
+        expected = _passcode_digest(passcode, passcode_salt)
         cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
         return bool(cookie) and hmac.compare_digest(cookie, expected)
 
     async def _require(request: Request) -> None:
         if not await _authorized(request):
             raise HTTPException(status_code=401)
-
-    async def _same_origin(request: Request) -> None:
-        # CSRF guard (security #27 judgment call): the decision/edit/login
-        # POSTs are state-changing, so reject requests that do not come from
-        # this service's own origin. Browsers always send Origin on POST; a
-        # missing or mismatched header is refused. The origin is matched on
-        # the request Host header (set by the load balancer to the public
-        # host), not on base_url, so the scheme skew behind Cloud Run's proxy
-        # (Origin https vs internal http base_url) can't false-reject or
-        # false-allow.
-        origin = request.headers.get("origin")
-        if not origin:
-            raise HTTPException(status_code=403, detail="cross-origin request")
-        try:
-            origin_host = urlparse(origin).hostname
-        except ValueError:
-            raise HTTPException(
-                status_code=403, detail="cross-origin request"
-            ) from None
-        host = request.headers.get("host", "")
-        host = host.split(":")[0] if host else ""
-        if not origin_host or not host or origin_host != host:
-            raise HTTPException(status_code=403, detail="cross-origin request")
 
     async def _orders() -> list[Order]:
         orders = await store.list_all_orders()
@@ -491,7 +522,7 @@ def _register_review_routes(
         audit trail as an ``order_edited`` Order Event.
         """
         await _require(request)
-        await _same_origin(request)
+        _same_origin(request)
         if await store.get_order(order_id) is None:
             raise HTTPException(status_code=404)
         form = await request.form()
@@ -514,15 +545,15 @@ def _register_review_routes(
 
     @app.post("/review/login", response_class=HTMLResponse)
     async def review_login(request: Request):
-        await _same_origin(request)
+        _same_origin(request)
         form = await request.form()
         submitted = str(form.get("passcode", ""))
-        if not hmac.compare_digest(submitted, await _passcode()):
+        if not hmac.compare_digest(submitted, passcode):
             return review.login_page(error="Incorrect passcode.")
         response = RedirectResponse("/review", status_code=303)
         response.set_cookie(
             review.PASSCODE_COOKIE,
-            _passcode_digest(await _passcode(), passcode_salt),
+            _passcode_digest(passcode, passcode_salt),
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -532,7 +563,7 @@ def _register_review_routes(
 
     @app.post("/review/logout")
     async def review_logout(request: Request):
-        await _same_origin(request)
+        _same_origin(request)
         response = RedirectResponse("/review", status_code=303)
         response.delete_cookie(review.PASSCODE_COOKIE)
         return response
@@ -546,7 +577,7 @@ def _register_review_routes(
         request: Request, order_id: str, approved: bool
     ) -> RedirectResponse:
         await _require(request)
-        await _same_origin(request)
+        _same_origin(request)
         action = "approve" if approved else "reject"
         try:
             await core.approve_order_web(order_id, approved=approved)
@@ -567,3 +598,144 @@ def _register_review_routes(
     @app.post("/review/orders/{order_id}/reject")
     async def review_reject(request: Request, order_id: str):
         return await _decide(request, order_id, approved=False)
+
+
+def _register_loading_routes(
+    app: FastAPI,
+    store: OrderStore,
+    passcode: str,
+    passcode_salt: str,
+    cookie_secure: bool = True,
+) -> None:
+    """Register the passcode-gated Loading List web view (issue #9).
+
+    The dispatch-facing page renders the live approved orders for a delivery
+    day through the same ``load_loading_list`` path as the ADK tool and the
+    Cutoff endpoint. The web view is gated by the same passcode + salt that
+    gate the review view (security #27); a request without a valid session
+    cookie is shown the login form. Marking an order dispatched runs
+    ``mark_dispatched`` on the same Order Processing Core, recording the
+    ``order_dispatched`` Order Event.
+    """
+    core = OrderProcessingCore(store)
+
+    async def _authorized(request: Request) -> bool:
+        expected = _passcode_digest(passcode, passcode_salt)
+        cookie = request.cookies.get(LOADING_PASSCODE_COOKIE, "")
+        return bool(cookie) and hmac.compare_digest(cookie, expected)
+
+    async def _require(request: Request) -> None:
+        if not await _authorized(request):
+            raise HTTPException(status_code=401)
+
+    async def _render(delivery_day: str | None) -> str:
+        day = _parse_day(delivery_day)
+        loading = await load_loading_list(store, delivery_day=day)
+        return render_loading_list_html(loading)
+
+    @app.get("/loading", response_class=HTMLResponse)
+    async def loading_page(request: Request, day: str | None = None):
+        if not await _authorized(request):
+            return loading_login_page()
+        return await _render(day)
+
+    @app.post("/loading/login", response_class=HTMLResponse)
+    async def loading_login(request: Request):
+        _same_origin(request)
+        form = await request.form()
+        submitted = str(form.get("passcode", ""))
+        if not hmac.compare_digest(submitted, passcode):
+            return loading_login_page(error="Incorrect passcode.")
+        response = RedirectResponse("/loading", status_code=303)
+        response.set_cookie(
+            LOADING_PASSCODE_COOKIE,
+            _passcode_digest(passcode, passcode_salt),
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure,
+            max_age=43200,
+        )
+        return response
+
+    @app.post("/loading/logout")
+    async def loading_logout(request: Request):
+        _same_origin(request)
+        response = RedirectResponse("/loading", status_code=303)
+        response.delete_cookie(LOADING_PASSCODE_COOKIE)
+        return response
+
+    @app.post("/loading/orders/{order_id}/dispatch")
+    async def loading_dispatch(request: Request, order_id: str):
+        await _require(request)
+        _same_origin(request)
+        try:
+            await core.mark_dispatched(order_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=404, detail="order not found"
+            ) from None
+        return RedirectResponse("/loading", status_code=303)
+
+
+def _register_cutoff_endpoint(app: FastAPI, store: OrderStore) -> None:
+    """Register the secret-gated daily Cutoff render endpoint (issue #9).
+
+    The Cloud Scheduler job fires this endpoint after the daily cutoff; it runs
+    the same ``load_loading_list`` render path as the web view and the ADK tool
+    and returns the live Loading List for today as JSON (a convenience trigger,
+    never required for correctness — the WhatsApp heads-up for late orders is
+    sent from the intake path, not from this endpoint).
+
+    Auth follows the scaffold's pipeline: Cloud Scheduler publishes to the
+    ``valence-cutoff`` topic, whose push subscription (push-auth service
+    account) delivers a Pub/Sub push envelope to this endpoint. Because the
+    service is deployed ``--allow-unauthenticated``, the envelope alone proves
+    nothing — so the scheduled message body carries the configured
+    ``CUTOFF_SECRET`` and the endpoint verifies it constant-time, the same way
+    a direct call presents it as a bearer token. The endpoint is closed (503)
+    when no secret is configured, so a misdeployed job fails loudly instead of
+    silently rendering without auth.
+    """
+    async def _authorized(request: Request) -> bool:
+        if not settings.cutoff_secret:
+            raise HTTPException(
+                status_code=503, detail="cutoff endpoint is not configured"
+            )
+        # Direct invocation: bearer token.
+        expected = f"Bearer {settings.cutoff_secret}"
+        if hmac.compare_digest(request.headers.get("Authorization", ""), expected):
+            return True
+        # Pub/Sub push envelope: the message data carries the secret. The
+        # endpoint is otherwise unauthenticated, so cap the body before parsing
+        # an attacker-controlled payload (a real envelope is a few hundred
+        # bytes; anything larger is not one).
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                too_large = int(content_length) > 64 * 1024
+            except ValueError:
+                too_large = True
+            if too_large:
+                return False
+        try:
+            body = await request.json()
+        except Exception:
+            return False
+        message = body.get("message")
+        data = message.get("data") if isinstance(message, dict) else None
+        if not isinstance(data, str):
+            return False
+        try:
+            payload = json.loads(base64.b64decode(data))
+        except Exception:
+            return False
+        submitted = payload.get("secret") if isinstance(payload, dict) else None
+        return hmac.compare_digest(str(submitted), settings.cutoff_secret)
+
+    @app.post("/api/cutoff")
+    async def cutoff_render(request: Request, day: str | None = None):
+        if not await _authorized(request):
+            raise HTTPException(status_code=401)
+        delivery_day = _parse_day(day)
+        loading = await load_loading_list(store, delivery_day=delivery_day)
+        return loading.to_dict()

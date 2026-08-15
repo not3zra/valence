@@ -25,8 +25,10 @@ from .config import settings
 from .core import OrderProcessingCore
 from .core_tool import (
     build_approve_order_tool,
+    build_loading_list_tool,
     build_process_order_tool,
 )
+from .dispatch import LateOrderNotifier
 from .media import MediaObject, media_to_inline_part
 from .store import OrderStore
 from .whatsapp import MockWhatsAppSender, WhatsAppSender
@@ -65,6 +67,8 @@ false. approve_order resolves the order awaiting that sender itself; if it \
 returns an error, the sender is not an allowlisted approver with a pending \
 request — ignore the message and do nothing. A rejected order is marked \
 rejected and is never shipped; confirm the decision briefly to the approver. \
+You can render the day's Loading List for the dispatch team by calling the \
+render_loading_list tool with an optional delivery_day (ISO date). \
 Keep replies short and natural."""
 
 
@@ -78,19 +82,28 @@ def build_agent(
     ``model`` defaults to the configured Gemini model id and resolves through
     ADK's LLM registry to the Gemini API. Tests inject a fake ``BaseLlm`` here
     so the whole runner wiring runs without a network call (ADR testing seam).
-    ``store`` wires the Order Processing Core as the agent's ``process_order``
-    and ``approve_order`` tools; tests pass the in-memory store so the tool
-    runs without Firestore. ``whatsapp_sender`` backs the escalation notifier
-    (issue #7) that tells allowlisted approvers an order needs a yes/no
-    decision; it defaults to ``MockWhatsAppSender`` so the agent stays runnable
-    in a fresh clone.
+    ``store`` wires the Order Processing Core as the agent's ``process_order``,
+    ``approve_order``, and ``render_loading_list`` tools; tests pass the
+    in-memory store so the tools run without Firestore. ``whatsapp_sender``
+    backs the escalation notifier (issue #7) that tells allowlisted approvers an
+    order needs a yes/no decision and the late-order notifier (issue #9) that
+    tells the dispatch channel about orders approved after the daily cutoff; it
+    defaults to ``MockWhatsAppSender`` so the agent stays runnable in a fresh
+    clone.
     """
     tools: list = []
     if store is not None:
         core = OrderProcessingCore(store)
-        notifier = ApprovalNotifier(store, whatsapp_sender or MockWhatsAppSender())
-        tools.append(build_process_order_tool(core, notifier=notifier))
+        sender = whatsapp_sender or MockWhatsAppSender()
+        notifier = ApprovalNotifier(store, sender)
+        late_notifier = LateOrderNotifier(store, sender)
+        tools.append(
+            build_process_order_tool(
+                core, notifier=notifier, late_notifier=late_notifier
+            )
+        )
         tools.append(build_approve_order_tool(core, store))
+        tools.append(build_loading_list_tool(store))
     return Agent(
         name=settings.app_name,
         model=model or settings.gemini_model,

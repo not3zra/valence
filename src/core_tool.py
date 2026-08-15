@@ -6,7 +6,10 @@ from google.adk.tools import FunctionTool, ToolContext
 
 from .approval import ApprovalNotifier
 from .core import ApprovalError, OrderProcessingCore
+from .dispatch import LateOrderNotifier
+from .loading import load_loading_list
 from .orders import Order, OrderItem, utcnow
+from .store import OrderStore
 
 # Session-state key that carries a partial order + clarify turn count across the
 # durable per-sender session (issue #5). Held in ADK session state, so a Cloud
@@ -34,7 +37,9 @@ def _hours_since(start_iso: str, end_iso: str) -> float:
 
 
 def build_process_order_tool(
-    core: OrderProcessingCore, notifier: ApprovalNotifier | None = None
+    core: OrderProcessingCore,
+    notifier: ApprovalNotifier | None = None,
+    late_notifier: LateOrderNotifier | None = None,
 ) -> FunctionTool:
     """Wrap the core as a single ``process_order`` ADK tool.
 
@@ -50,6 +55,10 @@ def build_process_order_tool(
     produces (issue #7): it tells every allowlisted approver the order needs a
     yes/no decision. It is intentionally a separate seam so the tool stays
     channel-agnostic and the notification is testable in isolation.
+
+    ``late_notifier``, when supplied, is called for every auto-approved order
+    that is late (approved after the daily cutoff) to send an instant WhatsApp
+    heads-up to the dispatch channel (issue #9).
     """
 
     async def process_order(
@@ -151,6 +160,11 @@ def build_process_order_tool(
         if notifier is not None and not decision.approved and not decision.duplicate:
             await notifier.on_order_escalated(decision.order_id)
 
+        # An auto-approved late order triggers an instant WhatsApp heads-up to
+        # the dispatch channel (issue #9).
+        if late_notifier is not None and decision.approved and decision.late:
+            await late_notifier.on_order_late(decision.order_id)
+
         return decision.to_dict()
 
     return FunctionTool(process_order)
@@ -203,3 +217,35 @@ def build_approve_order_tool(core: OrderProcessingCore, store) -> FunctionTool:
         return decision.to_dict()
 
     return FunctionTool(approve_order)
+
+
+def build_loading_list_tool(store: OrderStore) -> FunctionTool:
+    """Wrap the Loading List renderer as an ADK tool (issue #9).
+
+    The agent can call this to render the delivery day's Loading List from the
+    live order set. It reads the live approved orders, groups them by route,
+    and returns a structured list with an unrouted bucket and a late add-on
+    section — the exact same data the web view and the Cutoff job render.
+    """
+
+    async def render_loading_list(
+        delivery_day: str | None = None,
+        tool_context: ToolContext | None = None,
+    ) -> dict:
+        """Render the Loading List for a delivery day.
+
+        Args:
+            delivery_day: ISO date (YYYY-MM-DD) for the delivery day. Defaults
+                to today in the business timezone.
+            tool_context: ADK invocation context (unused).
+
+        Returns:
+            The Loading List as a dict with sections, unrouted, and late entries.
+        """
+        from datetime import date
+
+        day = date.fromisoformat(delivery_day) if delivery_day else None
+        loading = await load_loading_list(store, delivery_day=day)
+        return loading.to_dict()
+
+    return FunctionTool(render_loading_list)
