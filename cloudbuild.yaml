@@ -27,6 +27,9 @@ steps:
       - '--set-secrets=TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest'
       - '--set-secrets=TWILIO_WHATSAPP_FROM=TWILIO_WHATSAPP_FROM:latest'
       - '--set-secrets=TWILIO_WHATSAPP_JOIN_CODE=TWILIO_WHATSAPP_JOIN_CODE:latest'
+      - '--set-secrets=ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest'
+      - '--set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest'
+      - '--set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY

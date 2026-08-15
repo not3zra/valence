@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -378,9 +378,23 @@ def _register_review_routes(
         # CSRF guard (security #27 judgment call): the decision/edit/login
         # POSTs are state-changing, so reject requests that do not come from
         # this service's own origin. Browsers always send Origin on POST; a
-        # missing or mismatched header is refused.
+        # missing or mismatched header is refused. The origin is matched on
+        # the request Host header (set by the load balancer to the public
+        # host), not on base_url, so the scheme skew behind Cloud Run's proxy
+        # (Origin https vs internal http base_url) can't false-reject or
+        # false-allow.
         origin = request.headers.get("origin")
-        if not origin or origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        if not origin:
+            raise HTTPException(status_code=403, detail="cross-origin request")
+        try:
+            origin_host = urlparse(origin).hostname
+        except ValueError:
+            raise HTTPException(
+                status_code=403, detail="cross-origin request"
+            ) from None
+        host = request.headers.get("host", "")
+        host = host.split(":")[0] if host else ""
+        if not origin_host or not host or origin_host != host:
             raise HTTPException(status_code=403, detail="cross-origin request")
 
     async def _orders() -> list[Order]:
@@ -535,10 +549,13 @@ def _register_review_routes(
             await core.approve_order_web(order_id, approved=approved)
         except Exception:
             return RedirectResponse(
-                f"/review/orders/{order_id}?message=Could not {action} this order.",
+                f"/review/orders/{quote(order_id)}?message="
+                f"{quote(f'Could not {action} this order.')}",
                 status_code=303,
             )
-        return RedirectResponse(f"/review/orders/{order_id}", status_code=303)
+        return RedirectResponse(
+            f"/review/orders/{quote(order_id)}", status_code=303
+        )
 
     @app.post("/review/orders/{order_id}/approve")
     async def review_approve(request: Request, order_id: str):
