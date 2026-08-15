@@ -33,3 +33,7 @@ build/
 /docs/
 /CONTEXT.md
 /AGENTS.md
+/THREAT_MODEL.md
+/ralph/
+/uv.lock
+.env.provision
