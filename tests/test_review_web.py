@@ -223,3 +223,147 @@ def test_logout_clears_session(client):
 
     response = client.get("/review")
     assert "Passcode" in response.text
+
+
+async def test_edit_page_requires_login(client, store):
+    order_id = await _escalated_order(store)
+    response = client.get(f"/review/orders/{order_id}/edit")
+    assert response.status_code == 401
+
+
+async def test_edit_page_shows_form_and_catalog_selects(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+
+    response = client.get(f"/review/orders/{order_id}/edit")
+
+    assert response.status_code == 200
+    assert "Resolve an unknown customer" in response.text
+    assert "ChemFab Industries" in response.text
+    assert "Sulfuric Acid" in response.text
+    assert "GST override" in response.text
+    assert "Save changes" in response.text
+
+
+async def test_edit_post_updates_order_and_records_event(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+
+    response = client.post(
+        f"/review/orders/{order_id}/edit",
+        data={
+            "customer": "ChemFab Industries",
+            "delivery_location": "Peenya Industrial Area",
+            "items[0][product]": "sulfuric acid",
+            "items[0][quantity]": "2000",
+            "items[0][unit]": "kg",
+            "gst_override_pct": "",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    order = store.orders[-1]
+    assert order.customer == "ChemFab Industries"
+    assert order.delivery_location == "Peenya Industrial Area"
+    assert any(e.event_type == "order_edited" for e in store.events)
+
+
+async def test_edit_post_resolves_unknown_customer_and_clears_badge(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+    assert "Unknown customer" in client.get("/review").text
+
+    client.post(
+        f"/review/orders/{order_id}/edit",
+        data={
+            "customer": "",
+            "delivery_location": "Peenya Industrial Area",
+            "customer_id": "c_chemfab",
+            "items[0][product]": "sulfuric acid",
+            "items[0][quantity]": "2000",
+            "items[0][unit]": "kg",
+            "gst_override_pct": "",
+        },
+        follow_redirects=False,
+    )
+
+    order = store.orders[-1]
+    assert order.customer_id == "c_chemfab"
+    assert "Unknown customer" not in client.get("/review").text
+
+
+async def test_edit_post_requires_login(client, store):
+    order_id = await _escalated_order(store)
+    response = client.post(
+        f"/review/orders/{order_id}/edit",
+        data={"customer": "ChemFab Industries"},
+    )
+    assert response.status_code == 401
+    assert store.orders[-1].customer is None
+
+
+async def test_gst_override_shown_on_detail_after_edit(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+
+    client.post(
+        f"/review/orders/{order_id}/edit",
+        data={
+            "customer": "",
+            "delivery_location": "",
+            "gst_override_pct": "18",
+            "items[0][product]": "sulfuric acid",
+            "items[0][quantity]": "2000",
+            "items[0][unit]": "kg",
+        },
+        follow_redirects=False,
+    )
+
+    response = client.get(f"/review/orders/{order_id}")
+    assert "GST override" in response.text
+    assert "18%" in response.text
+
+
+async def test_edit_rejected_order_reopens_and_appears_in_queue(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+    client.post(f"/review/orders/{order_id}/reject")
+    assert "No orders found" in client.get("/review").text
+
+    client.post(
+        f"/review/orders/{order_id}/edit",
+        data={
+            "customer": "",
+            "delivery_location": "Peenya Industrial Area",
+            "gst_override_pct": "",
+            "items[0][product]": "sulfuric acid",
+            "items[0][quantity]": "2000",
+            "items[0][unit]": "kg",
+        },
+        follow_redirects=False,
+    )
+
+    assert store.orders[-1].status is OrderStatus.PENDING_REVIEW
+    assert "No orders found" not in client.get("/review").text
+
+
+async def test_edit_post_bad_quantity_redirects_with_error(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+
+    response = client.post(
+        f"/review/orders/{order_id}/edit",
+        data={
+            "customer": "",
+            "delivery_location": "",
+            "gst_override_pct": "",
+            "items[0][product]": "sulfuric acid",
+            "items[0][quantity]": "ten",
+            "items[0][unit]": "kg",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "Could not save changes" in response.text

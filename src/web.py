@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import review
 from .agent import build_runner, run_turn
 from .config import settings
-from .core import OrderProcessingCore
+from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .media import MediaFetcher, TwilioMediaFetcher
 from .orders import Order, OrderStatus
 from .store import OrderStore
@@ -254,6 +254,58 @@ def _passcode_digest(passcode: str) -> str:
     return hashlib.sha256(passcode.encode()).hexdigest()
 
 
+def _as_number(value: str) -> float | None:
+    value = value.strip()
+    return float(value) if value else None
+
+
+def _parse_edit_form(form) -> dict:
+    """Turn the order-edit form fields into the core's ``edit_order`` changes.
+
+    Text fields always submit (blank clears); the resolve selects and the item
+    rows only submit when the approver used them. Item rows whose product is
+    blank are dropped (deleted lines / unused extra rows).
+    """
+    changes: dict = {
+        "customer": str(form.get("customer", "")).strip(),
+        "delivery_location": str(form.get("delivery_location", "")).strip(),
+        "gst_override_pct": _as_number(str(form.get("gst_override_pct", ""))),
+    }
+    customer_id = str(form.get("customer_id", "")).strip()
+    if customer_id:
+        changes["customer_id"] = customer_id
+
+    items: list[dict] = []
+    resolutions: list[dict] = []
+    index = 0
+    while f"items[{index}][product]" in form:
+        product = str(form.get(f"items[{index}][product]", "")).strip()
+        if product:
+            items.append(
+                {
+                    "product": product,
+                    "quantity": _as_number(
+                        str(form.get(f"items[{index}][quantity]", ""))
+                    )
+                    or 0.0,
+                    "unit": str(form.get(f"items[{index}][unit]", "")).strip(),
+                    "rate_inr": _as_number(
+                        str(form.get(f"items[{index}][rate_inr]", ""))
+                    ),
+                }
+            )
+            product_id = str(form.get(f"items[{index}][product_id]", "")).strip()
+            if product_id:
+                resolutions.append(
+                    {"index": len(items) - 1, "product_id": product_id}
+                )
+        index += 1
+    changes["items"] = items
+    if resolutions:
+        changes["product_resolutions"] = resolutions
+    return changes
+
+
 def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
     """Register the passcode-gated review web view (issue #6).
 
@@ -338,7 +390,10 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
 
     @app.get("/review/orders/{order_id}", response_class=HTMLResponse)
     async def review_order_detail(
-        request: Request, order_id: str, message: str | None = None
+        request: Request,
+        order_id: str,
+        message: str | None = None,
+        notice: str | None = None,
     ):
         await _require(request)
         order = await store.get_order(order_id)
@@ -346,7 +401,42 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
             raise HTTPException(status_code=404)
         events = await store.list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
-        return review.order_page(order, events, message=message)
+        return review.order_page(order, events, message=message, notice=notice)
+
+    @app.get("/review/orders/{order_id}/edit", response_class=HTMLResponse)
+    async def review_edit_page(
+        request: Request, order_id: str, message: str | None = None
+    ):
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404)
+        customers = await store.get_customers()
+        products = await store.get_products()
+        return review.edit_page(order, customers, products, message=message)
+
+    @app.post("/review/orders/{order_id}/edit")
+    async def review_edit_order(request: Request, order_id: str):
+        """Apply an approver's corrections through the Order Processing Core.
+
+        The edit goes through the same core the ADK agent uses, so web and
+        WhatsApp decisions stay in sync and every change lands on the shared
+        audit trail as an ``order_edited`` Order Event.
+        """
+        await _require(request)
+        if await store.get_order(order_id) is None:
+            raise HTTPException(status_code=404)
+        form = await request.form()
+        try:
+            await core.edit_order(order_id, changes=_parse_edit_form(form))
+        except (ApprovalError, ConfigurationError, ValueError, TypeError):
+            return RedirectResponse(
+                f"/review/orders/{order_id}?message=Could not save changes.",
+                status_code=303,
+            )
+        return RedirectResponse(
+            f"/review/orders/{order_id}?notice=Order updated.", status_code=303
+        )
 
     @app.post("/review/login", response_class=HTMLResponse)
     async def review_login(request: Request):

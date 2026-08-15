@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timezone
 from html import escape
 
-from .orders import Order, OrderEvent, OrderStatus
+from .orders import Order, OrderEvent, OrderItem, OrderStatus
 
 PASSCODE_COOKIE = "valence_review"
 
@@ -84,11 +84,20 @@ input[type=text], input[type=password] { border: 1px solid #cbd5e1;
 .searchbar { display: flex; gap: 8px; margin: 16px 0; }
 .error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca;
          border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
+.notice { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0;
+         border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
 dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px;
      font-size: 14px; }
 dt { color: #6b7280; font-weight: 600; }
 dd { margin: 0; }
 .login-card { max-width: 360px; margin: 60px auto; }
+input[type=number], select { border: 1px solid #cbd5e1; border-radius: 6px;
+        padding: 8px 10px; font-size: 14px; }
+.edit-items { width: 100%; border-collapse: collapse; }
+.edit-items th { text-align: left; color: #6b7280; font-size: 13px;
+        padding: 4px 8px; }
+.edit-items td { padding: 6px 8px 6px 0; }
+.edit-items input { width: 100%; box-sizing: border-box; }
 """
 
 
@@ -260,10 +269,14 @@ def queue_page(orders: list[Order], stats: dict[str, int], q: str | None = None)
 
 
 def order_page(
-    order: Order, events: list[OrderEvent], message: str | None = None
+    order: Order,
+    events: list[OrderEvent],
+    message: str | None = None,
+    notice: str | None = None,
 ) -> str:
     """Order detail: fields, items, the Order Event timeline, and decision."""
     err = f"<div class='error'>{escape(message)}</div>" if message else ""
+    ntc = f"<div class='notice'>{escape(notice)}</div>" if notice else ""
     status = STATUS_LABELS.get(order.status.value, order.status.value)
     items = "".join(
         f"<tr><td>{_escaped(item.product)}</td>"
@@ -285,11 +298,20 @@ def order_page(
             f"<button class='approve' type='submit'>Approve</button></form> "
             f"<form class='inline' method='post' "
             f"action='/review/orders/{_escaped(order.order_id)}/reject'>"
-            f"<button class='reject' type='submit'>Reject</button></form>"
+            f"<button class='reject' type='submit'>Reject</button></form> "
+        )
+    if order.status in (OrderStatus.PENDING_REVIEW, OrderStatus.REJECTED):
+        actions += (
+            f"<a class='btn' "
+            f"href='/review/orders/{_escaped(order.order_id)}/edit'>"
+            f"Edit order</a>"
         )
     back = "<p><a href='/review'>&larr; Back to review</a></p>"
+    gst_override = (
+        "—" if order.gst_override_pct is None else f"{order.gst_override_pct:g}%"
+    )
     body = (
-        f"{back}{err}<h1>Order {_escaped(order.order_id)}</h1>"
+        f"{back}{err}{ntc}<h1>Order {_escaped(order.order_id)}</h1>"
         f"<div class='card'><dl>"
         f"<dt>Status</dt><dd>{escape(status)}</dd>"
         f"<dt>Phone</dt><dd>{escape(order.phone)}</dd>"
@@ -299,6 +321,7 @@ def order_page(
         f"<dt>Source language</dt><dd>{escape(order.source_language)}</dd>"
         f"<dt>Confidence</dt><dd>{order.confidence:g}</dd>"
         f"<dt>Estimated total</dt><dd>{order.draft_value_inr:,.0f} INR</dd>"
+        f"<dt>GST override</dt><dd>{escape(gst_override)}</dd>"
         f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
         f"<div class='card'><h2>Items</h2><table class='timeline'>"
         f"<tr><th>Product</th><th>Quantity</th><th>Rate</th></tr>{items}</table></div>"
@@ -307,3 +330,103 @@ def order_page(
         f"<div class='card'><h2>Decision</h2>{actions}</div>"
     )
     return page(f"Order {order.order_id}", body)
+
+
+# Number of blank item rows the edit form offers after the order's own lines,
+# so an approver can add lines as well as correct them. Blank rows are dropped
+# on submit.
+EDIT_EXTRA_ROWS = 3
+
+
+def _editable_lines(order: Order) -> list[OrderItem | None]:
+    lines: list[OrderItem | None] = list(order.items)
+    lines.extend([None] * EDIT_EXTRA_ROWS)
+    return lines
+
+
+def _item_edit_row(
+    index: int, item: OrderItem | None, products: list
+) -> str:
+    product = item.product if item else ""
+    quantity = f"{item.quantity:g}" if item else ""
+    unit = item.unit if item else ""
+    rate = "" if item is None or item.rate_inr is None else f"{item.rate_inr:g}"
+    options = "".join(
+        f"<option value='{_escaped(p.id)}'>{_escaped(p.name)} "
+        f"({_escaped(p.grade)})</option>"
+        for p in products
+    )
+    return (
+        f"<tr><td><input type='text' name='items[{index}][product]' "
+        f"value='{escape(product)}'></td>"
+        f"<td><input type='text' name='items[{index}][quantity]' "
+        f"value='{escape(quantity)}'></td>"
+        f"<td><input type='text' name='items[{index}][unit]' "
+        f"value='{escape(unit)}'></td>"
+        f"<td><input type='text' name='items[{index}][rate_inr]' "
+        f"value='{escape(rate)}'></td>"
+        f"<td><select name='items[{index}][product_id]'>"
+        f"<option value=''></option>{options}</select></td></tr>"
+    )
+
+
+def edit_page(
+    order: Order,
+    customers: list,
+    products: list,
+    message: str | None = None,
+) -> str:
+    """Order edit form (issue #6, follow-up): fields, items, GST override.
+
+    Corrections are applied by POSTing to the same Order Processing Core the
+    agent uses, so web edits stay in sync with WhatsApp decisions and land on
+    the shared audit trail as an ``order_edited`` event. The resolve selects
+    let an approver explicitly assign a catalog customer / product to an
+    unknown one.
+    """
+    err = f"<div class='error'>{escape(message)}</div>" if message else ""
+    back = (
+        f"<p><a href='/review/orders/{_escaped(order.order_id)}'>"
+        "&larr; Back to order</a></p>"
+    )
+    customer_options = "".join(
+        f"<option value='{_escaped(c.id)}'>{_escaped(c.name)}</option>"
+        for c in customers
+    )
+    rows = "".join(
+        _item_edit_row(index, item, products)
+        for index, item in enumerate(_editable_lines(order))
+    )
+    gst_value = (
+        "" if order.gst_override_pct is None else f"{order.gst_override_pct:g}"
+    )
+    body = (
+        f"{back}{err}<h1>Edit order {_escaped(order.order_id)}</h1>"
+        f"<form method='post' "
+        f"action='/review/orders/{_escaped(order.order_id)}/edit'>"
+        f"<div class='card'><dl>"
+        f"<dt>Customer</dt><dd>"
+        f"<input type='text' name='customer' value='{_escaped(order.customer or '')}'>"
+        f"<p class='sub' style='margin:6px 0 0'>Resolve an unknown customer: "
+        f"<select name='customer_id'><option value=''></option>"
+        f"{customer_options}</select></p></dd>"
+        f"<dt>Delivery location</dt><dd>"
+        f"<input type='text' name='delivery_location' "
+        f"value='{_escaped(order.delivery_location or '')}'></dd>"
+        f"</dl></div>"
+        f"<div class='card'><h2>Items</h2>"
+        f"<table class='edit-items'><tr><th>Product</th><th>Quantity</th>"
+        f"<th>Unit</th><th>Rate (INR)</th><th>Resolve product</th></tr>"
+        f"{rows}</table>"
+        f"<p class='sub' style='margin:8px 0 0'>Leave a row's product blank "
+        f"to remove it; pick a product to map an uncataloged line.</p></div>"
+        f"<div class='card'><dl>"
+        f"<dt>GST override (%)</dt><dd>"
+        f"<input type='number' name='gst_override_pct' min='0' max='100' "
+        f"step='0.01' value='{escape(gst_value)}'></dd>"
+        f"<dd class='sub'>Overrides the GST rate the billing path derives "
+        f"(issue #8); leave blank for the default.</dd>"
+        f"</dl></div>"
+        f"<button class='approve' type='submit'>Save changes</button></form>"
+    )
+    return page(f"Edit order {order.order_id}", body)
