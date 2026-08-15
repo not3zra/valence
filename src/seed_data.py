@@ -209,6 +209,7 @@ CONFIG: dict[str, object] = {
     "clarify_timeout_hours": 24,  # no reply -> partial order promotes to escalation
     "clarify_turn_cap": 3,  # clarify loop hands off to escalation after N turns
     "cutoff_time": "17:30",  # daily cutoff for a delivery day's Loading List
+    "business_timezone": "Asia/Kolkata",  # cutoff and delivery day resolve here
     "dispatch_whatsapp_number": "+919845000003",  # late-order heads-up channel
     "currency": "INR",
 }

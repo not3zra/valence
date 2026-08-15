@@ -19,6 +19,14 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def iso_to_dt(value: str) -> datetime:
+    """Parse an ISO timestamp, treating a naive value as UTC."""
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class OrderStatus(str, Enum):
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
@@ -67,6 +75,8 @@ EVENT_ORDER_APPROVAL_REQUESTED = "order_approval_requested"
 EVENT_ORDER_APPROVED = "order_approved"
 EVENT_ORDER_REJECTED = "order_rejected"
 EVENT_ORDER_EDITED = "order_edited"
+EVENT_ORDER_DISPATCHED = "order_dispatched"
+EVENT_ORDER_LATE = "order_late"
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,7 @@ class OrderDecision:
     duplicate_of_order_id: str | None = None
     clarify: bool = False
     missing_fields: list[str] = field(default_factory=list)
+    late: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -213,4 +224,5 @@ class OrderDecision:
             "duplicate_of_order_id": self.duplicate_of_order_id,
             "clarify": self.clarify,
             "missing_fields": list(self.missing_fields),
+            "late": self.late,
         }

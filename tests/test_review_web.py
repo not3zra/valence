@@ -400,3 +400,59 @@ async def test_edit_post_bad_quantity_redirects_with_error(client, store):
 
     assert response.status_code == 200
     assert "Could not save changes" in response.text
+
+
+async def test_review_web_approve_of_a_late_order_heads_up_dispatch(store):
+    # A human web approval landing after a 00:00 cutoff is late (issue #9):
+    # the review web path must fire the same dispatch-channel heads-up as the
+    # intake and approve tool paths.
+    from src.seed_data import CONFIG
+    from src.whatsapp import MockWhatsAppSender
+
+    store.config = {**CONFIG, "cutoff_time": "00:00"}
+    sender = MockWhatsAppSender()
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm(), store=store),
+        session_service=InMemorySessionService(),
+        store=store,
+        whatsapp_sender=sender,
+        web_passcode=PASSCODE,
+        web_passcode_salt=PASSCODE_SALT,
+        web_cookie_secure=False,
+    )
+    client = TestClient(app)
+    await _escalated_order(store)
+    _login(client)
+
+    order_id = store.orders[-1].order_id
+    response = _post(
+        client, f"/review/orders/{order_id}/approve", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert len(sender.sent) == 1
+    assert sender.sent[0][1].startswith("Late order ")
+
+
+def test_review_view_is_closed_when_passcode_unconfigured(store):
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm(), store=store),
+        session_service=InMemorySessionService(),
+        store=store,
+    )
+    response = TestClient(app).get("/review")
+    assert response.status_code == 503
+
+
+def test_review_login_is_closed_when_passcode_unconfigured(store):
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm(), store=store),
+        session_service=InMemorySessionService(),
+        store=store,
+    )
+    response = TestClient(app).post(
+        "/review/login",
+        data={"passcode": ""},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 503
