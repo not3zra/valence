@@ -97,4 +97,4 @@ Judgment calls (carried in report only, not routed):
 Lines fixed since audit start: url-encoding of `order_id` in edit redirects
 (`e73e7ed`, from a prior per-diff security review) confirmed present.
 
-audited-through: 4f88848
+audited-through: 2f7bdc1
