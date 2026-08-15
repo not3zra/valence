@@ -110,7 +110,10 @@ for spec in \
   "TWILIO_ACCOUNT_SID:TWILIO_ACCOUNT_SID" \
   "TWILIO_AUTH_TOKEN:TWILIO_AUTH_TOKEN" \
   "TWILIO_WHATSAPP_FROM:TWILIO_WHATSAPP_FROM" \
-  "TWILIO_WHATSAPP_JOIN_CODE:TWILIO_WHATSAPP_JOIN_CODE"; do
+  "TWILIO_WHATSAPP_JOIN_CODE:TWILIO_WHATSAPP_JOIN_CODE" \
+  "ROUNDTRIP_TOKEN:ROUNDTRIP_TOKEN" \
+  "WEB_PASSCODE:WEB_PASSCODE" \
+  "WEB_PASSCODE_SALT:WEB_PASSCODE_SALT"; do
   name="${spec%%:*}"
   envvar="${spec##*:}"
   if gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
@@ -141,6 +144,9 @@ gcloud run deploy "$SERVICE" \
   --set-secrets=TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest \
   --set-secrets=TWILIO_WHATSAPP_FROM=TWILIO_WHATSAPP_FROM:latest \
   --set-secrets=TWILIO_WHATSAPP_JOIN_CODE=TWILIO_WHATSAPP_JOIN_CODE:latest \
+  --set-secrets=ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest \
+  --set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest \
+  --set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest \
   --project="$PROJECT_ID"
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" \

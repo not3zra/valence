@@ -210,7 +210,6 @@ CONFIG: dict[str, object] = {
     "clarify_turn_cap": 3,  # clarify loop hands off to escalation after N turns
     "cutoff_time": "17:30",  # daily cutoff for a delivery day's Loading List
     "dispatch_whatsapp_number": "+919845000003",  # late-order heads-up channel
-    "web_passcode": "valence-demo",  # single demo passcode gating the review web view
     "currency": "INR",
 }
 

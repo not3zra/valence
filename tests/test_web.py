@@ -17,6 +17,7 @@ def client():
     app = create_app(
         agent=build_agent(model=FakeEchoLlm()),
         session_service=InMemorySessionService(),
+        roundtrip_token="probe-token",
     )
     return TestClient(app)
 
@@ -43,6 +44,7 @@ def test_roundtrip_returns_reply(client):
     response = client.post(
         "/api/roundtrip",
         json={"sender_id": "+919812345001", "message": "two drums of acid"},
+        headers={"Authorization": "Bearer probe-token"},
     )
     assert response.status_code == 200
     body = response.json()
@@ -50,15 +52,15 @@ def test_roundtrip_returns_reply(client):
     assert body["reply"] == "Echo: two drums of acid"
 
 
-def test_roundtrip_requires_shared_secret_when_configured():
-    # The roundtrip probe lets the caller supply the sender id, so when a
-    # shared secret (the Twilio auth token) is configured it must be presented
-    # — otherwise an unauthenticated caller could impersonate any phone,
-    # including an allowlisted approver (issue #7).
+def test_roundtrip_requires_bearer_token():
+    # The roundtrip probe lets the caller supply the sender id, so it must be
+    # gated by a dedicated bearer token that is always required — otherwise an
+    # unauthenticated caller could impersonate any phone, including an
+    # allowlisted approver (issue #7, security #28).
     app = create_app(
         agent=build_agent(model=FakeEchoLlm()),
         session_service=InMemorySessionService(),
-        twilio_auth_token="secret-token",
+        roundtrip_token="probe-token",
     )
     client = TestClient(app)
 
@@ -71,9 +73,33 @@ def test_roundtrip_requires_shared_secret_when_configured():
     response = client.post(
         "/api/roundtrip",
         json={"sender_id": "+919812345001", "message": "hi"},
-        headers={"Authorization": "Bearer secret-token"},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert response.status_code == 401
+
+    response = client.post(
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "hi"},
+        headers={"Authorization": "Bearer probe-token"},
     )
     assert response.status_code == 200
+
+
+def test_roundtrip_disabled_when_token_unconfigured():
+    # With no token configured the probe is closed (503), never open — the
+    # finding that drove security #28.
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm()),
+        session_service=InMemorySessionService(),
+        roundtrip_token=None,
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "hi"},
+        headers={"Authorization": "Bearer probe-token"},
+    )
+    assert response.status_code == 503
 
 
 def test_roundtrip_rejects_missing_fields(client):
@@ -97,9 +123,13 @@ def test_roundtrip_rejects_empty_message(client):
 
 def test_sessions_survive_across_roundtrip_requests(client):
     client.post(
-        "/api/roundtrip", json={"sender_id": "+919812345001", "message": "one"}
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "one"},
+        headers={"Authorization": "Bearer probe-token"},
     )
     response = client.post(
-        "/api/roundtrip", json={"sender_id": "+919812345001", "message": "two"}
+        "/api/roundtrip",
+        json={"sender_id": "+919812345001", "message": "two"},
+        headers={"Authorization": "Bearer probe-token"},
     )
     assert response.json()["reply"] == "Echo: two"

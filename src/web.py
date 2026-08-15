@@ -105,6 +105,10 @@ def create_app(
     twilio_auth_token: str | None = None,
     voice_parser: VoiceCallbackParser | None = None,
     store: OrderStore | None = None,
+    roundtrip_token: str | None = None,
+    web_passcode: str | None = None,
+    web_passcode_salt: str | None = None,
+    web_cookie_secure: bool | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -119,6 +123,14 @@ def create_app(
     (the photo/recording retrieval path); ``twilio_auth_token`` defaults to the
     configured value and is what both webhooks use to verify the
     ``X-Twilio-Signature`` header.
+
+    ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
+    ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
+    closed — an unauthenticated probe could drive the agent under an arbitrary
+    identity including an allowlisted approver (issue #7, security #28).
+    ``web_passcode`` / ``web_passcode_salt`` gate the review web view; the
+    salt makes the session cookie unforgeable without the per-deploy secret
+    (security #27). Both default to their environment settings.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -132,6 +144,24 @@ def create_app(
         settings.twilio_account_sid, auth_token
     )
     callback_parser = voice_parser or TwilioVoiceCallbackParser()
+    probe_token = (
+        roundtrip_token
+        if roundtrip_token is not None
+        else settings.roundtrip_token
+    )
+    passcode = (
+        web_passcode if web_passcode is not None else settings.web_passcode
+    )
+    passcode_salt = (
+        web_passcode_salt
+        if web_passcode_salt is not None
+        else settings.web_passcode_salt
+    )
+    cookie_secure = (
+        web_cookie_secure
+        if web_cookie_secure is not None
+        else settings.web_cookie_secure
+    )
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
 
@@ -148,16 +178,19 @@ def create_app(
 
     @app.post("/api/roundtrip", response_model=RoundTripResponse)
     def roundtrip(request: Request, payload: RoundTripRequest) -> RoundTripResponse:
-        # Debug probe (issue #4): caller supplies the sender id, so when a
-        # shared secret is configured it must be presented or the probe is
-        # closed — otherwise an unauthenticated caller could drive the agent
-        # under an arbitrary identity (including an allowlisted approver, issue
-        # #7). The webhook path is the real sender-verified channel.
-        expected = f"Bearer {auth_token}" if auth_token else None
-        if expected and not hmac.compare_digest(
+        # Debug probe (issue #4): the caller supplies the sender id, so the
+        # probe is gated by a dedicated bearer token that must be configured —
+        # otherwise an unauthenticated caller could drive the agent under an
+        # arbitrary identity (including an allowlisted approver, issue #7,
+        # security #28). The webhook path is the real sender-verified channel.
+        expected = f"Bearer {probe_token}"
+        if not probe_token or not hmac.compare_digest(
             request.headers.get("Authorization", ""), expected
         ):
-            raise HTTPException(status_code=401)
+            raise HTTPException(
+                status_code=503 if not probe_token else 401,
+                detail="roundtrip probe is not configured",
+            )
         reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
@@ -241,18 +274,20 @@ def create_app(
         return _twiml()
 
     if store is not None:
-        _register_review_routes(app, store)
+        _register_review_routes(app, store, passcode, passcode_salt, cookie_secure)
 
     return app
 
 
-def _passcode_digest(passcode: str) -> str:
-    """Deterministic token proving knowledge of the demo passcode.
+def _passcode_digest(passcode: str, salt: str) -> str:
+    """Deterministic token proving knowledge of the review-web passcode.
 
     The cookie carries this digest, never the passcode itself; the gate
-    recomputes it from the configured passcode and compares constant-time.
+    recomputes it from the configured passcode + salt and compares constant-
+    time. The salt is a per-deploy secret, so the digest cannot be forged
+    offline even if the passcode leaks (security #27).
     """
-    return hashlib.sha256(passcode.encode()).hexdigest()
+    return hmac.new(salt.encode(), passcode.encode(), hashlib.sha256).hexdigest()
 
 
 def _as_number(value: str) -> float | None:
@@ -307,32 +342,46 @@ def _parse_edit_form(form) -> dict:
     return changes
 
 
-def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
+def _register_review_routes(
+    app: FastAPI,
+    store: OrderStore,
+    passcode: str,
+    passcode_salt: str,
+    cookie_secure: bool = True,
+) -> None:
     """Register the passcode-gated review web view (issue #6).
 
-    Every ``/review`` route is gated by a single demo passcode read from the
-    store config; a request without a valid session cookie is redirected to the
-    login page (or rejected, for JSON/POST endpoints). The web decision path
-    calls ``approve_order_web`` on the same Order Processing Core the ADK agent
-    uses, so web and WhatsApp approvals stay in sync and share one audit trail.
+    Every ``/review`` route is gated by a passcode supplied by the deployer
+    (env ``WEB_PASSCODE`` + salt ``WEB_PASSCODE_SALT``, security #27); a
+    request without a valid session cookie is redirected to the login page (or
+    rejected, for JSON/POST endpoints). The web decision path calls
+    ``approve_order_web`` on the same Order Processing Core the ADK agent uses,
+    so web and WhatsApp approvals stay in sync and share one audit trail.
     """
     core = OrderProcessingCore(store)
 
     async def _passcode() -> str:
-        config = await store.get_config()
-        value = config.get("web_passcode")
-        if not value:
+        if not passcode or not passcode_salt:
             raise HTTPException(status_code=503, detail="review view is not configured")
-        return str(value)
+        return passcode
 
     async def _authorized(request: Request) -> bool:
-        expected = _passcode_digest(await _passcode())
+        expected = _passcode_digest(await _passcode(), passcode_salt)
         cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
         return bool(cookie) and hmac.compare_digest(cookie, expected)
 
     async def _require(request: Request) -> None:
         if not await _authorized(request):
             raise HTTPException(status_code=401)
+
+    async def _same_origin(request: Request) -> None:
+        # CSRF guard (security #27 judgment call): the decision/edit/login
+        # POSTs are state-changing, so reject requests that do not come from
+        # this service's own origin. Browsers always send Origin on POST; a
+        # missing or mismatched header is refused.
+        origin = request.headers.get("origin")
+        if not origin or origin.rstrip("/") != str(request.base_url).rstrip("/"):
+            raise HTTPException(status_code=403, detail="cross-origin request")
 
     async def _orders() -> list[Order]:
         orders = await store.list_all_orders()
@@ -425,6 +474,7 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
         audit trail as an ``order_edited`` Order Event.
         """
         await _require(request)
+        await _same_origin(request)
         if await store.get_order(order_id) is None:
             raise HTTPException(status_code=404)
         form = await request.form()
@@ -447,6 +497,7 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
 
     @app.post("/review/login", response_class=HTMLResponse)
     async def review_login(request: Request):
+        await _same_origin(request)
         form = await request.form()
         submitted = str(form.get("passcode", ""))
         if not hmac.compare_digest(submitted, await _passcode()):
@@ -454,14 +505,17 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
         response = RedirectResponse("/review", status_code=303)
         response.set_cookie(
             review.PASSCODE_COOKIE,
-            _passcode_digest(await _passcode()),
+            _passcode_digest(await _passcode(), passcode_salt),
             httponly=True,
             samesite="lax",
+            secure=cookie_secure,
+            max_age=43200,
         )
         return response
 
     @app.post("/review/logout")
-    async def review_logout():
+    async def review_logout(request: Request):
+        await _same_origin(request)
         response = RedirectResponse("/review", status_code=303)
         response.delete_cookie(review.PASSCODE_COOKIE)
         return response
@@ -475,6 +529,7 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
         request: Request, order_id: str, approved: bool
     ) -> RedirectResponse:
         await _require(request)
+        await _same_origin(request)
         action = "approve" if approved else "reject"
         try:
             await core.approve_order_web(order_id, approved=approved)

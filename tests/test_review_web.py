@@ -22,6 +22,8 @@ from src.web import _passcode_digest, create_app
 from .fakes import FakeEchoLlm
 
 PASSCODE = "valence-demo"
+PASSCODE_SALT = "test-salt"
+ORIGIN = "http://testserver"
 
 
 @pytest.fixture
@@ -35,12 +37,23 @@ def client(store):
         agent=build_agent(model=FakeEchoLlm(), store=store),
         session_service=InMemorySessionService(),
         store=store,
+        web_passcode=PASSCODE,
+        web_passcode_salt=PASSCODE_SALT,
+        web_cookie_secure=False,
     )
     return TestClient(app)
 
 
 def _login(client):
-    return client.post("/review/login", data={"passcode": PASSCODE})
+    return client.post(
+        "/review/login",
+        data={"passcode": PASSCODE},
+        headers={"Origin": ORIGIN},
+    )
+
+
+def _post(client, url, **kwargs):
+    return client.post(url, headers={"Origin": ORIGIN}, **kwargs)
 
 
 async def _escalated_order(store) -> str:
@@ -64,18 +77,23 @@ def test_review_requires_login(client):
 
 
 def test_login_with_wrong_passcode_shows_error(client):
-    response = client.post("/review/login", data={"passcode": "nope"})
+    response = _post(client, "/review/login", data={"passcode": "nope"})
     assert response.status_code == 200
     assert "Incorrect passcode" in response.text
     assert client.cookies.get(PASSCODE_COOKIE) is None
 
 
 def test_login_with_correct_passcode_sets_cookie(client):
-    response = client.post(
-        "/review/login", data={"passcode": PASSCODE}, follow_redirects=False
+    response = _post(
+        client,
+        "/review/login",
+        data={"passcode": PASSCODE},
+        follow_redirects=False,
     )
     assert response.status_code == 303
-    assert client.cookies.get(PASSCODE_COOKIE) == _passcode_digest(PASSCODE)
+    assert client.cookies.get(PASSCODE_COOKIE) == _passcode_digest(
+        PASSCODE, PASSCODE_SALT
+    )
 
 
 async def test_escalated_order_appears_in_queue_with_reason_badge(client, store):
@@ -131,8 +149,8 @@ async def test_web_approve_transitions_order_through_core(client, store):
     order_id = await _escalated_order(store)
     _login(client)
 
-    response = client.post(
-        f"/review/orders/{order_id}/approve", follow_redirects=False
+    response = _post(
+        client, f"/review/orders/{order_id}/approve", follow_redirects=False
     )
 
     assert response.status_code == 303
@@ -148,8 +166,8 @@ async def test_web_reject_transitions_order_to_terminal_rejected(client, store):
     order_id = await _escalated_order(store)
     _login(client)
 
-    response = client.post(
-        f"/review/orders/{order_id}/reject", follow_redirects=False
+    response = _post(
+        client, f"/review/orders/{order_id}/reject", follow_redirects=False
     )
 
     assert response.status_code == 303
@@ -167,6 +185,16 @@ async def test_web_approve_requires_login(client, store):
     response = client.post(f"/review/orders/{order_id}/approve")
 
     assert response.status_code == 401
+    assert store.orders[-1].status is OrderStatus.PENDING_REVIEW
+
+
+async def test_web_decide_rejects_cross_origin_even_when_logged_in(client, store):
+    order_id = await _escalated_order(store)
+    _login(client)
+
+    response = client.post(f"/review/orders/{order_id}/approve")
+
+    assert response.status_code == 403
     assert store.orders[-1].status is OrderStatus.PENDING_REVIEW
 
 
@@ -219,7 +247,7 @@ def test_logout_clears_session(client):
     _login(client)
     assert client.cookies.get(PASSCODE_COOKIE) is not None
 
-    client.post("/review/logout")
+    _post(client, "/review/logout")
 
     response = client.get("/review")
     assert "Passcode" in response.text
@@ -249,7 +277,8 @@ async def test_edit_post_updates_order_and_records_event(client, store):
     order_id = await _escalated_order(store)
     _login(client)
 
-    response = client.post(
+    response = _post(
+        client,
         f"/review/orders/{order_id}/edit",
         data={
             "customer": "ChemFab Industries",
@@ -274,7 +303,8 @@ async def test_edit_post_resolves_unknown_customer_and_clears_badge(client, stor
     _login(client)
     assert "Unknown customer" in client.get("/review").text
 
-    client.post(
+    _post(
+        client,
         f"/review/orders/{order_id}/edit",
         data={
             "customer": "",
@@ -307,7 +337,8 @@ async def test_gst_override_shown_on_detail_after_edit(client, store):
     order_id = await _escalated_order(store)
     _login(client)
 
-    client.post(
+    _post(
+        client,
         f"/review/orders/{order_id}/edit",
         data={
             "customer": "",
@@ -328,10 +359,11 @@ async def test_gst_override_shown_on_detail_after_edit(client, store):
 async def test_edit_rejected_order_reopens_and_appears_in_queue(client, store):
     order_id = await _escalated_order(store)
     _login(client)
-    client.post(f"/review/orders/{order_id}/reject")
+    _post(client, f"/review/orders/{order_id}/reject")
     assert "No orders found" in client.get("/review").text
 
-    client.post(
+    _post(
+        client,
         f"/review/orders/{order_id}/edit",
         data={
             "customer": "",
@@ -352,7 +384,8 @@ async def test_edit_post_bad_quantity_redirects_with_error(client, store):
     order_id = await _escalated_order(store)
     _login(client)
 
-    response = client.post(
+    response = _post(
+        client,
         f"/review/orders/{order_id}/edit",
         data={
             "customer": "",
