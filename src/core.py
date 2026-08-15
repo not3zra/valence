@@ -393,11 +393,7 @@ class OrderProcessingCore:
         )
         late = False
         if approved:
-            config = await self._store.get_config()
-            cutoff = parse_cutoff(config)
-            business_tz = parse_business_tz(config)
-            delivery_day = iso_to_dt(order.updated_at).astimezone(business_tz).date()
-            late = is_late_for(order, delivery_day, cutoff, business_tz)
+            late = await self._is_late_for(order)
         return OrderDecision(
             order_id=order.order_id,
             status=order.status.value,
@@ -738,6 +734,21 @@ class OrderProcessingCore:
         """
         return await self._apply_human_decision(order_id, approved, "web")
 
+    async def _is_late_for(self, order: Order) -> bool:
+        """Whether a just-approved order landed after the day's cutoff.
+
+        Shared by the intake path and the human-decision path, so an order
+        approved late — whether auto-approved at intake or by an approver — is
+        flagged the same way and can trigger the dispatch-channel heads-up
+        (issue #9). The delivery day is the order's own approval day in the
+        business timezone.
+        """
+        config = await self._store.get_config()
+        cutoff = parse_cutoff(config)
+        business_tz = parse_business_tz(config)
+        delivery_day = iso_to_dt(order.updated_at).astimezone(business_tz).date()
+        return is_late_for(order, delivery_day, cutoff, business_tz)
+
     async def _apply_human_decision(
         self, order_id: str, approved: bool, by: str
     ) -> OrderDecision:
@@ -778,6 +789,7 @@ class OrderProcessingCore:
             customer_id=order.customer_id,
             delivery_location_id=order.delivery_location_id,
             items=[],
+            late=await self._is_late_for(order),
         )
 
     async def mark_dispatched(self, order_id: str) -> Order:

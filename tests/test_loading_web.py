@@ -264,3 +264,27 @@ def test_cutoff_endpoint_rejects_a_malformed_delivery_day(client):
         headers={"Authorization": "Bearer test-secret"},
     )
     assert response.status_code == 400
+
+
+def test_loading_view_is_closed_when_passcode_unconfigured(store):
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm()),
+        session_service=InMemorySessionService(),
+        store=store,
+    )
+    response = TestClient(app).get("/loading")
+    assert response.status_code == 503
+
+
+def test_loading_login_is_closed_when_passcode_unconfigured(store):
+    app = create_app(
+        agent=build_agent(model=FakeEchoLlm()),
+        session_service=InMemorySessionService(),
+        store=store,
+    )
+    response = TestClient(app).post(
+        "/loading/login",
+        data={"passcode": ""},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 503

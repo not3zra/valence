@@ -26,6 +26,7 @@ from . import review
 from .agent import build_runner, run_turn
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
+from .dispatch import LateOrderNotifier
 from .loading import (
     PASSCODE_COOKIE as LOADING_PASSCODE_COOKIE,
 )
@@ -297,7 +298,10 @@ def create_app(
         return _twiml()
 
     if store is not None:
-        _register_review_routes(app, store, passcode, passcode_salt, cookie_secure)
+        late_notifier = LateOrderNotifier(store, sender)
+        _register_review_routes(
+            app, store, passcode, passcode_salt, cookie_secure, late_notifier
+        )
         _register_loading_routes(app, store, passcode, passcode_salt, cookie_secure)
         _register_cutoff_endpoint(app, store)
 
@@ -410,6 +414,7 @@ def _register_review_routes(
     passcode: str,
     passcode_salt: str,
     cookie_secure: bool = True,
+    late_notifier=None,
 ) -> None:
     """Register the passcode-gated review web view (issue #6).
 
@@ -422,8 +427,15 @@ def _register_review_routes(
     """
     core = OrderProcessingCore(store)
 
+    async def _passcode() -> str:
+        if not passcode or not passcode_salt:
+            raise HTTPException(
+                status_code=503, detail="review view is not configured"
+            )
+        return passcode
+
     async def _authorized(request: Request) -> bool:
-        expected = _passcode_digest(passcode, passcode_salt)
+        expected = _passcode_digest(await _passcode(), passcode_salt)
         cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
         return bool(cookie) and hmac.compare_digest(cookie, expected)
 
@@ -548,12 +560,12 @@ def _register_review_routes(
         _same_origin(request)
         form = await request.form()
         submitted = str(form.get("passcode", ""))
-        if not hmac.compare_digest(submitted, passcode):
+        if not hmac.compare_digest(submitted, await _passcode()):
             return review.login_page(error="Incorrect passcode.")
         response = RedirectResponse("/review", status_code=303)
         response.set_cookie(
             review.PASSCODE_COOKIE,
-            _passcode_digest(passcode, passcode_salt),
+            _passcode_digest(await _passcode(), passcode_salt),
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -580,13 +592,19 @@ def _register_review_routes(
         _same_origin(request)
         action = "approve" if approved else "reject"
         try:
-            await core.approve_order_web(order_id, approved=approved)
+            decision = await core.approve_order_web(order_id, approved=approved)
         except Exception:
             return RedirectResponse(
                 f"/review/orders/{quote(order_id)}?message="
                 f"{quote(f'Could not {action} this order.')}",
                 status_code=303,
             )
+        if (
+            late_notifier is not None
+            and decision.approved
+            and decision.late
+        ):
+            await late_notifier.on_order_late(decision.order_id)
         return RedirectResponse(
             f"/review/orders/{quote(order_id)}", status_code=303
         )
@@ -619,8 +637,15 @@ def _register_loading_routes(
     """
     core = OrderProcessingCore(store)
 
+    async def _passcode() -> str:
+        if not passcode or not passcode_salt:
+            raise HTTPException(
+                status_code=503, detail="loading view is not configured"
+            )
+        return passcode
+
     async def _authorized(request: Request) -> bool:
-        expected = _passcode_digest(passcode, passcode_salt)
+        expected = _passcode_digest(await _passcode(), passcode_salt)
         cookie = request.cookies.get(LOADING_PASSCODE_COOKIE, "")
         return bool(cookie) and hmac.compare_digest(cookie, expected)
 
@@ -644,12 +669,12 @@ def _register_loading_routes(
         _same_origin(request)
         form = await request.form()
         submitted = str(form.get("passcode", ""))
-        if not hmac.compare_digest(submitted, passcode):
+        if not hmac.compare_digest(submitted, await _passcode()):
             return loading_login_page(error="Incorrect passcode.")
         response = RedirectResponse("/loading", status_code=303)
         response.set_cookie(
             LOADING_PASSCODE_COOKIE,
-            _passcode_digest(passcode, passcode_salt),
+            _passcode_digest(await _passcode(), passcode_salt),
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -668,11 +693,13 @@ def _register_loading_routes(
     async def loading_dispatch(request: Request, order_id: str):
         await _require(request)
         _same_origin(request)
+        if await store.get_order(order_id) is None:
+            raise HTTPException(status_code=404, detail="order not found")
         try:
             await core.mark_dispatched(order_id)
         except ValueError:
             raise HTTPException(
-                status_code=404, detail="order not found"
+                status_code=409, detail="order cannot be dispatched"
             ) from None
         return RedirectResponse("/loading", status_code=303)
 

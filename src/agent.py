@@ -102,7 +102,11 @@ def build_agent(
                 core, notifier=notifier, late_notifier=late_notifier
             )
         )
-        tools.append(build_approve_order_tool(core, store))
+        tools.append(
+            build_approve_order_tool(
+                core, store, late_notifier=late_notifier
+            )
+        )
         tools.append(build_loading_list_tool(store))
     return Agent(
         name=settings.app_name,

@@ -309,6 +309,47 @@ async def test_approve_order_tool_clears_pending_so_second_reply_cannot_act():
     assert "error" in second  # nothing pending for a second decision
 
 
+async def test_approve_order_tool_notifies_dispatch_for_a_late_approval():
+    # A human approval landing after a 00:00 cutoff is late (issue #9): the
+    # approve tool must fire the same dispatch-channel heads-up as the intake
+    # path, not only auto-approved orders.
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "00:00"})
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    sender = MockWhatsAppSender()
+    tool = build_approve_order_tool(
+        core, store, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is True
+    assert len(sender.sent) == 1
+    assert sender.sent[0][1].startswith("Late order ")
+    assert [e.event_type for e in store.events[-1:]] == [EVENT_ORDER_LATE]
+
+
+async def test_approve_order_tool_skips_notifier_for_an_on_time_approval():
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "23:59"})
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    sender = MockWhatsAppSender()
+    tool = build_approve_order_tool(
+        core, store, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is False
+    assert sender.sent == []
+
+
 async def test_notifier_only_fires_for_escalations():
     # A clean order is auto-approved and a duplicate never needs a human
     # decision — neither should notify any approver (issue #7 seam contract).

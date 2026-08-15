@@ -170,7 +170,11 @@ def build_process_order_tool(
     return FunctionTool(process_order)
 
 
-def build_approve_order_tool(core: OrderProcessingCore, store) -> FunctionTool:
+def build_approve_order_tool(
+    core: OrderProcessingCore,
+    store,
+    late_notifier: LateOrderNotifier | None = None,
+) -> FunctionTool:
     """Wrap the human approval path as an ``approve_order`` ADK tool.
 
     An allowlisted approver's WhatsApp reply resolves to exactly one pending
@@ -182,6 +186,11 @@ def build_approve_order_tool(core: OrderProcessingCore, store) -> FunctionTool:
     pending — a non-allowlisted number, or an approver with no open request —
     gets an error dict the agent is told to ignore, so it can never act on an
     order it was not invited to decide.
+
+    ``late_notifier``, when supplied, is called when a human approval lands
+    after the daily cutoff — the same dispatch-channel heads-up the intake path
+    fires for auto-approved late orders (issue #9), so a late order approved by
+    an approver notifies the yard too.
     """
 
     async def approve_order(
@@ -214,6 +223,14 @@ def build_approve_order_tool(core: OrderProcessingCore, store) -> FunctionTool:
             return {"error": str(exc)}
 
         await store.clear_pending_approvals_for_order(decision.order_id)
+
+        if (
+            late_notifier is not None
+            and decision.approved
+            and decision.late
+        ):
+            await late_notifier.on_order_late(decision.order_id)
+
         return decision.to_dict()
 
     return FunctionTool(approve_order)
