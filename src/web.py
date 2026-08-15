@@ -432,16 +432,17 @@ def _register_review_routes(app: FastAPI, store: OrderStore) -> None:
             await core.edit_order(order_id, changes=_parse_edit_form(form))
         except (ApprovalError, ConfigurationError) as exc:
             return RedirectResponse(
-                f"/review/orders/{order_id}?message={quote(str(exc))}",
+                f"/review/orders/{quote(order_id)}?message={quote(str(exc))}",
                 status_code=303,
             )
         except (ValueError, TypeError):
             return RedirectResponse(
-                f"/review/orders/{order_id}?message=Could not save changes.",
+                f"/review/orders/{quote(order_id)}?message=Could not save changes.",
                 status_code=303,
             )
         return RedirectResponse(
-            f"/review/orders/{order_id}?notice=Order updated.", status_code=303
+            f"/review/orders/{quote(order_id)}?notice=Order updated.",
+            status_code=303,
         )
 
     @app.post("/review/login", response_class=HTMLResponse)
