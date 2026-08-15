@@ -29,6 +29,8 @@ class OrderStore(Protocol):
 
     async def get_approvers(self) -> list[seed_data.Approver]: ...
 
+    async def get_routes(self) -> list[seed_data.Route]: ...
+
     async def create_order(self, order: Order) -> None: ...
 
     async def get_order(self, order_id: str) -> Order | None: ...
@@ -93,6 +95,13 @@ class FirestoreOrderStore:
             data = doc.to_dict() or {}
             approvers.append(seed_data.Approver(**data))
         return approvers
+
+    async def get_routes(self) -> list[seed_data.Route]:
+        routes = []
+        async for doc in self._client.collection("routes").stream():
+            data = doc.to_dict() or {}
+            routes.append(seed_data.Route(**data))
+        return routes
 
     async def create_order(self, order: Order) -> None:
         await self._client.collection("orders").document(order.order_id).set(
@@ -175,6 +184,7 @@ class InMemoryOrderStore:
         products: list[seed_data.Product] | None = None,
         delivery_locations: list[seed_data.DeliveryLocation] | None = None,
         approvers: list[seed_data.Approver] | None = None,
+        routes: list[seed_data.Route] | None = None,
         config: dict | None = None,
     ) -> None:
         self.customers = (
@@ -188,6 +198,7 @@ class InMemoryOrderStore:
         )
         self.config = config if config is not None else seed_data.CONFIG
         self.approvers = approvers if approvers is not None else seed_data.APPROVERS
+        self.routes = routes if routes is not None else seed_data.ROUTES
         self.orders: list[Order] = []
         self.events: list[OrderEvent] = []
         self.pending_approvals: dict[str, str] = {}
@@ -206,6 +217,9 @@ class InMemoryOrderStore:
 
     async def get_approvers(self) -> list[seed_data.Approver]:
         return list(self.approvers)
+
+    async def get_routes(self) -> list[seed_data.Route]:
+        return list(self.routes)
 
     async def create_order(self, order: Order) -> None:
         self.orders.append(order)

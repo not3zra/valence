@@ -106,6 +106,11 @@ def fake_client():
             "id": product.id,
             **{k: v for k, v in vars(product).items() if k != "id"},
         }
+    for route in seed_data.ROUTES:
+        client.docs[("routes", route.id)] = {
+            "id": route.id,
+            **{k: v for k, v in vars(route).items() if k != "id"},
+        }
     client.docs[("config", "order_processing")] = {
         "id": "order_processing",
         **seed_data.CONFIG,
@@ -128,6 +133,12 @@ async def test_firestore_store_reads_seeded_products(fake_client):
     store = FirestoreOrderStore(fake_client)
     products = await store.get_products()
     assert [p.id for p in products] == [p.id for p in seed_data.PRODUCTS]
+
+
+async def test_firestore_store_reads_seeded_routes(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    routes = await store.get_routes()
+    assert [r.id for r in routes] == [r.id for r in seed_data.ROUTES]
 
 
 async def test_firestore_store_reads_config_from_order_processing_document(fake_client):
@@ -323,11 +334,70 @@ def test_order_event_round_trips_through_from_dict():
     assert rebuilt.created_at == "2026-08-13T12:00:00+00:00"
 
 
+async def test_firestore_store_get_order_reads_a_document(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    await store.create_order(
+        Order(
+            order_id="ord_chemfab",
+            phone="+919812345001",
+            items=[OrderItem(product="p_sulfuric98", quantity=2000, unit="kg")],
+            status=OrderStatus.APPROVED,
+            created_at="2026-08-13T12:00:00+00:00",
+        )
+    )
+
+    order = await store.get_order("ord_chemfab")
+    assert order is not None
+    assert order.order_id == "ord_chemfab"
+    assert order.status is OrderStatus.APPROVED
+
+    assert await store.get_order("ord_missing") is None
+
+
 def test_in_memory_store_exposes_seed_data():
     store = InMemoryOrderStore()
     assert store.config["value_cap_inr"] == seed_data.CONFIG["value_cap_inr"]
     assert {c.phone for c in store.customers} == {c.phone for c in seed_data.CUSTOMERS}
     assert [p.id for p in store.products] == [p.id for p in seed_data.PRODUCTS]
+    assert [r.id for r in store.routes] == [r.id for r in seed_data.ROUTES]
+
+
+async def test_in_memory_store_list_all_orders():
+    store = InMemoryOrderStore()
+    assert await store.list_all_orders() == []
+    store.orders.append(
+        Order(
+            order_id="ord_1",
+            phone="+919812345001",
+            items=[],
+            status=OrderStatus.APPROVED,
+        )
+    )
+    store.orders.append(
+        Order(
+            order_id="ord_2",
+            phone="+919812345002",
+            items=[],
+            status=OrderStatus.PENDING_REVIEW,
+        )
+    )
+    all_orders = await store.list_all_orders()
+    assert {o.order_id for o in all_orders} == {"ord_1", "ord_2"}
+
+
+async def test_in_memory_store_update_order():
+    store = InMemoryOrderStore()
+    order = Order(
+        order_id="ord_1",
+        phone="+919812345001",
+        items=[],
+        status=OrderStatus.APPROVED,
+    )
+    await store.create_order(order)
+    order.status = OrderStatus.DISPATCHED
+    await store.update_order(order)
+    updated = await store.get_order("ord_1")
+    assert updated.status is OrderStatus.DISPATCHED
 
 
 async def test_in_memory_store_records_orders_and_events():

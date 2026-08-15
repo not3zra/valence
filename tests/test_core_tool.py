@@ -18,8 +18,11 @@ from src.core_tool import (
     build_approve_order_tool,
     build_process_order_tool,
 )
-from src.orders import Order, OrderItem, OrderStatus
+from src.dispatch import LateOrderNotifier
+from src.orders import EVENT_ORDER_LATE, Order, OrderItem, OrderStatus
+from src.seed_data import CONFIG
 from src.store import InMemoryOrderStore
+from src.whatsapp import MockWhatsAppSender
 
 from .fakes import FakeEchoLlm, ToolCallingLlm
 
@@ -37,15 +40,17 @@ class _RecordingNotifier:
         self.escalations.append(order_id)
 
 
-async def test_agent_with_store_exposes_process_and_approve_tools():
+async def test_agent_with_store_exposes_core_tools():
     agent = build_agent(model=FakeEchoLlm(), store=InMemoryOrderStore())
     assert isinstance(agent, Agent)
     names = [getattr(tool, "name", None) for tool in agent.tools]
-    assert names == ["process_order", "approve_order"]
+    assert names == ["process_order", "approve_order", "render_loading_list"]
 
 
 def test_runner_invokes_tool_and_pins_sender_identity():
-    store = InMemoryOrderStore()
+    # A late cutoff keeps the approval on-time at any wall clock, so the late
+    # notifier never fires and the event trail stays deterministic.
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "23:59"})
     agent = build_agent(model=ToolCallingLlm(), store=store)
     runner = build_runner(agent, InMemorySessionService())
 
@@ -151,6 +156,55 @@ async def test_process_order_tool_returns_error_without_session_identity():
     assert store.events == []
 
 
+async def test_process_order_tool_notifies_dispatch_for_a_late_approved_order():
+    # A cutoff of 00:00 makes any approval time today late (issue #9): an
+    # auto-approved order after it triggers the dispatch-channel heads-up.
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "00:00"})
+    sender = MockWhatsAppSender()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(
+        core, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        tool_context=FakeContext(user_id="+919812345001"),
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is True
+    assert len(sender.sent) == 1
+    assert sender.sent[0][1].startswith("Late order ")
+    assert [e.event_type for e in store.events[-1:]] == [EVENT_ORDER_LATE]
+
+
+async def test_process_order_tool_skips_notifier_for_an_on_time_order():
+    # A cutoff of 23:59 keeps any approval time today inside the window.
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "23:59"})
+    sender = MockWhatsAppSender()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(
+        core, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        tool_context=FakeContext(user_id="+919812345001"),
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is False
+    assert sender.sent == []
+    assert [e.event_type for e in store.events] == [
+        "order_created",
+        "order_auto_approved",
+    ]
+
+
 async def test_process_order_tool_returns_error_on_unparseable_items():
     store = InMemoryOrderStore()
     core = OrderProcessingCore(store)
@@ -253,6 +307,47 @@ async def test_approve_order_tool_clears_pending_so_second_reply_cannot_act():
     )
 
     assert "error" in second  # nothing pending for a second decision
+
+
+async def test_approve_order_tool_notifies_dispatch_for_a_late_approval():
+    # A human approval landing after a 00:00 cutoff is late (issue #9): the
+    # approve tool must fire the same dispatch-channel heads-up as the intake
+    # path, not only auto-approved orders.
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "00:00"})
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    sender = MockWhatsAppSender()
+    tool = build_approve_order_tool(
+        core, store, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is True
+    assert len(sender.sent) == 1
+    assert sender.sent[0][1].startswith("Late order ")
+    assert [e.event_type for e in store.events[-1:]] == [EVENT_ORDER_LATE]
+
+
+async def test_approve_order_tool_skips_notifier_for_an_on_time_approval():
+    store = InMemoryOrderStore(config={**CONFIG, "cutoff_time": "23:59"})
+    core = OrderProcessingCore(store)
+    await _escalate(store)
+    sender = MockWhatsAppSender()
+    tool = build_approve_order_tool(
+        core, store, late_notifier=LateOrderNotifier(store, sender)
+    )
+
+    result = await tool.func(
+        approved=True, tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert result["approved"] is True
+    assert result["late"] is False
+    assert sender.sent == []
 
 
 async def test_notifier_only_fires_for_escalations():
