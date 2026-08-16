@@ -38,6 +38,7 @@ class Product:
     aliases: list[str]  # aliases the customer might actually type / say
     current_price: float  # catalog price in INR per unit
     tier_price: float | None = None  # published pricing-tier rate in INR per unit
+    gst_pct: float = 18.0  # GST rate on this product + grade, for the voucher
     stock_item: str = "UNMAPPED"  # Tally stock item this product + grade maps to
 
 
@@ -212,6 +213,17 @@ CONFIG: dict[str, object] = {
     "business_timezone": "Asia/Kolkata",  # cutoff and delivery day resolve here
     "dispatch_whatsapp_number": "+919845000003",  # late-order heads-up channel
     "currency": "INR",
+    # Seller identity for the GST split on the Tally voucher (issue #8): the
+    # delivery-location state (falling back to the customer state, then the
+    # customer's GSTIN) compared against ``seller_state`` decides CGST+SGST
+    # (intra-state) vs IGST.
+    "seller_state": "Karnataka",
+    # Mapped Tally GST duty ledgers — the voucher only references these names.
+    "gst_cgst_ledger": "CGST OUTPUT",
+    "gst_sgst_ledger": "SGST OUTPUT",
+    "gst_igst_ledger": "IGST OUTPUT",
+    # Revenue ledger the inventory entries' sales allocations reference.
+    "gst_sales_ledger": "SALES",
 }
 
 SeededDoc = Customer | Product | Route | DeliveryLocation | Approver

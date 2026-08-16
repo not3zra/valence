@@ -29,6 +29,8 @@ export ROUNDTRIP_TOKEN="${ROUNDTRIP_TOKEN:-local-dev-roundtrip-token}"
 export WEB_PASSCODE="${WEB_PASSCODE:-valence-demo}"
 export WEB_PASSCODE_SALT="${WEB_PASSCODE_SALT:-local-dev-salt}"
 export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"
+# Local dev uses the in-memory voucher store (no bucket provisioned).
+export VOUCHER_BUCKET="${VOUCHER_BUCKET:-}"
 
 echo "==> Starting Firestore emulator on :$EMULATOR_PORT"
 gcloud beta emulators firestore start \

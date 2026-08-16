@@ -33,6 +33,7 @@ class Settings:
         self.web_passcode_salt: str = _env("WEB_PASSCODE_SALT", "")
         self.web_cookie_secure: bool = _env("WEB_COOKIE_SECURE", "1") != "0"
         self.cutoff_secret: str = _env("CUTOFF_SECRET", "")
+        self.voucher_bucket: str = _env("VOUCHER_BUCKET", "")
 
 
 settings = Settings()

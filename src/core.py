@@ -25,6 +25,7 @@ from .money import estimate_rate, quantity_is_anomalous, rate_is_anomalous
 from .orders import (
     EVENT_ORDER_APPROVED,
     EVENT_ORDER_AUTO_APPROVED,
+    EVENT_ORDER_BILLED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_DISPATCHED,
     EVENT_ORDER_DUPLICATE,
@@ -810,6 +811,32 @@ class OrderProcessingCore:
                 order_id=order_id,
                 event_type=EVENT_ORDER_DISPATCHED,
                 payload={"order_id": order_id},
+            )
+        )
+        return order
+
+    async def mark_billed(self, order_id: str) -> Order:
+        """Transition an approved or dispatched order to billed (issue #8).
+
+        Only an order that already has a prepared voucher (``voucher_id`` set)
+        may be marked billed — billing without the generated artifact would
+        silently lose it. The transition to ``billed`` is validated by the
+        state machine (ADR-0002); an ``order_billed`` event is appended to the
+        audit trail. Returns the updated order.
+        """
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ValueError(f"order {order_id} not found")
+        if not order.voucher_id:
+            raise ValueError(f"order {order_id} has no prepared voucher")
+        order.status = transition(order.status, OrderStatus.BILLED)
+        order.updated_at = utcnow()
+        await self._store.update_order(order)
+        await self._store.append_order_event(
+            OrderEvent(
+                order_id=order_id,
+                event_type=EVENT_ORDER_BILLED,
+                payload={"voucher_id": order.voucher_id},
             )
         )
         return order

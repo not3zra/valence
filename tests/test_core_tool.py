@@ -16,15 +16,17 @@ from src.agent import build_agent, build_runner, run_turn
 from src.core import OrderProcessingCore
 from src.core_tool import (
     build_approve_order_tool,
+    build_prepare_voucher_tool,
     build_process_order_tool,
 )
 from src.dispatch import LateOrderNotifier
 from src.orders import EVENT_ORDER_LATE, Order, OrderItem, OrderStatus
 from src.seed_data import CONFIG
 from src.store import InMemoryOrderStore
+from src.voucher import InMemoryVoucherStore
 from src.whatsapp import MockWhatsAppSender
 
-from .fakes import FakeEchoLlm, ToolCallingLlm
+from .fakes import FakeEchoLlm, ToolCallingLlm, approved_order_id
 
 
 class FakeContext:
@@ -44,7 +46,12 @@ async def test_agent_with_store_exposes_core_tools():
     agent = build_agent(model=FakeEchoLlm(), store=InMemoryOrderStore())
     assert isinstance(agent, Agent)
     names = [getattr(tool, "name", None) for tool in agent.tools]
-    assert names == ["process_order", "approve_order", "render_loading_list"]
+    assert names == [
+        "process_order",
+        "approve_order",
+        "prepare_voucher",
+        "render_loading_list",
+    ]
 
 
 def test_runner_invokes_tool_and_pins_sender_identity():
@@ -383,3 +390,59 @@ async def test_notifier_only_fires_for_escalations():
     )
     assert escalated["approved"] is False
     assert notifier.escalations == [escalated["order_id"]]
+
+
+async def test_prepare_voucher_tool_generates_and_returns_the_voucher():
+    store = InMemoryOrderStore()
+    storage = InMemoryVoucherStore()
+    order_id = await approved_order_id(store)
+    tool = build_prepare_voucher_tool(store, storage)
+
+    result = await tool.func(order_id=order_id)
+
+    assert "error" not in result
+    assert result["order_id"] == order_id
+    assert result["party_ledger"] == "CHEMFAB INDUSTRIES"
+    assert result["gst_type"] == "CGST"
+    assert result["voucher_id"] == f"voucher_{order_id}"
+    assert storage.blobs[result["voucher_id"]]  # stored XML
+    assert (await store.get_order(order_id)).voucher_id == result["voucher_id"]
+    assert any(
+        e.event_type == "voucher_ready" and e.order_id == order_id
+        for e in store.events
+    )
+
+
+async def test_prepare_voucher_tool_returns_error_for_a_not_approved_order():
+    store = InMemoryOrderStore()
+    storage = InMemoryVoucherStore()
+    core = OrderProcessingCore(store)
+    decision = await core.process(
+        Order(
+            phone="+919999999999",
+            customer=None,
+            items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
+            confidence=0.9,
+        )
+    )
+    tool = build_prepare_voucher_tool(store, storage)
+
+    result = await tool.func(order_id=decision.order_id)
+
+    assert "error" in result
+    assert "not approved" in result["error"]
+    assert storage.blobs == {}
+
+
+async def test_prepare_voucher_tool_returns_error_for_an_unmapped_master():
+    store = InMemoryOrderStore()
+    storage = InMemoryVoucherStore()
+    order_id = await approved_order_id(store)
+    tool = build_prepare_voucher_tool(store, storage)
+    store.products = []
+
+    result = await tool.func(order_id=order_id)
+
+    assert "error" in result
+    assert "not mapped" in result["error"]
+    assert storage.blobs == {}
