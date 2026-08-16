@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from google.adk.tools import FunctionTool, ToolContext
 
+from . import voucher as voucher_mod
 from .approval import ApprovalNotifier
 from .core import ApprovalError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
 from .loading import load_loading_list
 from .orders import Order, OrderItem, utcnow
 from .store import OrderStore
+from .voucher import VoucherStore
 
 # Session-state key that carries a partial order + clarify turn count across the
 # durable per-sender session (issue #5). Held in ADK session state, so a Cloud
@@ -266,3 +268,36 @@ def build_loading_list_tool(store: OrderStore) -> FunctionTool:
         return loading.to_dict()
 
     return FunctionTool(render_loading_list)
+
+
+def build_prepare_voucher_tool(
+    store: OrderStore, storage: VoucherStore
+) -> FunctionTool:
+    """Wrap Tally voucher generation as a ``prepare_voucher`` ADK tool (issue #8).
+
+    The agent calls it on demand after an order is approved: it locks the
+    authoritative line amounts (agreed rate > tier > catalog price — never the
+    draft estimates), derives the GST split from the delivery-location state,
+    and stores a Tally voucher XML that references only the mapped masters. An
+    unmapped master (or a not-approved order) returns an error dict instead of
+    emitting a broken voucher.
+    """
+
+    async def prepare_voucher(order_id: str) -> dict:
+        """Generate and store the Tally voucher for an approved order.
+
+        Args:
+            order_id: The approved order to generate a voucher for.
+
+        Returns:
+            The generated voucher (amounts, GST split, mapped ledgers, and the
+            storage reference) or an error dict when the order cannot be
+            vouchered.
+        """
+        try:
+            voucher = await voucher_mod.prepare_voucher(store, storage, order_id)
+        except voucher_mod.VoucherError as exc:
+            return {"error": str(exc)}
+        return voucher.to_dict()
+
+    return FunctionTool(prepare_voucher)

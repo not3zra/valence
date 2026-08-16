@@ -42,6 +42,12 @@ from .twilio import verify_twilio_signature
 from .twilio_voice import TwilioVoiceCallbackParser
 from .twilio_whatsapp import TwilioWhatsAppParser
 from .voice import VoiceCallbackParser
+from .voucher import (
+    VoucherError,
+    VoucherStore,
+    default_voucher_storage,
+    prepare_voucher,
+)
 from .whatsapp import MockWhatsAppSender, WhatsAppSender, WhatsAppWebhookParser
 
 
@@ -123,6 +129,7 @@ def create_app(
     web_passcode: str | None = None,
     web_passcode_salt: str | None = None,
     web_cookie_secure: bool | None = None,
+    voucher_storage: VoucherStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -151,7 +158,9 @@ def create_app(
     (``/loading``, issue #9) behind the same passcode, and the secret-gated
     Cutoff render endpoint (``/api/cutoff``). The Loading List web view and the
     Cutoff endpoint run off the same ``load_loading_list`` render the ADK tool
-    uses.
+    uses. ``voucher_storage`` backs the review view's prepare/download/mark-
+    billed voucher actions (issue #8); it defaults to the configured Cloud
+    Storage bucket, or the in-memory double when none is set.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -299,8 +308,15 @@ def create_app(
 
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
+        storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
         _register_review_routes(
-            app, store, passcode, passcode_salt, cookie_secure, late_notifier
+            app,
+            store,
+            passcode,
+            passcode_salt,
+            cookie_secure,
+            late_notifier,
+            storage,
         )
         _register_loading_routes(app, store, passcode, passcode_salt, cookie_secure)
         _register_cutoff_endpoint(app, store)
@@ -415,6 +431,7 @@ def _register_review_routes(
     passcode_salt: str,
     cookie_secure: bool = True,
     late_notifier=None,
+    voucher_storage: VoucherStore | None = None,
 ) -> None:
     """Register the passcode-gated review web view (issue #6).
 
@@ -423,9 +440,12 @@ def _register_review_routes(
     request without a valid session cookie is redirected to the login page (or
     rejected, for JSON/POST endpoints). The web decision path calls
     ``approve_order_web`` on the same Order Processing Core the ADK agent uses,
-    so web and WhatsApp approvals stay in sync and share one audit trail.
+    so web and WhatsApp approvals stay in sync and share one audit trail. The
+    voucher actions (issue #8) run the same ``prepare_voucher`` seam the ADK
+    tool uses and the same ``mark_billed`` core transition.
     """
     core = OrderProcessingCore(store)
+    storage = voucher_storage or default_voucher_storage()
 
     async def _passcode() -> str:
         if not passcode or not passcode_salt:
@@ -616,6 +636,84 @@ def _register_review_routes(
     @app.post("/review/orders/{order_id}/reject")
     async def review_reject(request: Request, order_id: str):
         return await _decide(request, order_id, approved=False)
+
+    @app.post("/review/orders/{order_id}/prepare-voucher")
+    async def review_prepare_voucher(request: Request, order_id: str):
+        """Generate an approved order's Tally voucher (issue #8).
+
+        Runs the same ``prepare_voucher`` seam as the ADK tool, so the web
+        button and the agent produce the same voucher, stored in the same
+        place, recorded on the same audit trail.
+        """
+        await _require(request)
+        _same_origin(request)
+        if await store.get_order(order_id) is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        try:
+            await prepare_voucher(store, storage, order_id)
+        except VoucherError as exc:
+            return RedirectResponse(
+                f"/review/orders/{quote(order_id)}?message={quote(str(exc))}",
+                status_code=303,
+            )
+        return RedirectResponse(
+            f"/review/orders/{quote(order_id)}?notice=Voucher prepared.",
+            status_code=303,
+        )
+
+    @app.get("/review/orders/{order_id}/voucher")
+    async def review_voucher_download(request: Request, order_id: str):
+        """Download a prepared order's Tally voucher XML (issue #8).
+
+        The import path is a manual download + file import into Tally; this
+        route serves the stored XML as an attachment.
+        """
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        if not order.voucher_id:
+            raise HTTPException(status_code=404, detail="no voucher prepared")
+        xml = await storage.read(order.voucher_id)
+        if xml is None:
+            raise HTTPException(
+                status_code=404, detail="voucher not found in storage"
+            )
+        # The voucher id is system-generated (``voucher_ord_<hex>``); keep only
+        # safe filename characters so nothing header-breaking reaches the
+        # Content-Disposition value (defense-in-depth: the id never carries
+        # control characters today).
+        safe_name = "".join(
+            ch for ch in str(order.voucher_id) if ch.isalnum() or ch in "._-"
+        )
+        return Response(
+            content=xml,
+            media_type="application/xml",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.xml"'
+            },
+        )
+
+    @app.post("/review/orders/{order_id}/billed")
+    async def review_mark_billed(request: Request, order_id: str):
+        """Mark a prepared voucher's order as billed (issue #8).
+
+        Runs ``mark_billed`` on the same Order Processing Core, so the web
+        action stays on the shared audit trail as an ``order_billed`` event.
+        """
+        await _require(request)
+        _same_origin(request)
+        if await store.get_order(order_id) is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        try:
+            await core.mark_billed(order_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=409, detail="order cannot be marked billed"
+            ) from None
+        return RedirectResponse(
+            f"/review/orders/{quote(order_id)}", status_code=303
+        )
 
 
 def _register_loading_routes(
