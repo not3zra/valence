@@ -1,12 +1,14 @@
 """The media boundary for channel media (photos and call recordings).
 
-Twilio WhatsApp media and Voice recordings are not public: retrieving them
-requires HTTP basic auth (the Account SID as username and the Auth Token as
-password). That fetch lives behind the ``MediaFetcher`` seam, returning a
-neutral ``MediaObject`` (bytes + mime type) so the webhook and agent never
-touch the provider. A failed or unauthenticated fetch returns ``None``; the
-photo webhook then falls back to handling whatever text the message carried,
-and the voice webhook acknowledges the callback so Twilio can retry.
+Retrieving channel media requires provider credentials: Twilio media and Voice
+recordings use HTTP basic auth (Account SID : Auth Token) from an allowlisted
+Twilio host; Meta media (issue #13) uses a media ``id`` fetched through the
+Graph API with a bearer token. Both live behind the ``MediaFetcher`` seam,
+returning a neutral ``MediaObject`` (bytes + mime type) so the webhook and
+agent never touch the provider. A failed or unauthenticated fetch returns
+``None``; the photo webhook then falls back to handling whatever text the
+message carried, and the voice webhook acknowledges the callback so Twilio can
+retry.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from urllib.parse import urlparse
 
 from google.genai import types
 
+from .meta_whatsapp import GRAPH_API_BASE, is_valid_media_id
+
 
 @dataclass(frozen=True)
 class MediaObject:
@@ -30,14 +34,15 @@ class MediaObject:
 
 
 class MediaFetcher(Protocol):
-    """Inbound seam: retrieve the content of a provider media URL.
+    """Inbound seam: retrieve the content of a provider media reference.
 
-    Returns ``None`` when the fetch cannot complete (network error, missing
-    credentials, or a non-success response) so the caller can fall back rather
-    than fail the whole request.
+    ``reference`` is provider-neutral — a Twilio media URL or a Meta media id,
+    whatever the ``InboundMessage`` carried. Returns ``None`` when the fetch
+    cannot complete (network error, missing credentials, or a non-success
+    response) so the caller can fall back rather than fail the whole request.
     """
 
-    def fetch(self, url: str) -> MediaObject | None: ...
+    def fetch(self, reference: str) -> MediaObject | None: ...
 
 
 # Only these hosts may be fetched — Twilio serves WhatsApp media from its own
@@ -80,14 +85,18 @@ class TwilioMediaFetcher:
         opener = urllib.request.build_opener(_NoRedirect)
         return opener.open(request, timeout=30)
 
-    def fetch(self, url: str) -> MediaObject | None:
-        if not self._allowed(url) or not self._account_sid or not self._auth_token:
+    def fetch(self, reference: str) -> MediaObject | None:
+        if (
+            not self._allowed(reference)
+            or not self._account_sid
+            or not self._auth_token
+        ):
             return None
         credentials = base64.b64encode(
             f"{self._account_sid}:{self._auth_token}".encode()
         ).decode()
         request = urllib.request.Request(
-            url, headers={"Authorization": f"Basic {credentials}"}
+            reference, headers={"Authorization": f"Basic {credentials}"}
         )
         try:
             with self._open(request) as response:
@@ -100,15 +109,52 @@ class TwilioMediaFetcher:
         except (OSError, urllib.error.HTTPError, urllib.error.URLError):
             return None
 
-    def _allowed(self, url: str) -> bool:
+    def _allowed(self, reference: str) -> bool:
         """True only for https URLs on an allowlisted Twilio media host."""
         try:
-            parsed = urlparse(url)
+            parsed = urlparse(reference)
         except ValueError:
             return False
         if parsed.scheme != "https" or not parsed.hostname:
             return False
         return parsed.hostname in ALLOWED_MEDIA_HOSTS
+
+
+class MetaMediaFetcher:
+    """Fetch a Meta media id through the Graph API with a bearer token.
+
+    The reference must be a bare media id — never a URL or a path-like value
+    (SSRF / credential-leak guard, CWE-918: the access token must never leave
+    ``graph.facebook.com``). The Graph API host is fixed, redirects are never
+    followed, and the body is size-capped. ``_open`` is the seam tests patch to
+    fake the HTTP round trip; production uses ``urllib``.
+    """
+
+    def __init__(self, access_token: str) -> None:
+        self._access_token = access_token
+        self._open = self._default_open
+
+    def _default_open(self, request: urllib.request.Request):
+        opener = urllib.request.build_opener(_NoRedirect)
+        return opener.open(request, timeout=30)
+
+    def fetch(self, reference: str) -> MediaObject | None:
+        if not self._access_token or not is_valid_media_id(reference):
+            return None
+        url = f"{GRAPH_API_BASE}/{reference}"
+        request = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self._access_token}"}
+        )
+        try:
+            with self._open(request) as response:
+                data = response.read(MAX_MEDIA_BYTES + 1)
+                if len(data) > MAX_MEDIA_BYTES:
+                    return None
+                content_type = response.headers.get("Content-Type", "")
+                mime = content_type.split(";")[0].strip() or "application/octet-stream"
+                return MediaObject(data=data, mime_type=mime)
+        except (OSError, urllib.error.HTTPError, urllib.error.URLError):
+            return None
 
 
 def media_to_inline_part(media: MediaObject) -> types.Part:

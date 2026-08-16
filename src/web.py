@@ -1,10 +1,10 @@
 """FastAPI web layer served from the same Cloud Run instance.
 
 Serves the health page, a liveness probe for Cloud Run, the round-trip probe
-that exercises the deployed agent (message in -> reply out), and the Twilio
-webhooks that receive inbound orders: the WhatsApp "When a message comes in"
-callback (ticket 3, #4) and the Voice recording-status callback (ticket 9,
-#10). The approver-facing review web view is ticket 5 (#6) and the
+that exercises the deployed agent (message in -> reply out), and the webhooks
+that receive inbound orders: the Meta Cloud API WhatsApp webhook (ticket 3,
+#4, swapped to Meta in #13) and the Twilio Voice recording-status callback
+(ticket 9, #10). The approver-facing review web view is ticket 5 (#6) and the
 dispatch-facing Loading List web view is ticket 8 (#9).
 """
 
@@ -35,12 +35,16 @@ from .loading import (
     loading_login_page,
     render_loading_list_html,
 )
-from .media import MediaFetcher, TwilioMediaFetcher
+from .media import (
+    MediaFetcher,
+    MetaMediaFetcher,
+    TwilioMediaFetcher,
+)
+from .meta_whatsapp import MetaWhatsAppParser
 from .orders import Order, OrderStatus
 from .store import OrderStore
 from .twilio import verify_twilio_signature
 from .twilio_voice import TwilioVoiceCallbackParser
-from .twilio_whatsapp import TwilioWhatsAppParser
 from .voice import VoiceCallbackParser
 from .voucher import (
     VoucherError,
@@ -49,6 +53,12 @@ from .voucher import (
     prepare_voucher,
 )
 from .whatsapp import MockWhatsAppSender, WhatsAppSender, WhatsAppWebhookParser
+
+# The WhatsApp webhook is unauthenticated at the network layer (signature
+# verification gates it), so the body is capped before it is read — a real Meta
+# delivery is a few kilobytes; anything larger is not one. Mirrors the 64 KiB
+# cap on the Pub/Sub-adjacent /api/cutoff envelope.
+MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 
 
 def _twiml(status_code: int = 200) -> Response:
@@ -60,6 +70,16 @@ def _twiml(status_code: int = 200) -> Response:
         media_type="application/xml",
         status_code=status_code,
     )
+
+
+def _meta_ack() -> Response:
+    """A plain 200 acknowledgment for Meta's webhook.
+
+    Meta expects any 200; the actual confirmation reply is delivered
+    out-of-band through the sender seam. A rejected request is a plain 403, not
+    TwiML — that XML is Twilio's.
+    """
+    return Response(content="OK", media_type="text/plain")
 
 
 # The voice webhook has no customer text to read, only the recording. This
@@ -122,6 +142,7 @@ def create_app(
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
+    voice_media_fetcher: MediaFetcher | None = None,
     twilio_auth_token: str | None = None,
     voice_parser: VoiceCallbackParser | None = None,
     store: OrderStore | None = None,
@@ -130,6 +151,9 @@ def create_app(
     web_passcode_salt: str | None = None,
     web_cookie_secure: bool | None = None,
     voucher_storage: VoucherStore | None = None,
+    meta_app_secret: str | None = None,
+    meta_verify_token: str | None = None,
+    meta_access_token: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -137,13 +161,19 @@ def create_app(
     LLM and an in-memory session service, and so the production entry point
     (`src.main`) wires the real Gemini agent + Firestore session service.
 
-    ``whatsapp_sender`` defaults to ``MockWhatsAppSender`` (the demo path,
-    issue #4 design note); ``webhook_parser`` defaults to the Twilio WhatsApp
-    adapter; ``voice_parser`` defaults to the Twilio Voice recording-status
-    adapter (issue #10); ``media_fetcher`` defaults to ``TwilioMediaFetcher``
-    (the photo/recording retrieval path); ``twilio_auth_token`` defaults to the
-    configured value and is what both webhooks use to verify the
-    ``X-Twilio-Signature`` header.
+    ``whatsapp_sender`` defaults to ``MockWhatsAppSender`` (the test/demo path,
+    issue #4 design note); the live sender — ``MetaWhatsAppSender`` — is wired
+    by the deployment entry point (`src.main`, issue #13). ``webhook_parser``
+    defaults to the Meta Cloud API adapter (``MetaWhatsAppParser``, the live
+    inbound channel); ``voice_parser`` defaults to the Twilio Voice
+    recording-status adapter (issue #10). ``media_fetcher`` defaults to
+    ``MetaMediaFetcher`` (the photo path now resolves Meta media ids, issue
+    #13); ``voice_media_fetcher`` defaults to ``TwilioMediaFetcher`` — the
+    recording path still fetches authenticated Twilio URLs (issue #10) — and
+    ``twilio_auth_token`` is what both Twilio webhooks use to verify the
+    ``X-Twilio-Signature`` header. The Meta secrets (``meta_app_secret``,
+    ``meta_verify_token``, ``meta_access_token``) default to their environment
+    settings and fail closed when unset (no handshake or signature verifies).
 
     ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
     ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
@@ -164,13 +194,31 @@ def create_app(
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
-    parser = webhook_parser or TwilioWhatsAppParser()
+    meta_app_secret_value = (
+        meta_app_secret
+        if meta_app_secret is not None
+        else settings.meta_app_secret
+    )
+    meta_verify_token_value = (
+        meta_verify_token
+        if meta_verify_token is not None
+        else settings.meta_verify_token
+    )
+    meta_access_token_value = (
+        meta_access_token
+        if meta_access_token is not None
+        else settings.meta_access_token
+    )
+    parser = webhook_parser or MetaWhatsAppParser(
+        meta_app_secret_value, meta_verify_token_value
+    )
     auth_token = (
         twilio_auth_token
         if twilio_auth_token is not None
         else settings.twilio_auth_token
     )
-    fetcher = media_fetcher or TwilioMediaFetcher(
+    fetcher = media_fetcher or MetaMediaFetcher(meta_access_token_value)
+    voice_fetcher = voice_media_fetcher or TwilioMediaFetcher(
         settings.twilio_account_sid, auth_token
     )
     callback_parser = voice_parser or TwilioVoiceCallbackParser()
@@ -227,43 +275,66 @@ def create_app(
         reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
-    @app.post("/api/whatsapp/webhook")
+    @app.api_route("/api/whatsapp/webhook", methods=["GET", "POST"])
     async def whatsapp_webhook(request: Request) -> Response:
-        """Twilio's "When a message comes in" webhook.
+        """Meta Cloud API's WhatsApp webhook (the live inbound channel, #13).
 
-        Verifies the ``X-Twilio-Signature`` in the adapter, parses the
-        form-encoded message through the Twilio adapter, runs one agent turn
-        (Gemini extraction -> ``process_order`` commit), and delivers the
-        agent's confirmation — including the estimated total from draft
-        pricing — back over WhatsApp through the sender seam. Returns an empty
-        TwiML response; the reply travels out-of-band.
+        Meta verifies the endpoint with a GET handshake — ``hub.challenge`` is
+        echoed only when ``hub.verify_token`` matches the configured
+        ``META_VERIFY_TOKEN`` — and signs every POST with
+        ``X-Hub-Signature-256`` (HMAC-SHA256 of the raw body with the App
+        Secret); both mechanisms are owned by the Meta adapter behind the
+        ``WhatsAppWebhookParser`` seam, so the routing layer stays
+        provider-free. The parsed messages are provider-neutral (E.164 sender,
+        text body, media ids); every message in a delivered batch is processed,
+        so a multi-message POST cannot drop an order.
 
-        A message carrying a photo (issue #11) fetches the first media object
-        from the Twilio URL with the required basic auth and passes it to the
-        agent as an inline image, understood in the same Gemini call as text.
-        A media fetch that fails falls back to handling the text the message
-        carried, rather than failing the whole request.
+        A message carrying a photo (issue #11) fetches the first media id
+        through the ``MediaFetcher`` seam — now the Meta Graph API (issue #13)
+        — and passes it to the agent as an inline image, understood in the same
+        Gemini call as text. The agent's confirmation reply — including the
+        estimated total from draft pricing — is delivered back over WhatsApp
+        through the ``WhatsAppSender`` seam. A media fetch that fails falls
+        back to handling the text the message carried, rather than failing the
+        whole request. The endpoint acknowledges with a plain 200; anything
+        with a missing or invalid signature is rejected with 403 before it is
+        parsed or committed, and an oversized body is refused with 413 before
+        it is buffered.
         """
-        form: dict[str, str] = {
-            key: str(value) for key, value in (await request.form()).items()
-        }
-        signature = request.headers.get("X-Twilio-Signature", "")
-        if not verify_twilio_signature(
-            str(request.url), form, signature, auth_token
+        challenge = parser.verification_challenge(
+            method=request.method,
+            query={key: value for key, value in request.query_params.items()},
+        )
+        if challenge is not None:
+            return Response(content=challenge, media_type="text/plain")
+        # Read the body in bounded chunks: the endpoint is signature-gated, not
+        # network-gated, so an oversized POST must be refused before it is
+        # buffered (CWE-400), not verified against an already-read body.
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_WEBHOOK_BODY_BYTES:
+                return Response(status_code=413)
+            chunks.append(chunk)
+        raw_body = b"".join(chunks)
+        if not parser.verify_signature(
+            method=request.method,
+            url=str(request.url),
+            headers={key: value for key, value in request.headers.items()},
+            body=raw_body,
         ):
-            return _twiml(status_code=403)
-        message = parser.parse(form)
-        if message is None or (not message.body and not message.media):
-            return _twiml()
-        media = (
-            fetcher.fetch(message.media[0]) if message.media else None
-        )
-        reply = run_turn(
-            runner, sender_id=message.sender, message=message.body, media=media
-        )
-        if reply:
-            sender.send(message.sender, reply)
-        return _twiml()
+            return Response(status_code=403)
+        for message in parser.parse(method=request.method, body=raw_body):
+            if not message.body and not message.media:
+                continue
+            media = fetcher.fetch(message.media[0]) if message.media else None
+            reply = run_turn(
+                runner, sender_id=message.sender, message=message.body, media=media
+            )
+            if reply:
+                sender.send(message.sender, reply)
+        return _meta_ack()
 
     @app.post("/api/voice/callback")
     async def voice_callback(request: Request) -> Response:
@@ -295,7 +366,7 @@ def create_app(
         recording = callback_parser.parse(form)
         if recording is None:
             return _twiml()
-        media = fetcher.fetch(recording.recording_url)
+        media = voice_fetcher.fetch(recording.recording_url)
         if media is None:
             return Response(status_code=500)
         run_turn(
