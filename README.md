@@ -27,10 +27,12 @@ src/
   core_tool.py       the core exposed as a single ADK tool
   seed_data.py       canonical seed data (customers, products, routes, ...)
   seed_firestore.py  writes seed data into Firestore (emulator or real)
-  whatsapp.py        WhatsApp channel boundary: InboundMessage + sender seam
-  twilio_whatsapp.py Twilio adapter: form parsing + X-Twilio-Signature verify
+  whatsapp.py        WhatsApp channel boundary: InboundMessage + sender/webhook seams
+  meta_whatsapp.py   Meta Cloud API adapter: JSON parsing + X-Hub-Signature-256
+                     verification + Graph API sender (the live channel)
+  twilio_voice.py    Twilio Voice adapter (recording-status callback)
   web.py             FastAPI web layer (/, /health, /api/roundtrip,
-                     /api/whatsapp/webhook)
+                     /api/whatsapp/webhook, /api/voice/callback)
   main.py            production entry point (uvicorn)
 infra/
   provision.sh       one script to provision the full GCP stack
@@ -63,7 +65,7 @@ The service is now on http://localhost:8080:
 - `GET /health` — liveness probe
 - `GET /review` — the review web view (passcode-gated escalation queue)
 - `POST /api/roundtrip` — agent round trip, no Twilio needed:
-- `POST /api/whatsapp/webhook` — Twilio WhatsApp inbound webhook (ticket 3)
+- `POST /api/whatsapp/webhook` — Meta Cloud API WhatsApp inbound webhook (ticket 3)
 
 ```bash
 curl -s localhost:8080/api/roundtrip \
@@ -110,31 +112,44 @@ Omit `--memory` to run it against the emulated Firestore.
 
 ## WhatsApp text intake (ticket 3)
 
-Twilio's WhatsApp sandbox posts every inbound message to
-`/api/whatsapp/webhook` as `application/x-www-form-urlencoded`. The endpoint
-verifies the `X-Twilio-Signature` header against your AuthToken (HMAC-SHA1,
-per Twilio's documented algorithm, in the Twilio adapter), parses
-`From`/`Body` into a provider-neutral `InboundMessage`, then runs one ADK agent
-turn: Gemini extracts the structured order and the `process_order` tool commits
-it through the Order Processing Core. The agent's confirmation reply —
-including the estimated total from draft pricing — is delivered back over
-WhatsApp through the `WhatsAppSender` seam (`MockWhatsAppSender` in the demo,
-which records the reply; a real provider sender is a later swap).
+The live WhatsApp channel is **Meta Cloud API** on the test number (issue #13).
+Meta posts every inbound message to `/api/whatsapp/webhook` as nested JSON
+(`entry` → `changes` → `value` → `messages`). The endpoint answers Meta's GET
+verification handshake — echoing `hub.challenge` only when `hub.verify_token`
+matches the configured `META_VERIFY_TOKEN` — and verifies the `X-Hub-Signature-256`
+header on every POST (HMAC-SHA256 of the raw request body with the App Secret,
+`META_APP_SECRET`), both owned by the Meta adapter in `src/meta_whatsapp.py`.
+It parses `from`/`text.body` into a provider-neutral `InboundMessage`, then runs
+one ADK agent turn: Gemini extracts the structured order and the `process_order`
+tool commits it through the Order Processing Core. The agent's confirmation
+reply — including the estimated total from draft pricing — is delivered back
+over WhatsApp through the `WhatsAppSender` seam (`MockWhatsAppSender` in tests;
+`MetaWhatsAppSender` in production, POSTing to the Graph API
+`/v20.0/{META_PHONE_NUMBER_ID}/messages` with the permanent `META_ACCESS_TOKEN`).
 
-Twilio is a boundary adapter behind a seam: parsing, signature verification and
-provider config all live in `src/twilio_whatsapp.py`, never in the web layer,
-so a Meta Cloud API swap is a contained change (issue #4 design note).
+Meta is a boundary adapter behind a seam: parsing, handshake/signature
+verification and provider config all live in `src/meta_whatsapp.py`, never in
+the web layer. The Twilio WhatsApp adapter was retired in the same swap; the
+Twilio **Voice** webhook (ticket 10) is unchanged and still verifies
+`X-Twilio-Signature`.
 
-To register the webhook in the Twilio Console: WhatsApp → Sandbox settings →
-"When a message comes in" → `https://<service-url>/api/whatsapp/webhook`. The
-sandbox number, join code and credentials come from the provisioned secrets
-(`TWILIO_WHATSAPP_FROM`, `TWILIO_WHATSAPP_JOIN_CODE`, `TWILIO_AUTH_TOKEN`).
+To register the webhook in the Meta developer console (done by a human after
+deploy — note it in the PR):
 
-Drive the whole path locally with a real agent (requires `GOOGLE_API_KEY` and
-`TWILIO_AUTH_TOKEN`, and the emulator running):
+1. In the WhatsApp app's config, set **Callback URL** to
+   `https://<service-url>/api/whatsapp/webhook`.
+2. Set **Verify token** to the same value as the provisioned `META_VERIFY_TOKEN`
+   secret, and select the `messages` field.
+3. Click **Verify and save**: Meta GETs the callback URL with `hub.mode=subscribe`,
+   `hub.verify_token` and `hub.challenge`; the service echoes the challenge.
+4. Every inbound message is then delivered as a signed POST; the service replies
+   in-window through the Graph API sender.
+
+Drive the whole path locally with a real agent (requires `GOOGLE_API_KEY`,
+`META_APP_SECRET`, and the emulator running):
 
 ```bash
-GOOGLE_API_KEY=... TWILIO_AUTH_TOKEN=... \
+GOOGLE_API_KEY=... META_APP_SECRET=... \
   python scripts/smoke_whatsapp_webhook.py \
   --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
 ```
@@ -160,8 +175,8 @@ bindings):
 ```bash
 export PROJECT_ID=my-demo-project
 export GEMINI_API_KEY=...
-export TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=...
-export TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 TWILIO_WHATSAPP_JOIN_CODE=...
+export TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=...   # Twilio Voice (ticket 10)
+export META_APP_SECRET=... META_VERIFY_TOKEN=... META_ACCESS_TOKEN=... META_PHONE_NUMBER_ID=...
 ./infra/provision.sh
 ```
 
@@ -177,10 +192,12 @@ This creates and wires:
   `<service-url>/api/cutoff` (Cutoff chain, used from ticket 8)
 - **IAM** — Cloud Run → Firestore/Storage/Secrets; push subscription → Cloud
   Run invoker
-- **Secrets** — Gemini API key, Twilio credentials, the round-trip probe token
-  (`ROUNDTRIP_TOKEN`), and the review-web passcode + salt
-  (`WEB_PASSCODE`/`WEB_PASSCODE_SALT`) as Secret Manager secrets bound to the
-  deployed service; nothing secret is committed to this repo
+- **Secrets** — Gemini API key, the Meta Cloud API WhatsApp credentials
+  (`META_APP_SECRET`/`META_VERIFY_TOKEN`/`META_ACCESS_TOKEN`/`META_PHONE_NUMBER_ID`),
+  the Twilio Voice credentials (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), the
+  round-trip probe token (`ROUNDTRIP_TOKEN`), and the review-web passcode +
+  salt (`WEB_PASSCODE`/`WEB_PASSCODE_SALT`) as Secret Manager secrets bound to
+  the deployed service; nothing secret is committed to this repo
 
 Verify the deploy:
 
@@ -193,13 +210,14 @@ curl -s "$(gcloud run services describe valence --region=us-central1 --format='v
 
 - Sessions are **Firestore-backed** (ADK `FirestoreSessionService`) — in memory
   for local debugging only, via `SESSION_SERVICE=memory`.
-- The FastAPI web layer (review web view, ticket 5), the Twilio WhatsApp
-  webhook (ticket 3) and the agent round-trip probe are served from this same
-  Cloud Run instance.
+- The FastAPI web layer (review web view, ticket 5), the Meta Cloud API
+  WhatsApp webhook (ticket 3) and the agent round-trip probe are served from
+  this same Cloud Run instance.
 - The WhatsApp webhook rejects any request with a missing or invalid
-  `X-Twilio-Signature` (403) before anything is parsed or committed — the
+  `X-Hub-Signature-256` (403) before anything is parsed or committed — the
   endpoint is unauthenticated otherwise (a phone number is the identity, and a
-  spoofed webhook could mint orders).
+  spoofed webhook could mint orders). Meta's GET verification handshake echoes
+  `hub.challenge` only for a matching `META_VERIFY_TOKEN`.
 - Thresholds (value cap, confidence, dedup window, cutoff time, …) are data in
   Firestore, not code — the approval engine reads them from the `config`
   collection.

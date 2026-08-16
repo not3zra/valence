@@ -3,8 +3,8 @@
 The recording-status callback (issue #10) is a provider boundary. The webhook
 only ever sees the neutral ``VoiceCallRecording`` — the caller identity and the
 authenticated URL the audio is fetched from — while the Twilio-specific parsing
-lives in ``src.twilio_voice``, exactly mirroring the WhatsApp split between
-``src.whatsapp`` (neutral shape + seam) and ``src.twilio_whatsapp`` (adapter).
+lives in ``src.twilio_voice``, mirroring the WhatsApp split between
+``src.whatsapp`` (neutral shape + seam) and ``src.meta_whatsapp`` (adapter).
 """
 
 from __future__ import annotations

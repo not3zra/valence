@@ -42,14 +42,14 @@ async def approved_order_id(store) -> str:
 
 class FakeMediaFetcher:
     """MediaFetcher double: returns a fixed ``MediaObject`` (or None) and
-    records the URLs the webhook asked it to fetch."""
+    records the references the webhook asked it to fetch."""
 
     def __init__(self, media: MediaObject | None = None) -> None:
         self.media = media
-        self.requested_urls: list[str] = []
+        self.requested_refs: list[str] = []
 
-    def fetch(self, url: str) -> MediaObject | None:
-        self.requested_urls.append(url)
+    def fetch(self, reference: str) -> MediaObject | None:
+        self.requested_refs.append(reference)
         return self.media
 
 

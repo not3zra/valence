@@ -57,7 +57,7 @@ def test_voice_callback_understands_recording_and_commits_order():
     app = create_app(
         agent=build_agent(model=VoiceReadingLlm(), store=store),
         session_service=InMemorySessionService(),
-        media_fetcher=fetcher,
+        voice_media_fetcher=fetcher,
         twilio_auth_token=AUTH_TOKEN,
     )
     client = TestClient(app)
@@ -69,7 +69,7 @@ def test_voice_callback_understands_recording_and_commits_order():
     assert response.status_code == 200
     assert "<Response" in response.text
 
-    assert fetcher.requested_urls == [AUDIO_URL]
+    assert fetcher.requested_refs == [AUDIO_URL]
     assert len(store.orders) == 1
     order = store.orders[0]
     assert order.phone == "+919812345001"
@@ -85,7 +85,7 @@ def test_voice_callback_missing_field_escalates_never_clarifies():
     app = create_app(
         agent=build_agent(model=VoiceMissingFieldLlm(), store=store),
         session_service=InMemorySessionService(),
-        media_fetcher=fetcher,
+        voice_media_fetcher=fetcher,
         twilio_auth_token=AUTH_TOKEN,
     )
     client = TestClient(app)
@@ -112,7 +112,7 @@ def test_voice_callback_ignores_non_completed_recording():
     app = create_app(
         agent=build_agent(model=VoiceReadingLlm(), store=store),
         session_service=InMemorySessionService(),
-        media_fetcher=fetcher,
+        voice_media_fetcher=fetcher,
         twilio_auth_token=AUTH_TOKEN,
     )
     client = TestClient(app)
@@ -122,7 +122,7 @@ def test_voice_callback_ignores_non_completed_recording():
         CALLBACK_URL, data=form, headers={"X-Twilio-Signature": _sign(form)}
     )
     assert response.status_code == 200
-    assert fetcher.requested_urls == []
+    assert fetcher.requested_refs == []
     assert store.orders == []
 
 
@@ -149,7 +149,7 @@ def test_voice_callback_fetch_failure_acks_without_processing():
     app = create_app(
         agent=build_agent(model=VoiceReadingLlm(), store=store),
         session_service=InMemorySessionService(),
-        media_fetcher=fetcher,
+        voice_media_fetcher=fetcher,
         twilio_auth_token=AUTH_TOKEN,
     )
     client = TestClient(app)
@@ -159,7 +159,7 @@ def test_voice_callback_fetch_failure_acks_without_processing():
         CALLBACK_URL, data=form, headers={"X-Twilio-Signature": _sign(form)}
     )
     assert response.status_code == 500
-    assert fetcher.requested_urls == [AUDIO_URL]
+    assert fetcher.requested_refs == [AUDIO_URL]
     # There is no message text to fall back to on the voice channel, so a
     # failed fetch returns an error status and Twilio retries the
     # recording-status callback, rather than committing a fabricated order or
