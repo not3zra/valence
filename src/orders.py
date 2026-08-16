@@ -77,6 +77,8 @@ EVENT_ORDER_REJECTED = "order_rejected"
 EVENT_ORDER_EDITED = "order_edited"
 EVENT_ORDER_DISPATCHED = "order_dispatched"
 EVENT_ORDER_LATE = "order_late"
+EVENT_VOUCHER_READY = "voucher_ready"
+EVENT_ORDER_BILLED = "order_billed"
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,7 @@ class Order:
     delivery_location_id: str | None = None
     draft_value_inr: float = 0.0
     gst_override_pct: float | None = None
+    voucher_id: str | None = None
     created_at: str = field(default_factory=utcnow)
     updated_at: str = field(default_factory=utcnow)
 
@@ -134,6 +137,7 @@ class Order:
             "escalation_reasons": list(self.escalation_reasons),
             "draft_value_inr": self.draft_value_inr,
             "gst_override_pct": self.gst_override_pct,
+            "voucher_id": self.voucher_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -160,6 +164,7 @@ class Order:
                 if data.get("gst_override_pct") is not None
                 else None
             ),
+            voucher_id=data.get("voucher_id"),
             created_at=str(data.get("created_at", utcnow())),
             updated_at=str(data.get("updated_at", utcnow())),
         )

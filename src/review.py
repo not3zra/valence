@@ -268,6 +268,43 @@ def queue_page(orders: list[Order], stats: dict[str, int], q: str | None = None)
     return page("Review", body)
 
 
+def _voucher_card(order: Order) -> str:
+    """The billing-voucher actions on an order detail (issue #8).
+
+    An approved order can have its Tally voucher prepared from here (the same
+    seam the ADK tool uses); a prepared voucher is downloadable for manual Tally
+    import and can be marked billed. Nothing is offered for a pending or
+    rejected order.
+    """
+    order_id = _escaped(order.order_id)
+    if order.voucher_id:
+        voucher_id = _escaped(order.voucher_id)
+        mark_billed = ""
+        if order.status in (OrderStatus.APPROVED, OrderStatus.DISPATCHED):
+            mark_billed = (
+                f"<form class='inline' method='post' "
+                f"action='/review/orders/{order_id}/billed'>"
+                f"<button class='btn' type='submit'>Mark billed</button></form>"
+            )
+        body = (
+            f"<p>Voucher <strong>{voucher_id}</strong> is ready.</p>"
+            f"<a class='btn' href='/review/orders/{order_id}/voucher'>"
+            f"Download voucher XML</a> {mark_billed}"
+        )
+    elif order.status is OrderStatus.APPROVED:
+        body = (
+            f"<form class='inline' method='post' "
+            f"action='/review/orders/{order_id}/prepare-voucher'>"
+            f"<button class='approve' type='submit'>Prepare voucher</button></form>"
+        )
+    else:
+        body = (
+            "<p class='sub' style='margin:0'>No voucher — the order is not "
+            "approved.</p>"
+        )
+    return f"<div class='card'><h2>Tally voucher</h2>{body}</div>"
+
+
 def order_page(
     order: Order,
     events: list[OrderEvent],
@@ -325,6 +362,7 @@ def order_page(
         f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
         f"<div class='card'><h2>Items</h2><table class='timeline'>"
         f"<tr><th>Product</th><th>Quantity</th><th>Rate</th></tr>{items}</table></div>"
+        f"{_voucher_card(order)}"
         f"<div class='card'><h2>Order Event timeline</h2>"
         f"<table class='timeline'>{timeline}</table></div>"
         f"<div class='card'><h2>Decision</h2>{actions}</div>"

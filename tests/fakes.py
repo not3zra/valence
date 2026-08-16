@@ -17,6 +17,29 @@ from google.genai import types
 from src.media import MediaObject
 
 
+async def approved_order_id(store) -> str:
+    """Approve a clean seeded order through the core and return its id.
+
+    Shared by the voucher tests (issue #8): the Order Processing Core
+    auto-approves a known-customer order, giving the voucher seam a ready
+    approved order to work on.
+    """
+    from src.core import OrderProcessingCore
+    from src.orders import Order, OrderItem
+
+    decision = await OrderProcessingCore(store).process(
+        Order(
+            phone="+919812345001",
+            customer="ChemFab Industries",
+            items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
+            delivery_location="Peenya Industrial Area",
+            confidence=0.9,
+        )
+    )
+    assert decision.approved
+    return decision.order_id
+
+
 class FakeMediaFetcher:
     """MediaFetcher double: returns a fixed ``MediaObject`` (or None) and
     records the URLs the webhook asked it to fetch."""

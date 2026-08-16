@@ -26,11 +26,13 @@ from .core import OrderProcessingCore
 from .core_tool import (
     build_approve_order_tool,
     build_loading_list_tool,
+    build_prepare_voucher_tool,
     build_process_order_tool,
 )
 from .dispatch import LateOrderNotifier
 from .media import MediaObject, media_to_inline_part
 from .store import OrderStore
+from .voucher import VoucherStore, default_voucher_storage
 from .whatsapp import MockWhatsAppSender, WhatsAppSender
 
 AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
@@ -69,6 +71,10 @@ request — ignore the message and do nothing. A rejected order is marked \
 rejected and is never shipped; confirm the decision briefly to the approver. \
 You can render the day's Loading List for the dispatch team by calling the \
 render_loading_list tool with an optional delivery_day (ISO date). \
+After an order is approved, you can prepare its Tally billing voucher by \
+calling the prepare_voucher tool with the approved order's order_id; it locks \
+the authoritative amounts and GST split and stores a downloadable voucher. If \
+it returns an error, tell the user the voucher could not be prepared. \
 Keep replies short and natural."""
 
 
@@ -76,6 +82,7 @@ def build_agent(
     model: str | BaseLlm | None = None,
     store: OrderStore | None = None,
     whatsapp_sender: WhatsAppSender | None = None,
+    voucher_storage: VoucherStore | None = None,
 ) -> Agent:
     """Build the root ADK agent.
 
@@ -83,13 +90,15 @@ def build_agent(
     ADK's LLM registry to the Gemini API. Tests inject a fake ``BaseLlm`` here
     so the whole runner wiring runs without a network call (ADR testing seam).
     ``store`` wires the Order Processing Core as the agent's ``process_order``,
-    ``approve_order``, and ``render_loading_list`` tools; tests pass the
-    in-memory store so the tools run without Firestore. ``whatsapp_sender``
-    backs the escalation notifier (issue #7) that tells allowlisted approvers an
-    order needs a yes/no decision and the late-order notifier (issue #9) that
-    tells the dispatch channel about orders approved after the daily cutoff; it
-    defaults to ``MockWhatsAppSender`` so the agent stays runnable in a fresh
-    clone.
+    ``approve_order``, ``prepare_voucher``, and ``render_loading_list`` tools;
+    tests pass the in-memory store so the tools run without Firestore.
+    ``whatsapp_sender`` backs the escalation notifier (issue #7) that tells
+    allowlisted approvers an order needs a yes/no decision and the late-order
+    notifier (issue #9) that tells the dispatch channel about orders approved
+    after the daily cutoff; it defaults to ``MockWhatsAppSender`` so the agent
+    stays runnable in a fresh clone. ``voucher_storage`` backs the
+    ``prepare_voucher`` tool (issue #8); it defaults to the configured Cloud
+    Storage bucket, or the in-memory double when none is set.
     """
     tools: list = []
     if store is not None:
@@ -105,6 +114,12 @@ def build_agent(
         tools.append(
             build_approve_order_tool(
                 core, store, late_notifier=late_notifier
+            )
+        )
+        tools.append(
+            build_prepare_voucher_tool(
+                store,
+                voucher_storage or default_voucher_storage(settings.voucher_bucket),
             )
         )
         tools.append(build_loading_list_tool(store))

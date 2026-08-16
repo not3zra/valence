@@ -158,6 +158,7 @@ gcloud run deploy "$SERVICE" \
   --set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest \
   --set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest \
   --set-secrets=CUTOFF_SECRET=CUTOFF_SECRET:latest \
+  --set-env-vars="VOUCHER_BUCKET=valence-${PROJECT_ID}-vouchers" \
   --project="$PROJECT_ID"
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" \
