@@ -1,4 +1,4 @@
-"""End-to-end WhatsApp approval flow (issue #7).
+"""End-to-end WhatsApp approval flow (issue #7, swapped to Meta #13).
 
 An escalated order (unverified number) sends an approval-requested notification
 to every allowlisted approver over WhatsApp and records an Order Event. The
@@ -9,45 +9,77 @@ brief confirmation. A non-allowlisted number with nothing pending is ignored.
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 from google.adk.sessions import InMemorySessionService
 
 from src.agent import build_agent
+from src.meta_whatsapp import build_meta_signature
 from src.orders import OrderStatus
 from src.store import InMemoryOrderStore
-from src.twilio import build_twilio_signature
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 
 from .fakes import ApprovingToolCallingLlm, ConfirmingToolCallingLlm
 
 WEBHOOK_URL = "/api/whatsapp/webhook"
-AUTH_TOKEN = "test-auth-token"
+APP_SECRET = "test-app-secret"
+VERIFY_TOKEN = "test-verify-token"
 APPROVER_PHONE = "+919845000001"  # a_nikhil
 
 
-def _sign(form: dict[str, str]) -> str:
-    return build_twilio_signature(
-        f"http://testserver{WEBHOOK_URL}", form, AUTH_TOKEN
-    )
+def _payload(sender: str, body: str) -> dict:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "16505551111",
+                                "phone_number_id": "123456789012345",
+                            },
+                            "messages": [
+                                {
+                                    "from": sender.lstrip("+"),
+                                    "id": "wamid.test",
+                                    "timestamp": "1700000000",
+                                    "type": "text",
+                                    "text": {"body": body},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
 
 
-def _escalating_form() -> dict[str, str]:
+def _sign(payload: dict) -> str:
+    return build_meta_signature(json.dumps(payload).encode(), APP_SECRET)
+
+
+def _post(client, payload, headers=None):
+    """POST the exact bytes Meta would send, signed over those bytes."""
+    body = json.dumps(payload).encode()
+    hdrs = {"content-type": "application/json"}
+    if headers is not None:
+        hdrs.update(headers)
+    else:
+        hdrs["X-Hub-Signature-256"] = _sign(payload)
+    return client.post(WEBHOOK_URL, content=body, headers=hdrs)
+
+
+def _escalating_payload() -> dict:
     # An unverified number escalates the order (unknown_customer), which is
     # what triggers the approval-requested notification to approvers.
-    return {
-        "From": "whatsapp:+919999999999",
-        "Body": "500 drums of sulfuric acid please",
-        "NumMedia": "0",
-    }
-
-
-def _reply_form(phone: str, body: str) -> dict[str, str]:
-    return {
-        "From": f"whatsapp:{phone}",
-        "Body": body,
-        "NumMedia": "0",
-    }
+    return _payload("919999999999", "500 drums of sulfuric acid please")
 
 
 def _escalate(sender) -> InMemoryOrderStore:
@@ -58,13 +90,12 @@ def _escalate(sender) -> InMemoryOrderStore:
         ),
         session_service=InMemorySessionService(),
         whatsapp_sender=sender,
-        twilio_auth_token=AUTH_TOKEN,
+        meta_app_secret=APP_SECRET,
+        meta_verify_token=VERIFY_TOKEN,
     )
-    form = _escalating_form()
+    payload = _escalating_payload()
     client = TestClient(app)
-    response = client.post(
-        WEBHOOK_URL, data=form, headers={"X-Twilio-Signature": _sign(form)}
-    )
+    response = _post(client, payload)
     assert response.status_code == 200
     return store
 
@@ -78,12 +109,11 @@ def _decide(store, sender, phone, body, approved) -> None:
         ),
         session_service=InMemorySessionService(),
         whatsapp_sender=sender,
-        twilio_auth_token=AUTH_TOKEN,
+        meta_app_secret=APP_SECRET,
+        meta_verify_token=VERIFY_TOKEN,
     )
-    form = _reply_form(phone, body)
-    response = TestClient(app).post(
-        WEBHOOK_URL, data=form, headers={"X-Twilio-Signature": _sign(form)}
-    )
+    payload = _payload(phone, body)
+    response = _post(TestClient(app), payload)
     assert response.status_code == 200
 
 
