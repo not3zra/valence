@@ -129,7 +129,9 @@ def build_process_order_tool(
 
         # A pending partial order older than the configured timeout is promoted
         # to escalation before this new message is handled (issue #5): the
-        # customer never answered the clarifying question.
+        # customer never answered the clarifying question. The abandoned
+        # partial escalates as it was held — the fresh message is handled on
+        # its own below.
         if pending is not None:
             policy = await core.clarify_policy()
             try:
@@ -144,21 +146,29 @@ def build_process_order_tool(
                     state[CLARIFY_STATE_KEY] = None
                 pending = None
 
-        decision = await core.process(order)
+        held = Order.from_dict(pending["order"]) if pending is not None else None
+
+        # A fresh extraction is merged into the held partial, never replacing it
+        # (issue #34) — see ``OrderProcessingCore.merge_held_order`` for the
+        # accumulation rules. The merged order is re-run through the same core
+        # evaluation, so an order completed across turns is decided exactly as
+        # if it arrived complete in one message.
+        merged = await core.merge_held_order(held, order) if held is not None else order
+
+        decision = await core.process(merged)
 
         if decision.clarify:
             turn = (pending["turn"] if pending is not None else 0) + 1
             policy = await core.clarify_policy()
             if turn > policy["clarify_turn_cap"]:
-                # The loop ran past its turn cap -> hand the held partial order
-                # to a human as a flagged escalation (issue #5).
-                held = pending["order"] if pending is not None else order.to_dict()
-                decision = await core.process(Order.from_dict(held), clarify=False)
+                # The loop ran past its turn cap -> hand the accumulated (merged)
+                # partial order to a human as a flagged escalation (issue #5).
+                decision = await core.process(merged, clarify=False)
                 if state is not None:
                     state[CLARIFY_STATE_KEY] = None
             elif state is not None:
                 state[CLARIFY_STATE_KEY] = {
-                    "order": order.to_dict(),
+                    "order": merged.to_dict(),
                     "turn": turn,
                     "created_at": utcnow(),
                 }

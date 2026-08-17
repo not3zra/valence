@@ -222,6 +222,26 @@ def _new_order_id() -> str:
     return f"ord_{uuid.uuid4().hex[:12]}"
 
 
+def _same_product(
+    candidate: OrderItem, prior: OrderItem, products: list[seed_data.Product]
+) -> bool:
+    """True when two item lines state the same product.
+
+    Cataloged text resolves through the alias table so "Sulphuric Acid" and
+    "  sulfuric  acid  " are the same product (ADR-0003); an uncataloged line
+    is matched by its normalized text. Unlike the dedup first-item check, the
+    quantity need not match — the latest statement is authoritative either way.
+    """
+    candidate_product = resolve_product(candidate.product, products)
+    prior_product = resolve_product(prior.product, products)
+    if candidate_product is None and prior_product is None:
+        needle = _normalize(candidate.product)
+        return bool(needle) and needle == _normalize(prior.product)
+    if candidate_product is None or prior_product is None:
+        return False
+    return candidate_product.id == prior_product.id
+
+
 def _first_item_matches(
     candidate: OrderItem, prior: OrderItem, products: list[seed_data.Product]
 ) -> bool:
@@ -235,14 +255,7 @@ def _first_item_matches(
     """
     if candidate.quantity != prior.quantity:
         return False
-    candidate_product = resolve_product(candidate.product, products)
-    prior_product = resolve_product(prior.product, products)
-    if candidate_product is None and prior_product is None:
-        needle = _normalize(candidate.product)
-        return bool(needle) and needle == _normalize(prior.product)
-    if candidate_product is None or prior_product is None:
-        return False
-    return candidate_product.id == prior_product.id
+    return _same_product(candidate, prior, products)
 
 
 class OrderProcessingCore:
@@ -508,6 +521,44 @@ class OrderProcessingCore:
             customer=customer,
             location=location,
             resolved=resolved,
+        )
+
+    async def merge_held_order(self, held: Order, incoming: Order) -> Order:
+        """Merge a fresh extraction into the held partial order (issue #34).
+
+        The held partial accumulates, never gets replaced: new item lines from
+        the incoming extraction are appended, a line for a product already in
+        the held order is replaced by the latest statement (the same
+        alias-aware product match as the dedup seam, ADR-0003), and a delivery
+        location or customer supplied in the later reply fills the gap — a
+        supplied scalar never overwrites a value the held order already has.
+        The phone stays the held session identity; confidence, language, and
+        channel come from the incoming extraction, the caller's current
+        statement (the model re-reads the whole conversation each turn, so its
+        latest confidence covers the accumulated order as a whole).
+
+        The caller then re-runs the merged order through the same evaluation
+        as any intake, so an order completed across turns is decided exactly as
+        if it had arrived complete in one message. A fresh ``Order`` is
+        returned; the held order is left untouched.
+        """
+        products = await self._store.get_products()
+        items = list(held.items)
+        for new_item in incoming.items:
+            for index, old_item in enumerate(items):
+                if _same_product(new_item, old_item, products):
+                    items[index] = new_item
+                    break
+            else:
+                items.append(new_item)
+        return Order(
+            phone=held.phone,
+            customer=held.customer or incoming.customer,
+            delivery_location=held.delivery_location or incoming.delivery_location,
+            confidence=incoming.confidence,
+            source_language=incoming.source_language,
+            source_channel=incoming.source_channel,
+            items=items,
         )
 
     async def edit_order(self, order_id: str, *, changes: dict) -> Order:
