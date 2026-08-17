@@ -10,6 +10,8 @@ an in-flight clarifying conversation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from google.adk.agents import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.integrations.firestore.firestore_session_service import (
@@ -179,6 +181,7 @@ def run_turn(
     sender_id: str,
     message: str,
     media: MediaObject | None = None,
+    on_event: Callable[[object], None] | None = None,
 ) -> str:
     """Run one agent turn for ``sender_id`` and return the final reply text.
 
@@ -188,6 +191,13 @@ def run_turn(
     is attached as an inline media part — an image for a photo of a handwritten
     order (issue #11), audio for a recorded call (issue #10) — understood in
     the same Gemini call as text: one agent, every channel.
+
+    ``on_event``, when supplied, is invoked for every ADK event the turn
+    produces before the next one is consumed. It is the eval harness's
+    observation seam (issue #36): the harness records the model's tool calls
+    and their results from the function-call/function-response parts, so a
+    safety case can assert the approver / voucher / loading-list tools were
+    never invoked. Production callers never pass it.
     """
     parts = [types.Part(text=message)]
     if media is not None:
@@ -198,6 +208,8 @@ def run_turn(
         session_id=sender_id,
         new_message=content,
     ):
+        if on_event is not None:
+            on_event(event)
         if event.is_final_response():
             return _event_text(event)
     return ""

@@ -42,6 +42,8 @@ scripts/
   smoke_roundtrip.py real-Gemini message in -> reply out smoke test
   smoke_whatsapp_webhook.py  drive the WhatsApp webhook path with a real agent
   feed_order.py      drive the Order Processing Core with no channel
+  eval_agent.py      agent eval harness: real-model case runs + pass rates (issue #36)
+  eval_cases/        committed media samples the eval cases drive (photo, call audio)
 Dockerfile
 ```
 
@@ -205,6 +207,38 @@ Verify the deploy:
 python scripts/smoke_roundtrip.py   # requires GOOGLE_API_KEY; or via HTTPS:
 curl -s "$(gcloud run services describe valence --region=us-central1 --format='value(status.url)')/health"
 ```
+
+## Agent eval harness (issue #36)
+
+The net that catches model misbehaviour before the live demo. It drives the
+real agent over the same `run_turn` seam the webhooks use, one realistic case
+at a time, and asserts each case's decision/tool outcome from the store plus the
+recorded tool trace:
+
+```bash
+GOOGLE_API_KEY=... python scripts/eval_agent.py              # the full case set
+GOOGLE_API_KEY=... python scripts/eval_agent.py --category safety
+GOOGLE_API_KEY=... python scripts/eval_agent.py --cases happy-hindi-text
+python scripts/eval_agent.py --list                          # list cases, no key
+```
+
+- 24 cases across happy path, accumulation (the issue #34 regression gate),
+  quantity normalization, money-policy edges, safety/prompt injection, the
+  approver multi-session, channel rules, robustness, dispatch/late-order,
+  language, and a real recorded-call audio case (graded at decision level,
+  never exact transcription).
+- The clock is pinned per case (`PinnedClock`), so time-dependent cases (dedup
+  window, clarify turn cap, late order) fail only on a real regression, never on
+  when the run happened.
+- A recorded tool trace lets a safety case assert the approver / voucher /
+  loading-list tools were **never** invoked, and a decision case reads the
+  core's decision back from the recorded `process_order` result.
+- Hard failures (wrong status, wrong escalation reason, a privileged tool
+  invoked) fail the run with a non-zero exit code and report expected vs
+  produced per case. Reply-text checks are reported leniently — a soft failure
+  is shown but never fails the run.
+- Gated on `GOOGLE_API_KEY` (or `GEMINI_API_KEY`): an unkeyed run exits 2 with
+  a clear message instead of a wall of auth errors.
 
 ## Notes
 
