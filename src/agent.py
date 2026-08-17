@@ -49,9 +49,11 @@ clarification, and never say it is under approval; just tell them the order \
 was already received. \
 If the decision says clarify is true, the order is missing a field the \
 customer can supply — never confirm it and never say it is under approval. \
-Ask, in the customer's own language, for exactly the missing_fields listed \
-(usually items or delivery_location) so they can fill the gap; a partial order \
-stays open in the session and their reply resumes it. \
+The lines the customer already sent are kept, and each reply is merged into \
+them, so ask — in the customer's own language — only for exactly the \
+missing_fields listed (usually items or delivery_location) and never make \
+them repeat earlier lines. A partial order stays open in the session and their \
+reply resumes it. \
 For a photo of a handwritten order sheet (source_channel "photo"), read the \
 image into the same structured order as text. Never guess an order you cannot \
 read: if the handwriting is illegible, call process_order with low confidence \
