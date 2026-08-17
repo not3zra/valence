@@ -16,6 +16,7 @@ from src.agent import build_agent, build_runner, run_turn
 from src.core import OrderProcessingCore
 from src.core_tool import (
     build_approve_order_tool,
+    build_loading_list_tool,
     build_prepare_voucher_tool,
     build_process_order_tool,
 )
@@ -398,7 +399,9 @@ async def test_prepare_voucher_tool_generates_and_returns_the_voucher():
     order_id = await approved_order_id(store)
     tool = build_prepare_voucher_tool(store, storage)
 
-    result = await tool.func(order_id=order_id)
+    result = await tool.func(
+        order_id=order_id, tool_context=FakeContext(user_id="+919845000001")
+    )
 
     assert "error" not in result
     assert result["order_id"] == order_id
@@ -411,6 +414,75 @@ async def test_prepare_voucher_tool_generates_and_returns_the_voucher():
         e.event_type == "voucher_ready" and e.order_id == order_id
         for e in store.events
     )
+
+
+async def test_prepare_voucher_tool_rejects_a_non_approver_sender():
+    store = InMemoryOrderStore()
+    storage = InMemoryVoucherStore()
+    order_id = await approved_order_id(store)
+    tool = build_prepare_voucher_tool(store, storage)
+
+    result = await tool.func(
+        order_id=order_id, tool_context=FakeContext(user_id="+919812345001")
+    )
+
+    assert "error" in result
+    assert "approver-only" in result["error"]
+    assert storage.blobs == {}
+    assert (await store.get_order(order_id)).voucher_id is None
+
+
+async def test_prepare_voucher_tool_rejects_a_missing_sender_identity():
+    store = InMemoryOrderStore()
+    storage = InMemoryVoucherStore()
+    order_id = await approved_order_id(store)
+    tool = build_prepare_voucher_tool(store, storage)
+
+    result = await tool.func(order_id=order_id)
+
+    assert "error" in result
+    assert "approver-only" in result["error"]
+    assert storage.blobs == {}
+
+
+async def test_render_loading_list_tool_renders_for_an_approver_sender():
+    store = InMemoryOrderStore()
+    await approved_order_id(store)
+    tool = build_loading_list_tool(store)
+
+    result = await tool.func(
+        tool_context=FakeContext(user_id="+919845000001")
+    )
+
+    assert "error" not in result
+    assert result["delivery_day"]
+    assert any(
+        entry["order_id"]
+        for section in result["sections"]
+        for entry in section["entries"]
+    ) or result["unrouted"] or result["late"]
+
+
+async def test_render_loading_list_tool_rejects_a_non_approver_sender():
+    store = InMemoryOrderStore()
+    tool = build_loading_list_tool(store)
+
+    result = await tool.func(
+        tool_context=FakeContext(user_id="+919812345001")
+    )
+
+    assert "error" in result
+    assert "approver-only" in result["error"]
+
+
+async def test_render_loading_list_tool_rejects_a_missing_sender_identity():
+    store = InMemoryOrderStore()
+    tool = build_loading_list_tool(store)
+
+    result = await tool.func()
+
+    assert "error" in result
+    assert "approver-only" in result["error"]
 
 
 async def test_prepare_voucher_tool_returns_error_for_a_not_approved_order():
@@ -427,7 +499,10 @@ async def test_prepare_voucher_tool_returns_error_for_a_not_approved_order():
     )
     tool = build_prepare_voucher_tool(store, storage)
 
-    result = await tool.func(order_id=decision.order_id)
+    result = await tool.func(
+        order_id=decision.order_id,
+        tool_context=FakeContext(user_id="+919845000001"),
+    )
 
     assert "error" in result
     assert "not approved" in result["error"]
@@ -441,7 +516,9 @@ async def test_prepare_voucher_tool_returns_error_for_an_unmapped_master():
     tool = build_prepare_voucher_tool(store, storage)
     store.products = []
 
-    result = await tool.func(order_id=order_id)
+    result = await tool.func(
+        order_id=order_id, tool_context=FakeContext(user_id="+919845000001")
+    )
 
     assert "error" in result
     assert "not mapped" in result["error"]

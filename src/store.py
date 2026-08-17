@@ -14,7 +14,7 @@ from typing import Protocol
 from google.cloud import firestore
 
 from . import seed_data
-from .orders import Order, OrderEvent
+from .orders import Order, OrderEvent, OrderStatus
 from .seed_firestore import CONFIG_DOCUMENT
 
 
@@ -42,6 +42,8 @@ class OrderStore(Protocol):
     async def list_orders(self, *, phone: str) -> list[Order]: ...
 
     async def list_all_orders(self) -> list[Order]: ...
+
+    async def list_approved_orders(self) -> list[Order]: ...
 
     async def list_order_events(self, order_id: str) -> list[OrderEvent]: ...
 
@@ -141,6 +143,18 @@ class FirestoreOrderStore:
             orders.append(Order.from_dict(data))
         return orders
 
+    async def list_approved_orders(self) -> list[Order]:
+        orders = []
+        # Filter to the only status the Loading List ever renders (issue #9):
+        # the stream is indexed on status, not a full-collection scan (security
+        # #32), so an attacker-triggered render no longer reads every order.
+        async for doc in self._client.collection("orders").where(
+            "status", "==", OrderStatus.APPROVED.value
+        ).stream():
+            data = doc.to_dict() or {}
+            orders.append(Order.from_dict(data))
+        return orders
+
     async def list_order_events(self, order_id: str) -> list[OrderEvent]:
         events = []
         async for doc in self._client.collection("order_events").where(
@@ -168,10 +182,11 @@ class FirestoreOrderStore:
         ).delete()
 
     async def clear_pending_approvals_for_order(self, order_id: str) -> None:
+        # Query by order id instead of streaming the whole collection and
+        # filtering (security #32): a single-field query on ``order_id``.
         pending = self._client.collection("pending_approvals")
-        async for doc in pending.stream():
-            if (doc.to_dict() or {}).get("order_id") == order_id:
-                await doc.reference.delete()
+        async for doc in pending.where("order_id", "==", order_id).stream():
+            await doc.reference.delete()
 
 
 class InMemoryOrderStore:
@@ -245,6 +260,11 @@ class InMemoryOrderStore:
 
     async def list_all_orders(self) -> list[Order]:
         return list(self.orders)
+
+    async def list_approved_orders(self) -> list[Order]:
+        return [
+            order for order in self.orders if order.status is OrderStatus.APPROVED
+        ]
 
     async def list_order_events(self, order_id: str) -> list[OrderEvent]:
         return [event for event in self.events if event.order_id == order_id]
