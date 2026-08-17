@@ -42,6 +42,7 @@ from .media import (
 )
 from .meta_whatsapp import MetaWhatsAppParser
 from .orders import Order, OrderStatus
+from .ratelimit import SlidingWindowRateLimiter
 from .store import OrderStore
 from .twilio import verify_twilio_signature
 from .twilio_voice import TwilioVoiceCallbackParser
@@ -154,6 +155,7 @@ def create_app(
     meta_app_secret: str | None = None,
     meta_verify_token: str | None = None,
     meta_access_token: str | None = None,
+    webhook_rate_limit: int | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -191,6 +193,10 @@ def create_app(
     uses. ``voucher_storage`` backs the review view's prepare/download/mark-
     billed voucher actions (issue #8); it defaults to the configured Cloud
     Storage bucket, or the in-memory double when none is set.
+
+    ``webhook_rate_limit`` caps agent turns per WhatsApp sender per minute on
+    the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
+    and is enforced by an in-memory per-instance limiter.
     """
     runner = build_runner(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
@@ -239,6 +245,14 @@ def create_app(
         web_cookie_secure
         if web_cookie_secure is not None
         else settings.web_cookie_secure
+    )
+    rate_limit = (
+        webhook_rate_limit
+        if webhook_rate_limit is not None
+        else settings.webhook_rate_limit
+    )
+    rate_limiter = SlidingWindowRateLimiter(
+        window_seconds=60.0, max_events=rate_limit
     )
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
@@ -328,6 +342,13 @@ def create_app(
         for message in parser.parse(method=request.method, body=raw_body):
             if not message.body and not message.media:
                 continue
+            # Per-sender quota before any media fetch or agent turn (security
+            # #32): the signature proves the sender is real, not that it is
+            # well-intentioned, so a flooded number must not burn an unbounded
+            # chain of Gemini turns. The limiter is in-memory per instance —
+            # exact for the single-instance demo deploy.
+            if not rate_limiter.allow(message.sender):
+                return Response(status_code=429, content="rate limit exceeded")
             media = fetcher.fetch(message.media[0]) if message.media else None
             reply = run_turn(
                 runner, sender_id=message.sender, message=message.body, media=media

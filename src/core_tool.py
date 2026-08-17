@@ -19,6 +19,21 @@ from .voucher import VoucherStore
 CLARIFY_STATE_KEY = "valence_clarify"
 
 
+async def _is_approver(store: OrderStore, phone: str | None) -> bool:
+    """Whether ``phone`` is an allowlisted approver (issue #7, security #31).
+
+    The same allowlist the core re-checks inside ``approve_order`` gates the
+    dispatch/billing agent tools: a verified sender can always place an order,
+    but reading the whole dispatch plan or minting a Tally voucher is an
+    approver privilege (ADR-0002 identity: the phone is the session identity,
+    never anything from the message).
+    """
+    if not phone:
+        return False
+    approvers = await store.get_approvers()
+    return any(approver.phone == phone for approver in approvers)
+
+
 def _read_pending(state) -> dict | None:
     try:
         return state.get(CLARIFY_STATE_KEY)
@@ -245,6 +260,11 @@ def build_loading_list_tool(store: OrderStore) -> FunctionTool:
     live order set. It reads the live approved orders, groups them by route,
     and returns a structured list with an unrouted bucket and a late add-on
     section — the exact same data the web view and the Cutoff job render.
+
+    Approver-only (security #31): the render streams the whole day's dispatch
+    plan — every customer's name, location, and items — so a non-approver
+    caller gets an error dict before any store read. The allowlist is the same
+    one ``approve_order`` re-checks in the core.
     """
 
     async def render_loading_list(
@@ -256,11 +276,18 @@ def build_loading_list_tool(store: OrderStore) -> FunctionTool:
         Args:
             delivery_day: ISO date (YYYY-MM-DD) for the delivery day. Defaults
                 to today in the business timezone.
-            tool_context: ADK invocation context (unused).
+            tool_context: ADK invocation context; the sender must be an
+                allowlisted approver.
 
         Returns:
-            The Loading List as a dict with sections, unrouted, and late entries.
+            The Loading List as a dict with sections, unrouted, and late
+            entries, or an error dict when the sender is not an approver.
         """
+        phone = tool_context.user_id if tool_context is not None else None
+        if not await _is_approver(store, phone):
+            return {
+                "error": "render_loading_list is approver-only (security #31)"
+            }
         from datetime import date
 
         day = date.fromisoformat(delivery_day) if delivery_day else None
@@ -281,19 +308,31 @@ def build_prepare_voucher_tool(
     and stores a Tally voucher XML that references only the mapped masters. An
     unmapped master (or a not-approved order) returns an error dict instead of
     emitting a broken voucher.
+
+    Approver-only (security #31): generating a voucher mints a billing artifact
+    for an approved order — full amounts, GST split, mapped ledgers — so a
+    non-approver caller gets an error dict before any store read or write.
     """
 
-    async def prepare_voucher(order_id: str) -> dict:
+    async def prepare_voucher(
+        order_id: str,
+        tool_context: ToolContext | None = None,
+    ) -> dict:
         """Generate and store the Tally voucher for an approved order.
 
         Args:
             order_id: The approved order to generate a voucher for.
+            tool_context: ADK invocation context; the sender must be an
+                allowlisted approver.
 
         Returns:
             The generated voucher (amounts, GST split, mapped ledgers, and the
             storage reference) or an error dict when the order cannot be
-            vouchered.
+            vouchered or the sender is not an approver.
         """
+        phone = tool_context.user_id if tool_context is not None else None
+        if not await _is_approver(store, phone):
+            return {"error": "prepare_voucher is approver-only (security #31)"}
         try:
             voucher = await voucher_mod.prepare_voucher(store, storage, order_id)
         except voucher_mod.VoucherError as exc:

@@ -55,7 +55,7 @@ class _Query:
         self._value = value
 
     async def stream(self):
-        for (collection, _doc_id), data in self._client.docs.items():
+        for (collection, _doc_id), data in list(self._client.docs.items()):
             if collection == self._collection and data.get(self._field) == self._value:
                 yield _Snapshot(
                     data, reference=_DocumentReference(
@@ -251,6 +251,29 @@ async def test_firestore_store_lists_all_orders(fake_client):
     assert {o.order_id for o in orders} == {"ord_a", "ord_b"}
 
 
+async def test_firestore_store_lists_only_approved_orders(fake_client):
+    store = FirestoreOrderStore(fake_client)
+    for order_id, status in [
+        ("ord_approved", OrderStatus.APPROVED),
+        ("ord_pending", OrderStatus.PENDING_REVIEW),
+        ("ord_dispatched", OrderStatus.DISPATCHED),
+        ("ord_billed", OrderStatus.BILLED),
+        ("ord_rejected", OrderStatus.REJECTED),
+    ]:
+        await store.create_order(
+            Order(
+                order_id=order_id,
+                phone="+919812345001",
+                items=[],
+                status=status,
+            )
+        )
+
+    orders = await store.list_approved_orders()
+
+    assert [o.order_id for o in orders] == ["ord_approved"]
+
+
 async def test_firestore_store_lists_order_events_for_an_order(fake_client):
     store = FirestoreOrderStore(fake_client)
     await store.append_order_event(
@@ -383,6 +406,38 @@ async def test_in_memory_store_list_all_orders():
     )
     all_orders = await store.list_all_orders()
     assert {o.order_id for o in all_orders} == {"ord_1", "ord_2"}
+
+
+async def test_in_memory_store_lists_only_approved_orders():
+    store = InMemoryOrderStore()
+    store.orders.append(
+        Order(
+            order_id="ord_1",
+            phone="+919812345001",
+            items=[],
+            status=OrderStatus.APPROVED,
+        )
+    )
+    store.orders.append(
+        Order(
+            order_id="ord_2",
+            phone="+919812345002",
+            items=[],
+            status=OrderStatus.PENDING_REVIEW,
+        )
+    )
+    store.orders.append(
+        Order(
+            order_id="ord_3",
+            phone="+919812345003",
+            items=[],
+            status=OrderStatus.DISPATCHED,
+        )
+    )
+
+    approved = await store.list_approved_orders()
+
+    assert [o.order_id for o in approved] == ["ord_1"]
 
 
 async def test_in_memory_store_update_order():

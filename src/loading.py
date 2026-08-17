@@ -215,7 +215,7 @@ async def load_loading_list(
     cutoff = cutoff_time or parse_cutoff(config)
     tz = business_tz or parse_business_tz(config)
     day = delivery_day or datetime.now(tz).date()
-    orders = await store.list_all_orders()
+    orders = await store.list_approved_orders()
     locations = await store.get_delivery_locations()
     routes = await store.get_routes()
     return build_loading_list(

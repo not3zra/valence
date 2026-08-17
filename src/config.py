@@ -38,6 +38,9 @@ class Settings:
         self.web_cookie_secure: bool = _env("WEB_COOKIE_SECURE", "1") != "0"
         self.cutoff_secret: str = _env("CUTOFF_SECRET", "")
         self.voucher_bucket: str = _env("VOUCHER_BUCKET", "")
+        self.webhook_rate_limit: int = int(
+            _env("WEBHOOK_RATE_LIMIT_PER_SENDER", "30")
+        )
 
 
 settings = Settings()
