@@ -286,3 +286,284 @@ async def test_tool_timeout_promotes_pending_partial_to_escalation():
     # The fresh order itself committed normally.
     assert result["approved"] is True
     assert store.orders[-1].status is OrderStatus.APPROVED
+
+
+# --- issue #34: the held partial order accumulates across turns ---
+
+
+async def test_merge_appends_new_item_lines_and_keeps_earlier_lines(core):
+    held = _order()
+    latest = _order(items=[OrderItem(product="caustic soda", quantity=500, unit="kg")])
+
+    merged = await core.merge_held_order(held, latest)
+
+    assert [(item.product, item.quantity) for item in merged.items] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+    ]
+
+
+async def test_merge_latest_wins_on_a_repeated_product_line(core):
+    held = _order()
+    latest = _order(
+        items=[OrderItem(product="sulfuric acid", quantity=1500, unit="kg")]
+    )
+
+    merged = await core.merge_held_order(held, latest)
+
+    # A repeated product line is replaced by the latest statement, not appended.
+    assert [(item.product, item.quantity) for item in merged.items] == [
+        ("sulfuric acid", 1500)
+    ]
+
+
+async def test_merge_matches_product_lines_through_the_alias_table(core):
+    # "Sulphuric Acid" and "sulfuric acid" are the same catalog product
+    # (ADR-0003), so the later line replaces the held one.
+    held = _order(items=[OrderItem(product="Sulphuric Acid", quantity=2000, unit="kg")])
+    latest = _order(
+        items=[OrderItem(product="sulfuric acid", quantity=1500, unit="kg")]
+    )
+
+    merged = await core.merge_held_order(held, latest)
+
+    assert [(item.product, item.quantity) for item in merged.items] == [
+        ("sulfuric acid", 1500)
+    ]
+
+
+async def test_merge_fills_a_late_delivery_location_and_customer(core):
+    held = _order(customer=None, delivery_location=None)
+    latest = _order(
+        customer="ChemFab Industries", delivery_location="Peenya Industrial Area"
+    )
+
+    merged = await core.merge_held_order(held, latest)
+
+    assert merged.customer == "ChemFab Industries"
+    assert merged.delivery_location == "Peenya Industrial Area"
+
+
+async def test_merge_keeps_held_scalars_when_the_latest_reply_does_not_supply_one(core):
+    held = _order(delivery_location="Peenya Industrial Area")
+    latest = _order(
+        delivery_location=None, items=[OrderItem(product="caustic soda", quantity=500)]
+    )
+
+    merged = await core.merge_held_order(held, latest)
+
+    # A supplied scalar only ever fills a gap — it never overwrites the held value.
+    assert merged.delivery_location == "Peenya Industrial Area"
+
+
+async def test_tool_accumulates_lines_across_turns():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    first = await tool.func(tool_context=ctx, **_partial_args())
+    assert first["clarify"] is True
+    # The customer adds a second line without supplying the location yet.
+    second = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "caustic soda", "quantity": 500, "unit": "kg"}],
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert second["clarify"] is True
+    held = ctx.state[CLARIFY_STATE_KEY]["order"]["items"]
+    # Both lines survived the second extraction — nothing was lost to a re-run.
+    assert [(item["product"], item["quantity"]) for item in held] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+    ]
+
+
+async def test_tool_latest_wins_on_a_repeated_product_line_across_turns():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    await tool.func(tool_context=ctx, **_partial_args())
+    second = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "sulfuric acid", "quantity": 1500, "unit": "kg"}],
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert second["clarify"] is True
+    held = ctx.state[CLARIFY_STATE_KEY]["order"]["items"]
+    assert [(item["product"], item["quantity"]) for item in held] == [
+        ("sulfuric acid", 1500)
+    ]
+
+
+async def test_tool_late_delivery_location_fill_commits_the_merged_order():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    await tool.func(tool_context=ctx, **_partial_args())
+    # The reply only supplies the location plus one new line — the held items
+    # survive the merge and the order is decided as if it arrived complete.
+    done = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "caustic soda", "quantity": 500, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert done["approved"] is True
+    assert done["clarify"] is False
+    order = store.orders[-1]
+    assert order.status is OrderStatus.APPROVED
+    assert order.delivery_location_id == "dl_peenya"
+    assert [(item.product, item.quantity) for item in order.items] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+    ]
+    assert ctx.state.get(CLARIFY_STATE_KEY) is None
+
+
+async def test_tool_cap_promotion_escalates_the_accumulated_merged_order():
+    store = InMemoryOrderStore(config={**seed_data.CONFIG, "clarify_turn_cap": 2})
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    await tool.func(tool_context=ctx, **_partial_args())
+    await tool.func(
+        tool_context=ctx,
+        items=[{"product": "caustic soda", "quantity": 500, "unit": "kg"}],
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+    # The 3rd clarifying turn exceeds the cap -> the *accumulated* partial
+    # escalates, carrying every line the customer sent across all turns.
+    third = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "toluene", "quantity": 200, "unit": "L"}],
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert third["clarify"] is False
+    assert third["status"] == OrderStatus.PENDING_REVIEW.value
+    assert len(store.orders) == 1
+    order = store.orders[0]
+    assert order.status is OrderStatus.PENDING_REVIEW
+    assert order.escalation_reasons == ["missing_field"]
+    assert [(item.product, item.quantity) for item in order.items] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+        ("toluene", 200),
+    ]
+    assert ctx.state.get(CLARIFY_STATE_KEY) is None
+
+
+async def test_tool_timeout_promotes_the_accumulated_merged_order():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    await tool.func(tool_context=ctx, **_partial_args())
+    await tool.func(
+        tool_context=ctx,
+        items=[{"product": "caustic soda", "quantity": 500, "unit": "kg"}],
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+    # The customer stops replying; the two-turn accumulated partial ages out.
+    ctx.state[CLARIFY_STATE_KEY]["created_at"] = (
+        datetime.now(timezone.utc) - timedelta(hours=48)
+    ).isoformat()
+
+    result = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "toluene", "quantity": 200, "unit": "L"}],
+        delivery_location="Whitefield",
+        confidence=0.9,
+        source_language="en",
+        source_channel="whatsapp",
+    )
+
+    # The abandoned partial escalated carrying every line it had accumulated.
+    assert len(store.orders) == 2
+    escalated = store.orders[0]
+    assert escalated.status is OrderStatus.PENDING_REVIEW
+    assert escalated.escalation_reasons == ["missing_field"]
+    assert [(item.product, item.quantity) for item in escalated.items] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+    ]
+    assert ctx.state.get(CLARIFY_STATE_KEY) is None
+    # The fresh order itself committed normally.
+    assert result["approved"] is True
+    assert store.orders[-1].status is OrderStatus.APPROVED
+
+
+async def test_tool_late_customer_reply_is_retained_in_the_held_order():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    await tool.func(tool_context=ctx, **_partial_args())
+    second = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "caustic soda", "quantity": 500, "unit": "kg"}],
+        customer="ChemFab Industries",
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert second["clarify"] is True
+    held = ctx.state[CLARIFY_STATE_KEY]["order"]
+    # The customer named later fills the held order's gap — nothing is lost.
+    assert held["customer"] == "ChemFab Industries"
+    assert [(item["product"], item["quantity"]) for item in held["items"]] == [
+        ("sulfuric acid", 2000),
+        ("caustic soda", 500),
+    ]
+
+
+async def test_tool_single_complete_message_is_unaffected_by_merging():
+    store = InMemoryOrderStore()
+    core = OrderProcessingCore(store)
+    tool = build_process_order_tool(core)
+    ctx = FakeContext(user_id=CHEMFAB_PHONE)
+
+    result = await tool.func(
+        tool_context=ctx,
+        items=[{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+        delivery_location="Peenya Industrial Area",
+        confidence=0.9,
+        source_language="hi",
+        source_channel="whatsapp",
+    )
+
+    assert result["approved"] is True
+    assert result["clarify"] is False
+    assert ctx.state.get(CLARIFY_STATE_KEY) is None
+    assert len(store.orders) == 1
+
+
+def test_agent_instruction_tells_customer_earlier_lines_are_kept():
+    from src.agent import AGENT_INSTRUCTION
+
+    assert "already sent are kept" in AGENT_INSTRUCTION
+    assert "never make them repeat earlier lines" in AGENT_INSTRUCTION
