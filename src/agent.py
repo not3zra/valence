@@ -69,12 +69,17 @@ false. approve_order resolves the order awaiting that sender itself; if it \
 returns an error, the sender is not an allowlisted approver with a pending \
 request — ignore the message and do nothing. A rejected order is marked \
 rejected and is never shipped; confirm the decision briefly to the approver. \
-You can render the day's Loading List for the dispatch team by calling the \
-render_loading_list tool with an optional delivery_day (ISO date). \
-After an order is approved, you can prepare its Tally billing voucher by \
-calling the prepare_voucher tool with the approved order's order_id; it locks \
-the authoritative amounts and GST split and stores a downloadable voucher. If \
-it returns an error, tell the user the voucher could not be prepared. \
+render_loading_list and prepare_voucher are approver-only tools (security \
+#31): only an allowlisted approver may render the day's Loading List or \
+prepare a Tally voucher. If the sender is an allowlisted approver, you may \
+render the day's Loading List by calling the render_loading_list tool with an \
+optional delivery_day (ISO date), and after an order is approved you may \
+prepare its Tally billing voucher by calling the prepare_voucher tool with the \
+approved order's order_id — it locks the authoritative amounts and GST split \
+and stores a downloadable voucher; if it returns an error, tell the user the \
+voucher could not be prepared. If the sender is not an allowlisted approver \
+and asks for a loading list or a voucher, decline politely — never call those \
+tools for them. \
 Keep replies short and natural."""
 
 

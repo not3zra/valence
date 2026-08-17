@@ -337,3 +337,51 @@ def test_webhook_missing_field_asks_then_completes_on_reply():
     assert order.status.value == "approved"
     assert order.delivery_location_id == "dl_peenya"
     assert "Order confirmed" in sender.sent[-1][1]
+
+
+def test_webhook_rate_limits_a_sender_within_the_window():
+    # A per-sender quota (security #32) is enforced before any agent turn: the
+    # third message from the same sender inside the window is refused with 429.
+    sender = MockWhatsAppSender()
+    store = InMemoryOrderStore()
+    app = create_app(
+        agent=build_agent(model=ConfirmingToolCallingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        whatsapp_sender=sender,
+        meta_app_secret=APP_SECRET,
+        meta_verify_token=VERIFY_TOKEN,
+        webhook_rate_limit=2,
+    )
+    client = TestClient(app)
+
+    payload = _payload([_text_message("2 drums sulfuric acid chahiye")])
+    assert _post(client, payload).status_code == 200
+    assert _post(client, payload).status_code == 200
+    over = _post(client, payload)
+    assert over.status_code == 429
+    assert len(store.orders) == 1
+
+
+def test_webhook_rate_limit_is_per_sender():
+    sender = MockWhatsAppSender()
+    store = InMemoryOrderStore()
+    app = create_app(
+        agent=build_agent(model=ConfirmingToolCallingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        whatsapp_sender=sender,
+        meta_app_secret=APP_SECRET,
+        meta_verify_token=VERIFY_TOKEN,
+        webhook_rate_limit=1,
+    )
+    client = TestClient(app)
+
+    assert _post(
+        client, _payload([_text_message("2 drums acid", sender="919812345001")])
+    ).status_code == 200
+    # A different sender is not limited by the first sender's usage.
+    assert _post(
+        client, _payload([_text_message("2 drums acid", sender="919812345002")])
+    ).status_code == 200
+    assert _post(
+        client, _payload([_text_message("2 drums acid", sender="919812345001")])
+    ).status_code == 429
