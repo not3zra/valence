@@ -32,7 +32,8 @@ src/
                      verification + Graph API sender (the live channel)
   twilio_voice.py    Twilio Voice adapter (recording-status callback)
   web.py             FastAPI web layer (/, /health, /api/roundtrip,
-                     /api/whatsapp/webhook, /api/voice/callback)
+                     /api/whatsapp/webhook, /api/voice/callback,
+                     /api/voice/ingest)
   main.py            production entry point (uvicorn)
 infra/
   provision.sh       one script to provision the full GCP stack
@@ -42,6 +43,7 @@ scripts/
   smoke_roundtrip.py real-Gemini message in -> reply out smoke test
   smoke_whatsapp_webhook.py  drive the WhatsApp webhook path with a real agent
   feed_order.py      drive the Order Processing Core with no channel
+  feed_voice.py      feed company-recorded call batches into /api/voice/ingest
   eval_agent.py      agent eval harness: real-model case runs + pass rates (issue #36)
   eval_cases/        committed media samples the eval cases drive (photo, call audio)
 Dockerfile
@@ -169,6 +171,45 @@ WhatsApp approval path, so web and WhatsApp decisions stay in sync and share one
 audit trail. Editing order fields, overriding GST, and resolving unknowns is the
 remaining piece of this ticket.
 
+## Company-recorded call ingestion (issue #35)
+
+The company records its own sales calls and feeds them to the same agent as
+the other channels. `POST /api/voice/ingest` accepts a recorded call — audio
+bytes plus the caller's E.164 number, supplied by the company's own system —
+with a per-deploy bearer token (env `VOICE_INGEST_TOKEN`), and runs it through
+the same ADK agent turn as WhatsApp/photo: the agent understands the audio in
+one Gemini call and commits a `source_channel="voice"` order. A voice order
+with a missing field escalates to human review rather than clarifying
+(ADR-0004). The endpoint is closed (503) unless the token is configured, the
+token is verified before the body is read or anything parsed, the body is
+size-capped (8 MiB), the caller must be a whole-string E.164 number, and the
+audio is base64 in the JSON payload:
+
+```bash
+curl -s localhost:8080/api/voice/ingest \
+  -H 'authorization: Bearer local-dev-ingest-token' \
+  -H 'content-type: application/json' \
+  -d '{"caller": "+919812345001", "audio_base64": "<base64 of call.wav>", "mime_type": "audio/wav"}'
+```
+
+**Caller identity is trusted company metadata, not caller-ID**: the caller
+comes from the token-authenticated payload, so it cannot be spoofed from
+outside the token path — this replaces the caller-ID caveat that applies to
+the Twilio recording-status callback.
+
+Feed a whole batch of the day's calls with `scripts/feed_voice.py` — one order
+per recording, the caller read from a `<name>.caller` sidecar (folder) or the
+object's `caller` metadata (Cloud Storage), never guessed:
+
+```bash
+python scripts/feed_voice.py --folder path/to/calls
+python scripts/feed_voice.py --bucket valence-calls --prefix calls/2026-08-18/
+```
+
+The token comes from `--token` or the `VOICE_INGEST_TOKEN` env var; the feed
+path is exercised in CI against the committed sample recording with a fake
+model.
+
 ## Provision the full GCP stack
 
 From a fresh GCP project (creator must be able to enable APIs and create IAM
@@ -197,7 +238,8 @@ This creates and wires:
 - **Secrets** — Gemini API key, the Meta Cloud API WhatsApp credentials
   (`META_APP_SECRET`/`META_VERIFY_TOKEN`/`META_ACCESS_TOKEN`/`META_PHONE_NUMBER_ID`),
   the Twilio Voice credentials (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), the
-  round-trip probe token (`ROUNDTRIP_TOKEN`), and the review-web passcode +
+  round-trip probe token (`ROUNDTRIP_TOKEN`), the voice-ingest token
+  (`VOICE_INGEST_TOKEN`), and the review-web passcode +
   salt (`WEB_PASSCODE`/`WEB_PASSCODE_SALT`) as Secret Manager secrets bound to
   the deployed service; nothing secret is committed to this repo
 

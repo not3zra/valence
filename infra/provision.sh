@@ -123,6 +123,7 @@ for spec in \
   "META_ACCESS_TOKEN:META_ACCESS_TOKEN" \
   "META_PHONE_NUMBER_ID:META_PHONE_NUMBER_ID" \
   "ROUNDTRIP_TOKEN:ROUNDTRIP_TOKEN" \
+  "VOICE_INGEST_TOKEN:VOICE_INGEST_TOKEN" \
   "WEB_PASSCODE:WEB_PASSCODE" \
   "WEB_PASSCODE_SALT:WEB_PASSCODE_SALT" \
   "CUTOFF_SECRET:CUTOFF_SECRET"; do
@@ -158,7 +159,8 @@ gcloud run deploy "$SERVICE" \
   --set-secrets=META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest \
   --set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest \
   --set-secrets=META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest \
---set-secrets=ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest \
+  --set-secrets=ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest \
+  --set-secrets=VOICE_INGEST_TOKEN=VOICE_INGEST_TOKEN:latest \
   --set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest \
   --set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest \
   --set-secrets=CUTOFF_SECRET=CUTOFF_SECRET:latest \
@@ -240,4 +242,5 @@ python3 -m src.seed_firestore
 log "Done. Verify:"
 echo "  1. Open the Cloud Run dashboard and open \$SERVICE_URL (health page)."
 echo "  2. POST /api/roundtrip to exercise the deployed agent (message in -> reply out)."
-echo "  3. Push to main now auto-deploys via the Cloud Build trigger."
+echo "  3. Feed a recorded call batch with scripts/feed_voice.py (VOICE_INGEST_TOKEN)."
+echo "  4. Push to main now auto-deploys via the Cloud Build trigger."
