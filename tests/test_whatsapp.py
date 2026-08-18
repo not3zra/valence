@@ -6,8 +6,7 @@ The Meta adapter is a boundary adapter behind the seam defined in ``src.whatsapp
 ``value``/``messages``) into a provider-neutral ``InboundMessage`` and owns the
 provider's verification — the GET handshake and the ``X-Hub-Signature-256``
 HMAC-SHA256 of the raw body with the App Secret. ``MetaWhatsAppSender`` POSTs
-replies to the Graph API ``/messages`` endpoint. The shared Twilio signature
-algorithm (``src.twilio``) is kept: Twilio Voice webhooks still use it.
+replies to the Graph API ``/messages`` endpoint.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from src.meta_whatsapp import (
     build_meta_signature,
     verify_meta_signature,
 )
-from src.twilio import build_twilio_signature, verify_twilio_signature
 from src.whatsapp import MockWhatsAppSender
 
 APP_SECRET = "my_app_secret"
@@ -235,44 +233,6 @@ def test_handshake_rejects_wrong_token_mode_or_method():
     assert (
         parser.verification_challenge(method="POST", query=_handshake()) is None
     )
-
-
-# --- Shared Twilio signature (still used by Twilio Voice, issue #10) ---------
-
-
-def test_signature_matches_twilio_documented_example():
-    # Twilio's own test vector (twilio-java/php RequestValidatorTest): URL
-    # https://mycompany.com/myapp.php?foo=1&bar=2, params CallSid/To/Caller/
-    # From/Digits, auth token 12345 -> RSOYDt4T1cUTdK1PDd93/VVr8B8=
-    params = {
-        "Digits": "1234",
-        "CallSid": "CA1234567890ABCDE",
-        "To": "+18005551212",
-        "Caller": "+14158675309",
-        "From": "+14158675309",
-    }
-    signature = build_twilio_signature(
-        "https://mycompany.com/myapp.php?foo=1&bar=2", params, "12345"
-    )
-    assert signature == "RSOYDt4T1cUTdK1PDd93/VVr8B8="
-    assert verify_twilio_signature(
-        "https://mycompany.com/myapp.php?foo=1&bar=2", params, signature, "12345"
-    )
-
-
-def test_twilio_signature_rejects_wrong_token():
-    params = {"From": "whatsapp:+919812345001", "Body": "x"}
-    signature = build_twilio_signature("http://host/webhook", params, "token-a")
-    assert not verify_twilio_signature(
-        "http://host/webhook", params, signature, "token-b"
-    )
-
-
-def test_twilio_signature_rejects_missing_header_and_empty_token():
-    params = {"From": "whatsapp:+919812345001", "Body": "x"}
-    assert not verify_twilio_signature("http://host/webhook", params, "", "12345")
-    signature = build_twilio_signature("http://host/webhook", params, "")
-    assert not verify_twilio_signature("http://host/webhook", params, signature, "")
 
 
 # --- Outbound sender seam ----------------------------------------------------

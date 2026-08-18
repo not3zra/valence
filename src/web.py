@@ -1,11 +1,11 @@
 """FastAPI web layer served from the same Cloud Run instance.
 
 Serves the health page, a liveness probe for Cloud Run, the round-trip probe
-that exercises the deployed agent (message in -> reply out), and the webhooks
-that receive inbound orders: the Meta Cloud API WhatsApp webhook (ticket 3,
-#4, swapped to Meta in #13) and the Twilio Voice recording-status callback
-(ticket 9, #10). The approver-facing review web view is ticket 5 (#6) and the
-dispatch-facing Loading List web view is ticket 8 (#9).
+that exercises the deployed agent (message in -> reply out), the webhooks
+that receive inbound orders (the Meta Cloud API WhatsApp webhook, ticket 3,
+#4, swapped to Meta in #13), and the token-gated company-recorded call
+ingestion endpoint (issue #35). The approver-facing review web view is ticket
+5 (#6) and the dispatch-facing Loading List web view is ticket 8 (#9).
 """
 
 from __future__ import annotations
@@ -42,15 +42,11 @@ from .media import (
     MediaFetcher,
     MediaObject,
     MetaMediaFetcher,
-    TwilioMediaFetcher,
 )
 from .meta_whatsapp import MetaWhatsAppParser
 from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
 from .store import OrderStore
-from .twilio import verify_twilio_signature
-from .twilio_voice import TwilioVoiceCallbackParser
-from .voice import VoiceCallbackParser
 from .voucher import (
     VoucherError,
     VoucherStore,
@@ -71,28 +67,16 @@ MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 MAX_VOICE_INGEST_BODY_BYTES = 8 * 1024 * 1024
 
 
-def _twiml(status_code: int = 200) -> Response:
-    """An empty TwiML <Response/> tells Twilio the webhook was handled; the
-    actual confirmation reply is delivered out-of-band through the sender seam.
-    """
-    return Response(
-        content="<Response></Response>",
-        media_type="application/xml",
-        status_code=status_code,
-    )
-
-
 def _meta_ack() -> Response:
     """A plain 200 acknowledgment for Meta's webhook.
 
     Meta expects any 200; the actual confirmation reply is delivered
-    out-of-band through the sender seam. A rejected request is a plain 403, not
-    TwiML — that XML is Twilio's.
+    out-of-band through the sender seam. A rejected request is a plain 403.
     """
     return Response(content="OK", media_type="text/plain")
 
 
-# The voice webhook has no customer text to read, only the recording. This
+# The voice intake path has no customer text to read, only the recording. This
 # nudge tells the model the inline audio is a call in which an order was placed
 # (issue #10); the agent instruction (src.agent) drives how it is understood.
 VOICE_NUDGE = (
@@ -120,8 +104,6 @@ INDEX_HTML = """<!doctype html>
     <a href="/loading">/loading</a></li>
     <li>Agent round-trip probe (message in → reply out):
     <code>POST /api/roundtrip</code></li>
-    <li>Twilio Voice recording-status callback (recorded order calls):
-    <code>POST /api/voice/callback</code></li>
     <li>Company-recorded call ingestion (token-gated):
     <code>POST /api/voice/ingest</code></li>
   </ul>
@@ -164,9 +146,6 @@ def create_app(
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
-    voice_media_fetcher: MediaFetcher | None = None,
-    twilio_auth_token: str | None = None,
-    voice_parser: VoiceCallbackParser | None = None,
     store: OrderStore | None = None,
     roundtrip_token: str | None = None,
     voice_ingest_token: str | None = None,
@@ -189,15 +168,11 @@ def create_app(
     issue #4 design note); the live sender — ``MetaWhatsAppSender`` — is wired
     by the deployment entry point (`src.main`, issue #13). ``webhook_parser``
     defaults to the Meta Cloud API adapter (``MetaWhatsAppParser``, the live
-    inbound channel); ``voice_parser`` defaults to the Twilio Voice
-    recording-status adapter (issue #10). ``media_fetcher`` defaults to
-    ``MetaMediaFetcher`` (the photo path now resolves Meta media ids, issue
-    #13); ``voice_media_fetcher`` defaults to ``TwilioMediaFetcher`` — the
-    recording path still fetches authenticated Twilio URLs (issue #10) — and
-    ``twilio_auth_token`` is what both Twilio webhooks use to verify the
-    ``X-Twilio-Signature`` header. The Meta secrets (``meta_app_secret``,
-    ``meta_verify_token``, ``meta_access_token``) default to their environment
-    settings and fail closed when unset (no handshake or signature verifies).
+    inbound channel). ``media_fetcher`` defaults to ``MetaMediaFetcher`` (the
+    photo path resolves Meta media ids, issue #13). The Meta secrets
+    (``meta_app_secret``, ``meta_verify_token``, ``meta_access_token``) default
+    to their environment settings and fail closed when unset (no handshake or
+    signature verifies).
 
     ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
     ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
@@ -246,16 +221,7 @@ def create_app(
     parser = webhook_parser or MetaWhatsAppParser(
         meta_app_secret_value, meta_verify_token_value
     )
-    auth_token = (
-        twilio_auth_token
-        if twilio_auth_token is not None
-        else settings.twilio_auth_token
-    )
     fetcher = media_fetcher or MetaMediaFetcher(meta_access_token_value)
-    voice_fetcher = voice_media_fetcher or TwilioMediaFetcher(
-        settings.twilio_account_sid, auth_token
-    )
-    callback_parser = voice_parser or TwilioVoiceCallbackParser()
     probe_token = (
         roundtrip_token
         if roundtrip_token is not None
@@ -390,47 +356,6 @@ def create_app(
                 sender.send(message.sender, reply)
         return _meta_ack()
 
-    @app.post("/api/voice/callback")
-    async def voice_callback(request: Request) -> Response:
-        """Twilio Voice's recording-status callback (ticket 9, #10).
-
-        When a call recording completes, Twilio POSTs the callback carrying the
-        recording's URL. This endpoint verifies the ``X-Twilio-Signature``
-        header (the same HMAC-SHA1 algorithm the WhatsApp webhook uses), fetches
-        the recording from the Twilio URL through the ``MediaFetcher`` seam
-        (basic auth, allowlisted host, no redirects, size-capped — the same
-        guards behind photo intake, issue #11), and passes it to the same ADK
-        agent as inline audio, understood through the same Gemini call as text.
-        The agent commits ``source_channel="voice"``, so a voice order with a
-        missing field is escalated as flagged — it never waits on a clarifying
-        question (ADR-0004). There is no outbound voice channel in this build,
-        so the agent's reply is not delivered anywhere.
-
-        Only a completed recording is processed. A non-completed callback is
-        acknowledged and ignored. A fetch that fails returns an error status so
-        Twilio retries the recording-status callback rather than losing the
-        order — there is no message text to fall back to on the voice channel.
-        """
-        form: dict[str, str] = {
-            key: str(value) for key, value in (await request.form()).items()
-        }
-        signature = request.headers.get("X-Twilio-Signature", "")
-        if not verify_twilio_signature(str(request.url), form, signature, auth_token):
-            return _twiml(status_code=403)
-        recording = callback_parser.parse(form)
-        if recording is None:
-            return _twiml()
-        media = voice_fetcher.fetch(recording.recording_url)
-        if media is None:
-            return Response(status_code=500)
-        run_turn(
-            runner,
-            sender_id=recording.caller,
-            message=VOICE_NUDGE,
-            media=media,
-        )
-        return _twiml()
-
     @app.post("/api/voice/ingest")
     async def voice_ingest(request: Request) -> Response:
         """Company-recorded call ingestion (issue #35).
@@ -438,9 +363,9 @@ def create_app(
         The company's own system feeds the day's recorded calls here: an audio
         body plus the caller's E.164 number, posted with a per-deploy bearer
         token. The audio is passed to the same ADK agent as inline audio with
-        the same ``VOICE_NUDGE`` as the Twilio recording-status callback (issue
-        #10), so a voice order with a missing field escalates as flagged and is
-        never clarified (ADR-0004).
+        the same ``VOICE_NUDGE`` the recording-status callback used (issue #10),
+        so a voice order with a missing field escalates as flagged and is never
+        clarified (ADR-0004).
 
         The caller is taken from the token-authenticated payload, never from
         the message — trusted company metadata, not caller-ID. The token is

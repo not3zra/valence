@@ -1,11 +1,11 @@
 """The WhatsApp channel boundary: the neutral inbound message shape and the
 outbound sender seam.
 
-Meta Cloud API (and previously Twilio) are boundary adapters behind these seams
-(issue #4 design note): the shared handler only ever sees ``InboundMessage``,
-a ``WhatsAppSender``, and a ``WhatsAppWebhookParser``. ``MockWhatsAppSender``
-is the demo/test wiring that records/intercepts the reply; the live sender is
-``MetaWhatsAppSender`` (issue #13), wired by the deployment entry point.
+Meta Cloud API is a boundary adapter behind these seams (issue #4 design note):
+the shared handler only ever sees ``InboundMessage``, a ``WhatsAppSender``, and
+a ``WhatsAppWebhookParser``. ``MockWhatsAppSender`` is the demo/test wiring that
+records/intercepts the reply; the live sender is ``MetaWhatsAppSender`` (issue
+#13), wired by the deployment entry point.
 """
 
 from __future__ import annotations
