@@ -1,25 +1,22 @@
 """The media boundary for channel media (photos and call recordings).
 
-Retrieving channel media requires provider credentials: Twilio media and Voice
-recordings use HTTP basic auth (Account SID : Auth Token) from an allowlisted
-Twilio host; Meta media (issue #13) uses a media ``id`` fetched through the
-Graph API with a bearer token. Both live behind the ``MediaFetcher`` seam,
-returning a neutral ``MediaObject`` (bytes + mime type) so the webhook and
-agent never touch the provider. A failed or unauthenticated fetch returns
-``None``; the photo webhook then falls back to handling whatever text the
-message carried, and the voice webhook acknowledges the callback so Twilio can
-retry.
+Retrieving channel media requires provider credentials: Meta media (issue #13)
+uses a media ``id`` fetched through the Graph API with a bearer token. The
+retriever lives behind the ``MediaFetcher`` seam, returning a neutral
+``MediaObject`` (bytes + mime type) so the webhook and agent never touch the
+provider. A failed or unauthenticated fetch returns ``None``; the photo webhook
+then falls back to handling whatever text the message carried. Call recordings
+travel differently — the company-recorded ingest path (issue #35) carries the
+audio in the request body, so no fetch is involved there.
 """
 
 from __future__ import annotations
 
-import base64
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
 
 from google.genai import types
 
@@ -37,22 +34,14 @@ class MediaObject:
 class MediaFetcher(Protocol):
     """Inbound seam: retrieve the content of a provider media reference.
 
-    ``reference`` is provider-neutral — a Twilio media URL or a Meta media id,
-    whatever the ``InboundMessage`` carried. Returns ``None`` when the fetch
-    cannot complete (network error, missing credentials, or a non-success
-    response) so the caller can fall back rather than fail the whole request.
+    ``reference`` is provider-neutral — whatever the ``InboundMessage`` carried
+    (a Meta media id today). Returns ``None`` when the fetch cannot complete
+    (network error, missing credentials, or a non-success response) so the
+    caller can fall back rather than fail the whole request.
     """
 
     def fetch(self, reference: str) -> MediaObject | None: ...
 
-
-# Only these hosts may be fetched — Twilio serves WhatsApp media from its own
-# domains. Anything else is rejected outright, so an attacker who controls the
-# webhook's MediaUrlN value cannot point the server-side fetch at an arbitrary
-# host (SSRF, CWE-918) or leak the Auth Token to a host they control.
-ALLOWED_MEDIA_HOSTS: frozenset[str] = frozenset(
-    {"api.twilio.com", "media.twilio.com"}
-)
 
 # Media is an image for the model; cap the read so an oversized or looping
 # response cannot exhaust memory.
@@ -87,60 +76,6 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
-
-
-class TwilioMediaFetcher:
-    """Fetch a Twilio media object using basic auth (Account SID : Auth Token).
-
-    The URL must be ``https`` on an allowlisted Twilio host, redirects are not
-    followed, and the body is capped, so an attacker-controlled ``MediaUrlN``
-    cannot turn the fetch into SSRF, credential leakage, or a memory blow-up.
-    ``_open`` is the seam tests patch to fake the HTTP round trip; production
-    uses ``urllib``.
-    """
-
-    def __init__(self, account_sid: str, auth_token: str) -> None:
-        self._account_sid = account_sid
-        self._auth_token = auth_token
-        self._open = self._default_open
-
-    def _default_open(self, request: urllib.request.Request):
-        opener = urllib.request.build_opener(_NoRedirect)
-        return opener.open(request, timeout=30)
-
-    def fetch(self, reference: str) -> MediaObject | None:
-        if (
-            not self._allowed(reference)
-            or not self._account_sid
-            or not self._auth_token
-        ):
-            return None
-        credentials = base64.b64encode(
-            f"{self._account_sid}:{self._auth_token}".encode()
-        ).decode()
-        request = urllib.request.Request(
-            reference, headers={"Authorization": f"Basic {credentials}"}
-        )
-        try:
-            with self._open(request) as response:
-                data = response.read(MAX_MEDIA_BYTES + 1)
-                if len(data) > MAX_MEDIA_BYTES:
-                    return None
-                content_type = response.headers.get("Content-Type", "")
-                mime = content_type.split(";")[0].strip() or "application/octet-stream"
-                return MediaObject(data=data, mime_type=mime)
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError):
-            return None
-
-    def _allowed(self, reference: str) -> bool:
-        """True only for https URLs on an allowlisted Twilio media host."""
-        try:
-            parsed = urlparse(reference)
-        except ValueError:
-            return False
-        if parsed.scheme != "https" or not parsed.hostname:
-            return False
-        return parsed.hostname in ALLOWED_MEDIA_HOSTS
 
 
 class MetaMediaFetcher:

@@ -26,8 +26,6 @@ class Settings:
             "ADK_FIRESTORE_ROOT_COLLECTION", "adk-session"
         )
         self.service_port: int = int(_env("PORT", "8080"))
-        self.twilio_account_sid: str = _env("TWILIO_ACCOUNT_SID", "")
-        self.twilio_auth_token: str = _env("TWILIO_AUTH_TOKEN", "")
         self.meta_app_secret: str = _env("META_APP_SECRET", "")
         self.meta_access_token: str = _env("META_ACCESS_TOKEN", "")
         self.meta_phone_number_id: str = _env("META_PHONE_NUMBER_ID", "")

@@ -30,10 +30,8 @@ src/
   whatsapp.py        WhatsApp channel boundary: InboundMessage + sender/webhook seams
   meta_whatsapp.py   Meta Cloud API adapter: JSON parsing + X-Hub-Signature-256
                      verification + Graph API sender (the live channel)
-  twilio_voice.py    Twilio Voice adapter (recording-status callback)
   web.py             FastAPI web layer (/, /health, /api/roundtrip,
-                     /api/whatsapp/webhook, /api/voice/callback,
-                     /api/voice/ingest)
+                     /api/whatsapp/webhook, /api/voice/ingest)
   main.py            production entry point (uvicorn)
 infra/
   provision.sh       one script to provision the full GCP stack
@@ -68,7 +66,7 @@ The service is now on http://localhost:8080:
 - `GET /` — health page
 - `GET /health` — liveness probe
 - `GET /review` — the review web view (passcode-gated escalation queue)
-- `POST /api/roundtrip` — agent round trip, no Twilio needed:
+- `POST /api/roundtrip` — agent round trip, no channel needed:
 - `POST /api/whatsapp/webhook` — Meta Cloud API WhatsApp inbound webhook (ticket 3)
 
 ```bash
@@ -133,9 +131,7 @@ over WhatsApp through the `WhatsAppSender` seam (`MockWhatsAppSender` in tests;
 
 Meta is a boundary adapter behind a seam: parsing, handshake/signature
 verification and provider config all live in `src/meta_whatsapp.py`, never in
-the web layer. The Twilio WhatsApp adapter was retired in the same swap; the
-Twilio **Voice** webhook (ticket 10) is unchanged and still verifies
-`X-Twilio-Signature`.
+the web layer.
 
 To register the webhook in the Meta developer console (done by a human after
 deploy — note it in the PR):
@@ -194,8 +190,8 @@ curl -s localhost:8080/api/voice/ingest \
 
 **Caller identity is trusted company metadata, not caller-ID**: the caller
 comes from the token-authenticated payload, so it cannot be spoofed from
-outside the token path — this replaces the caller-ID caveat that applies to
-the Twilio recording-status callback.
+outside the token path — there is no caller-ID-based voice channel left to
+caveat.
 
 Feed a whole batch of the day's calls with `scripts/feed_voice.py` — one order
 per recording, the caller read from a `<name>.caller` sidecar (folder) or the
@@ -218,7 +214,6 @@ bindings):
 ```bash
 export PROJECT_ID=my-demo-project
 export GEMINI_API_KEY=...
-export TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=...   # Twilio Voice (ticket 10)
 export META_APP_SECRET=... META_VERIFY_TOKEN=... META_ACCESS_TOKEN=... META_PHONE_NUMBER_ID=...
 ./infra/provision.sh
 ```
@@ -237,8 +232,7 @@ This creates and wires:
   Run invoker
 - **Secrets** — Gemini API key, the Meta Cloud API WhatsApp credentials
   (`META_APP_SECRET`/`META_VERIFY_TOKEN`/`META_ACCESS_TOKEN`/`META_PHONE_NUMBER_ID`),
-  the Twilio Voice credentials (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), the
-  round-trip probe token (`ROUNDTRIP_TOKEN`), the voice-ingest token
+  the round-trip probe token (`ROUNDTRIP_TOKEN`), the voice-ingest token
   (`VOICE_INGEST_TOKEN`), and the review-web passcode +
   salt (`WEB_PASSCODE`/`WEB_PASSCODE_SALT`) as Secret Manager secrets bound to
   the deployed service; nothing secret is committed to this repo

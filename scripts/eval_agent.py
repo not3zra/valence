@@ -48,7 +48,7 @@ CASE_DIR = Path(__file__).resolve().parent / "eval_cases"
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 
-# The voice webhook's text nudge (mirrors src.web.VOICE_NUDGE): the inline
+# The voice intake path's text nudge (mirrors src.web.VOICE_NUDGE): the inline
 # audio is a call in which an order was placed, so the model commits it as a
 # voice order — never clarified over WhatsApp rules (ADR-0004).
 VOICE_NUDGE = (

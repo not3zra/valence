@@ -23,8 +23,6 @@ steps:
       - '--allow-unauthenticated'
       - '--service-account=${_RUN_SA}@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-secrets=GOOGLE_API_KEY=GEMINI_API_KEY:latest'
-      - '--set-secrets=TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest'
-      - '--set-secrets=TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest'
       - '--set-secrets=META_APP_SECRET=META_APP_SECRET:latest'
       - '--set-secrets=META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest'
       - '--set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest'
