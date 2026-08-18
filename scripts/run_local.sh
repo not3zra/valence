@@ -26,6 +26,7 @@ export FIRESTORE_PROJECT_ID="$PROJECT_ID"
 # Local-only auth defaults for the security-gated surfaces (env-provided in
 # production, so local dev doesn't share the public valence-demo default).
 export ROUNDTRIP_TOKEN="${ROUNDTRIP_TOKEN:-local-dev-roundtrip-token}"
+export VOICE_INGEST_TOKEN="${VOICE_INGEST_TOKEN:-local-dev-ingest-token}"
 export WEB_PASSCODE="${WEB_PASSCODE:-valence-demo}"
 export WEB_PASSCODE_SALT="${WEB_PASSCODE_SALT:-local-dev-salt}"
 export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"

@@ -17,6 +17,7 @@ import base64
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -56,6 +57,28 @@ ALLOWED_MEDIA_HOSTS: frozenset[str] = frozenset(
 # Media is an image for the model; cap the read so an oversized or looping
 # response cannot exhaust memory.
 MAX_MEDIA_BYTES = 5 * 1024 * 1024  # 5 MiB
+
+# The audio mime types the voice-ingest endpoint (issue #35) will attach to
+# inline audio. Both ``audio/mpeg`` and ``audio/mp3`` name MP3 — Gemini accepts
+# either — so a feed can use its own convention. The map below is the single
+# source of truth for both the endpoint and the feed script.
+AUDIO_MIME_TYPES: frozenset[str] = frozenset(
+    {"audio/wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/amr", "audio/ogg"}
+)
+
+# Mime type a recorded-call feed (scripts/feed_voice.py) attaches by extension.
+AUDIO_MIME_BY_EXTENSION: dict[str, str] = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".amr": "audio/amr",
+    ".ogg": "audio/ogg",
+}
+
+
+def audio_mime_for_name(name: str) -> str | None:
+    """The accepted audio mime for a filename's extension, else ``None``."""
+    return AUDIO_MIME_BY_EXTENSION.get(Path(name).suffix.lower())
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
