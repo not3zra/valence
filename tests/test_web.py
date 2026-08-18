@@ -133,3 +133,14 @@ def test_sessions_survive_across_roundtrip_requests(client):
         headers={"Authorization": "Bearer probe-token"},
     )
     assert response.json()["reply"] == "Echo: two"
+
+
+def test_retired_twilio_voice_callback_route_is_removed(client):
+    # The Twilio Voice recording-status callback was retired in #37; the voice
+    # intake story is company-recorded call ingestion (issue #35) and the only
+    # voice route is the token-gated /api/voice/ingest.
+    response = client.post(
+        "/api/voice/callback",
+        data={"RecordingStatus": "completed", "From": "+919812345001"},
+    )
+    assert response.status_code == 404

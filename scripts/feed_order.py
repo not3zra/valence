@@ -1,6 +1,6 @@
 """Feed a structured order through the Order Processing Core with no channel.
 
-Lets a developer drive the core directly — no agent, no Twilio, no webhook.
+Lets a developer drive the core directly — no agent, no channel, no webhook.
 Reads a JSON order from a file (or stdin), persists it through the store, and
 prints the core's decision. Uses the real Firestore store (emulator when
 ``FIRESTORE_EMULATOR_HOST`` is set) unless ``--memory`` is given.

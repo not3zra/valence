@@ -9,7 +9,7 @@
 #   - Pub/Sub topic + push   (feeds the Cutoff chain, used from ticket 8)
 #   - Cloud Scheduler job    (daily Cutoff trigger -> topic -> Cloud Run)
 #   - IAM bindings           (Cloud Run -> Firestore/Storage; push sub -> Cloud Run)
-#   - Secrets                (Gemini API key + Twilio credentials, never committed)
+#   - Secrets                (Gemini API key + channel/deploy secrets, never committed)
 #   - Cloud Build trigger    (auto-deploy on push to main)
 #
 # Prereqs: gcloud CLI authenticated with a project owner/editor, and the
@@ -116,8 +116,6 @@ read_secret() { # name envvar
 }
 for spec in \
   "GEMINI_API_KEY:GEMINI_API_KEY" \
-  "TWILIO_ACCOUNT_SID:TWILIO_ACCOUNT_SID" \
-  "TWILIO_AUTH_TOKEN:TWILIO_AUTH_TOKEN" \
   "META_APP_SECRET:META_APP_SECRET" \
   "META_VERIFY_TOKEN:META_VERIFY_TOKEN" \
   "META_ACCESS_TOKEN:META_ACCESS_TOKEN" \
@@ -153,8 +151,6 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --service-account="$RUNTIME_SA_EMAIL" \
   --set-secrets=GOOGLE_API_KEY=GEMINI_API_KEY:latest \
-  --set-secrets=TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest \
-  --set-secrets=TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest \
   --set-secrets=META_APP_SECRET=META_APP_SECRET:latest \
   --set-secrets=META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest \
   --set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest \
