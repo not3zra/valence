@@ -33,6 +33,7 @@ class Settings:
         self.meta_phone_number_id: str = _env("META_PHONE_NUMBER_ID", "")
         self.meta_verify_token: str = _env("META_VERIFY_TOKEN", "")
         self.roundtrip_token: str = _env("ROUNDTRIP_TOKEN", "")
+        self.voice_ingest_token: str = _env("VOICE_INGEST_TOKEN", "")
         self.web_passcode: str = _env("WEB_PASSCODE", "")
         self.web_passcode_salt: str = _env("WEB_PASSCODE_SALT", "")
         self.web_cookie_secure: bool = _env("WEB_COOKIE_SECURE", "1") != "0"

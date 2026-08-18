@@ -30,6 +30,7 @@ steps:
       - '--set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest'
       - '--set-secrets=META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest'
       - '--set-secrets=ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest'
+      - '--set-secrets=VOICE_INGEST_TOKEN=VOICE_INGEST_TOKEN:latest'
       - '--set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest'
       - '--set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest'
       - '--set-env-vars=VOUCHER_BUCKET=valence-$PROJECT_ID-vouchers'
