@@ -6,11 +6,13 @@ real agent (the configured Gemini model, or any model id) over the exact
 ``run_turn`` seam the webhooks use, one realistic case at a time, and asserts
 each case's decision/tool outcome from the store plus the recorded tool trace.
 
-Run with an API key:
+Run with an API key, or via Vertex AI (ADC) instead:
 
     GOOGLE_API_KEY=... python scripts/eval_agent.py            # the full set
     GOOGLE_API_KEY=... python scripts/eval_agent.py --category safety
     GOOGLE_API_KEY=... python scripts/eval_agent.py --cases happy-hindi-text
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=P \\
+        GOOGLE_CLOUD_LOCATION=us-central1 python scripts/eval_agent.py
     python scripts/eval_agent.py --list                          # no key needed
 
 Hard failures — a decision or tool-level assert that fails (wrong status,
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -71,13 +74,24 @@ TURN_CAP = 3
 
 
 def _has_key() -> bool:
-    """Whether a Gemini API key is available to the genai client.
+    """Whether a Gemini credential is available to the genai client.
 
     google-genai reads ``GOOGLE_API_KEY`` first, then ``GEMINI_API_KEY``
-    (src.genai._api_client). The harness is gated on one of them being set, so
-    an unkeyed run fails loudly instead of a wall of auth errors.
+    (src.genai._api_client). When routing through Vertex AI the client uses
+    ADC instead of a key, gated on ``GOOGLE_GENAI_USE_VERTEXAI`` (with the
+    project and location set). The harness is gated on one of these paths
+    being available, so an uncredentialed run fails loudly instead of a
+    wall of auth errors.
     """
-    return bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+    has_key = bool(
+        os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    )
+    if has_key:
+        return True
+    vertex = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") in {"1", "true", "True"}
+    return vertex and bool(os.environ.get("GOOGLE_CLOUD_PROJECT")) and bool(
+        os.environ.get("GOOGLE_CLOUD_LOCATION")
+    )
 
 
 def _load_media(filename: str) -> MediaObject:
@@ -247,10 +261,16 @@ class EvalHarness:
     case runs against its own in-memory store and session service, so no case
     contaminates another — dedup, pending approvals, and clarify state are all
     per-case. The clock is pinned per case (each case can set its own start).
+    ``delay`` paces the real model: a free-tier Gemini key caps requests per
+    minute, so a positive value sleeps before each turn to stay under the
+    quota instead of failing every case with 429.
     """
 
-    def __init__(self, build_agent: Callable[[InMemoryOrderStore], object]) -> None:
+    def __init__(
+        self, build_agent: Callable[[InMemoryOrderStore], object], delay: float = 0.0
+    ) -> None:
         self._build_agent = build_agent
+        self._delay = delay
 
     def run_case(self, case: EvalCase) -> CaseResult:
         store = InMemoryOrderStore()
@@ -264,6 +284,8 @@ class EvalHarness:
                 for turn in case.steps:
                     if turn.advance_minutes:
                         clock.advance(minutes=turn.advance_minutes)
+                    if self._delay:
+                        time.sleep(self._delay)
                     media = _load_media(turn.media) if turn.media else None
                     replies.append(
                         run_turn(
@@ -423,7 +445,7 @@ def _build_cases() -> list[EvalCase]:
             steps=[
                 Turn(
                     MARUTHI,
-                    "We need 6000 kg of sulfuric acid, ",
+                    "We need 6000 kg of sulfuric acid, "
                     "deliver to Peenya Industrial Area.",
                 )
             ],
@@ -439,7 +461,7 @@ def _build_cases() -> list[EvalCase]:
             steps=[
                 Turn(
                     CHEMFAB,
-                    "2000 kg sulfuric acid at 30 rupees per kg, ",
+                    "2000 kg sulfuric acid at 30 rupees per kg, "
                     "Peenya Industrial Area.",
                 )
             ],
@@ -1093,17 +1115,20 @@ CASES = _build_cases()
 # --- reporting --------------------------------------------------------------
 
 
-def _group_by_category(items) -> list[tuple[str, list]]:
-    """Group ``items`` by ``.category``, categories sorted."""
+def _group_by_category(items, key=None) -> list[tuple[str, list]]:
+    """Group ``items`` by ``key(item)`` (default: ``item.category``)."""
+    key = key or (lambda item: item.category)
     by_category: dict[str, list] = {}
     for item in items:
-        by_category.setdefault(item.category, []).append(item)
+        by_category.setdefault(key(item), []).append(item)
     return sorted(by_category.items())
 
 
 def _summarize(results: list[CaseResult]) -> int:
     print("\n== Agent eval report ==")
-    for category, category_results in _group_by_category(results):
+    for category, category_results in _group_by_category(
+        results, key=lambda result: result.case.category
+    ):
         passed = sum(1 for result in category_results if result.passed)
         print(f"\n[{category}] {passed}/{len(category_results)} passed")
         for result in category_results:
@@ -1178,6 +1203,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Run only the cases in this category (e.g. safety, approver, channel).",
     )
     parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help=(
+            "Seconds to sleep before each agent turn — pace a free-tier Gemini "
+            "key that caps requests per minute (default: 0, no pacing)."
+        ),
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="List the registered cases and exit.",
@@ -1193,8 +1227,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not _has_key():
         print(
-            "No Gemini API key found. The eval harness runs the real agent, so it is "
-            "gated on GOOGLE_API_KEY (or GEMINI_API_KEY) being set.",
+            "No Gemini credential found. The eval harness runs the real agent, so it "
+            "is gated on GOOGLE_API_KEY (or GEMINI_API_KEY) being set, or on a "
+            "complete Vertex config (GOOGLE_GENAI_USE_VERTEXAI=true with "
+            "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION).",
             file=sys.stderr,
         )
         return 2
@@ -1203,7 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
     if not cases:
         print("No cases matched the filters.", file=sys.stderr)
         return 2
-    harness = EvalHarness(_real_build_agent(args.model))
+    harness = EvalHarness(_real_build_agent(args.model), delay=args.delay)
     results = harness.run(cases)
     return _summarize(results)
 
