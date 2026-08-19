@@ -11,6 +11,7 @@ driven end-to-end against a scripted multi-turn fake model.
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import AsyncGenerator
 from unittest import mock
 
@@ -28,8 +29,10 @@ from scripts.eval_agent import (
     PinnedClock,
     ToolTrace,
     Turn,
+    _has_key,
     _no_privileged_tools,
     _select_cases,
+    _summarize,
     main,
 )
 from src.agent import build_agent, build_runner, run_turn
@@ -369,3 +372,60 @@ def test_main_gates_real_runs_on_an_api_key() -> None:
         assert main([]) == 2
     # --list needs no key.
     assert main(["--list"]) == 0
+
+
+def test_has_key_accepts_a_complete_vertex_config() -> None:
+    base = {
+        "GOOGLE_API_KEY": None,
+        "GEMINI_API_KEY": None,
+        "GOOGLE_GENAI_USE_VERTEXAI": "true",
+        "GOOGLE_CLOUD_PROJECT": "valence-505412",
+        "GOOGLE_CLOUD_LOCATION": "us-central1",
+    }
+    for cased in ("true", "1", "True"):
+        with mock.patch.dict(
+            os.environ, {k: v for k, v in base.items() if v}, clear=True
+        ) as env:
+            env["GOOGLE_GENAI_USE_VERTEXAI"] = cased
+            assert _has_key()
+    for drop in (
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+    ):
+        with mock.patch.dict(
+            os.environ, {k: v for k, v in base.items() if v}, clear=True
+        ) as env:
+            env.pop(drop, None)
+            assert not _has_key()
+
+
+def test_summarize_groups_results_by_case_category() -> None:
+    """Regression gate: the report groups ``CaseResult``s, not cases."""
+    case = EvalCase(
+        name="unit-report",
+        category="unit",
+        steps=[Turn(CHEMFAB, "2 drums sulfuric acid, Peenya Industrial Area")],
+        check=lambda o: [],
+    )
+    result = EvalHarness(_fresh_agent).run_case(case)
+    # The report is pure output; 0 means the whole set passed and the
+    # grouping did not crash on the CaseResult shape.
+    assert _summarize([result]) == 0
+
+
+def test_harness_delay_paces_turns_between_cases() -> None:
+    """A positive ``delay`` sleeps before each turn (free-tier quota pacing)."""
+    case = EvalCase(
+        name="unit-delay",
+        category="unit",
+        steps=[Turn(CHEMFAB, "2 drums sulfuric acid, Peenya Industrial Area")],
+        check=lambda o: [],
+    )
+    with mock.patch("scripts.eval_agent.time.sleep") as sleep:
+        result = EvalHarness(_fresh_agent, delay=2.0).run_case(case)
+        assert result.passed
+        assert sleep.call_count == len(case.steps)
+    with mock.patch("scripts.eval_agent.time.sleep") as sleep:
+        EvalHarness(_fresh_agent, delay=0.0).run_case(case)
+        sleep.assert_not_called()
