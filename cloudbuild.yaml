@@ -22,7 +22,10 @@ steps:
       - '--platform=managed'
       - '--allow-unauthenticated'
       - '--service-account=${_RUN_SA}@$PROJECT_ID.iam.gserviceaccount.com'
-      - '--set-secrets=GOOGLE_API_KEY=GEMINI_API_KEY:latest'
+      # Gemini is served through Vertex AI (ADC via the runtime SA), not the
+      # free-tier API key. asia-southeast1 is the only region serving
+      # gemini-3.5-flash on this project (all US/EU regions 404).
+      - '--set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=valence-$PROJECT_ID-vouchers'
       - '--set-secrets=META_APP_SECRET=META_APP_SECRET:latest'
       - '--set-secrets=META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest'
       - '--set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest'

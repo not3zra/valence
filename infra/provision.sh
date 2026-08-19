@@ -144,13 +144,16 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --role=roles/secretmanager.secretAccessor --condition=None >/dev/null
 
 log "Initial deploy from local source (creates the Cloud Run service)"
+# Gemini is served through Vertex AI (ADC via the runtime SA), not the
+# free-tier API key. asia-southeast1 is the only region serving
+# gemini-3.5-flash on this project (all US/EU regions 404).
 gcloud run deploy "$SERVICE" \
   --source . \
   --region="$REGION" \
   --platform=managed \
   --allow-unauthenticated \
   --service-account="$RUNTIME_SA_EMAIL" \
-  --set-secrets=GOOGLE_API_KEY=GEMINI_API_KEY:latest \
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=valence-${PROJECT_ID}-vouchers" \
   --set-secrets=META_APP_SECRET=META_APP_SECRET:latest \
   --set-secrets=META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest \
   --set-secrets=META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest \
@@ -160,7 +163,6 @@ gcloud run deploy "$SERVICE" \
   --set-secrets=WEB_PASSCODE=WEB_PASSCODE:latest \
   --set-secrets=WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest \
   --set-secrets=CUTOFF_SECRET=CUTOFF_SECRET:latest \
-  --set-env-vars="VOUCHER_BUCKET=valence-${PROJECT_ID}-vouchers" \
   --project="$PROJECT_ID"
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" \

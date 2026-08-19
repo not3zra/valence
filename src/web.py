@@ -24,7 +24,7 @@ from google.adk.agents import Agent
 from pydantic import BaseModel, Field
 
 from . import review
-from .agent import build_runner, run_turn
+from .agent_exec import TurnExecutor
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
@@ -201,7 +201,7 @@ def create_app(
     the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
     and is enforced by an in-memory per-instance limiter.
     """
-    runner = build_runner(agent, session_service)
+    runner = TurnExecutor(agent, session_service)
     sender = whatsapp_sender or MockWhatsAppSender()
     meta_app_secret_value = (
         meta_app_secret
@@ -285,7 +285,7 @@ def create_app(
             raise HTTPException(
                 status_code=401, detail="invalid bearer token"
             )
-        reply = run_turn(runner, sender_id=payload.sender_id, message=payload.message)
+        reply = runner.run_turn(sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
     @app.api_route("/api/whatsapp/webhook", methods=["GET", "POST"])
@@ -349,8 +349,8 @@ def create_app(
             if not rate_limiter.allow(message.sender):
                 return Response(status_code=429, content="rate limit exceeded")
             media = fetcher.fetch(message.media[0]) if message.media else None
-            reply = run_turn(
-                runner, sender_id=message.sender, message=message.body, media=media
+            reply = runner.run_turn(
+                sender_id=message.sender, message=message.body, media=media
             )
             if reply:
                 sender.send(message.sender, reply)
@@ -417,8 +417,7 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        run_turn(
-            runner,
+        runner.run_turn(
             sender_id=caller,
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
