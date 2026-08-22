@@ -1,10 +1,14 @@
 """Smoke test: run one agent round trip against the real Gemini model.
 
 Exercise of the ticket 1 deploy acceptance: "the deployed agent's first
-round-trip runs (message in -> reply out)". Requires ``GOOGLE_API_KEY``.
+round-trip runs (message in -> reply out)". Gemini is served through Vertex AI,
+so set the Vertex env vars (or rely on ``./scripts/run_local.sh`` which exports
+them) and run ``gcloud auth application-default login`` once.
 
 Usage:
-    GOOGLE_API_KEY=... python scripts/smoke_roundtrip.py \\
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+        GOOGLE_CLOUD_LOCATION=asia-southeast1 \\
+        python scripts/smoke_roundtrip.py \\
         --sender +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
 """
 

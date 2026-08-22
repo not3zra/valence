@@ -8,11 +8,11 @@ each case's decision/tool outcome from the store plus the recorded tool trace.
 
 Run with an API key, or via Vertex AI (ADC) instead:
 
-    GOOGLE_API_KEY=... python scripts/eval_agent.py            # the full set
-    GOOGLE_API_KEY=... python scripts/eval_agent.py --category safety
-    GOOGLE_API_KEY=... python scripts/eval_agent.py --cases happy-hindi-text
-    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=P \\
-        GOOGLE_CLOUD_LOCATION=us-central1 python scripts/eval_agent.py
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+        GOOGLE_CLOUD_LOCATION=asia-southeast1 python scripts/eval_agent.py   # the full set
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+        GOOGLE_CLOUD_LOCATION=asia-southeast1 python scripts/eval_agent.py --category safety
+    GOOGLE_API_KEY=... python scripts/eval_agent.py --cases happy-hindi-text   # or a key
     python scripts/eval_agent.py --list                          # no key needed
 
 Hard failures — a decision or tool-level assert that fails (wrong status,
