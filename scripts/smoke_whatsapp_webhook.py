@@ -7,11 +7,12 @@ through the Order Processing Core, and the confirmation reply — including the
 estimated total from draft pricing — is produced. The reply is captured by the
 MockWhatsAppSender (the demo outbound seam), not actually delivered.
 
-Requires ``GOOGLE_API_KEY`` and ``META_APP_SECRET``. Run the service first via
+Requires the Vertex env (Gemini runs through Vertex AI; ``./scripts/run_local.sh``
+exports it) plus ``META_APP_SECRET``. Run the service first via
 ``./scripts/run_local.sh`` (emulator) or point at the deployed instance.
 
 Usage:
-    GOOGLE_API_KEY=... META_APP_SECRET=... python scripts/smoke_whatsapp_webhook.py \\
+    META_APP_SECRET=... python scripts/smoke_whatsapp_webhook.py \\
         --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
 """
 

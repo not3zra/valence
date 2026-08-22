@@ -33,10 +33,19 @@ export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"
 # Local dev uses the in-memory voucher store (no bucket provisioned).
 export VOUCHER_BUCKET="${VOUCHER_BUCKET:-}"
 
+# Gemini 3.5 runs through Vertex AI (ADC). The free-tier GOOGLE_API_KEY is
+# exhausted, so local dev uses Vertex on the shared project. Requires
+# `gcloud auth application-default login` and GCP access to valence-505412.
+# (Firestore still runs on the emulator above via FIRESTORE_EMULATOR_HOST; the
+# emulator client namespaces by GOOGLE_CLOUD_PROJECT, so seed + app agree.)
+export GOOGLE_GENAI_USE_VERTEXAI=true
+export GOOGLE_CLOUD_PROJECT=valence-505412
+export GOOGLE_CLOUD_LOCATION=asia-southeast1
+
 echo "==> Starting Firestore emulator on :$EMULATOR_PORT"
 gcloud beta emulators firestore start \
   --host-port="localhost:${EMULATOR_PORT}" \
-  --project-id="$PROJECT_ID" >/tmp/firestore-emulator.log 2>&1 &
+  --project="$PROJECT_ID" >/tmp/firestore-emulator.log 2>&1 &
 EMULATOR_PID=$!
 
 cleanup() {
