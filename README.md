@@ -46,13 +46,21 @@ Both paths point Gemini at Vertex AI automatically.
 src/
   config.py          environment settings
   agent.py           the ADK agent + durable Firestore sessions + run_turn()
+  agent_exec.py      TurnExecutor — keeps ADK's runner on one live event loop
   orders.py          order domain: status state machine + order events
   money.py           two-tier draft money model (agreed rate > tier > catalog)
   store.py           OrderStore seam (Firestore) + in-memory test double
   core.py            the Order Processing Core (decision engine, ticket 2)
   core_tool.py       the core exposed as a single ADK tool
+  approval.py        human-approval notification seam (WhatsApp)
+  dispatch.py        late-order notification seam (WhatsApp)
+  loading.py         Loading List render logic (dispatch, ticket 9)
+  review.py          review web-view HTML/JS + approve/reject actions
+  media.py           media types + base64 ↔ inline-part conversion
+  ratelimit.py       per-sender sliding-window rate limiter (security #32)
   seed_data.py       canonical seed data (customers, products, routes, ...)
   seed_firestore.py  writes seed data into Firestore (emulator or real)
+  voucher.py         Tally voucher XML builder + Cloud Storage seam
   whatsapp.py        WhatsApp channel boundary: InboundMessage + sender/webhook seams
   meta_whatsapp.py   Meta Cloud API adapter: JSON parsing + X-Hub-Signature-256
                      verification + Graph API sender (the live channel)
