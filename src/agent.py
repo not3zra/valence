@@ -166,7 +166,13 @@ def build_session_service():
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
-    return FirestoreSessionService(root_collection=settings.firestore_root_collection)
+    from google.cloud import firestore as _firestore
+
+    client = _firestore.AsyncClient(database="(default)")
+    return FirestoreSessionService(
+        root_collection=settings.firestore_root_collection,
+        client=client,
+    )
 
 
 def build_runner(agent: Agent, session_service) -> Runner:
