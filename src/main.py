@@ -7,10 +7,15 @@ import uvicorn
 from .agent import build_agent, build_session_service
 from .config import settings
 from .meta_whatsapp import MetaWhatsAppSender
-from .store import FirestoreOrderStore
+from .store import FirestoreOrderStore, InMemoryOrderStore
 from .web import create_app
 
-store = FirestoreOrderStore()
+if settings.session_service == "memory":
+    store = InMemoryOrderStore()
+else:
+    from google.cloud import firestore as _firestore
+
+    store = FirestoreOrderStore(client=_firestore.AsyncClient(database="(default)"))
 
 app = create_app(
     agent=build_agent(store=store),

@@ -8,6 +8,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir "google-cloud-firestore==2.19.0"
 
 EXPOSE 8080
 
