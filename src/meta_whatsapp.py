@@ -221,7 +221,9 @@ class MetaWhatsAppSender:
         try:
             with self._open(request) as response:
                 response.read()
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError):
+        except (OSError, urllib.error.HTTPError, urllib.error.URLError) as exc:
+            import logging
+            logging.warning("MetaWhatsAppSender.send FAILED: %s %s", type(exc).__name__, exc)
             return
 
 
