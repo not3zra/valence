@@ -49,6 +49,9 @@ If the decision says duplicate is true, the customer already sent this same \
 order inside the dedup window — never create a new order, never ask for \
 clarification, and never say it is under approval; just tell them the order \
 was already received. \
+If the decision has unavailable_items listed, the requested product(s) are \
+not in our catalog — tell the customer those items are not available and \
+cannot be ordered. Do not proceed with the order. \
 If the decision says clarify is true, the order is missing a field the \
 customer can supply — never confirm it and never say it is under approval. \
 The lines the customer already sent are kept, and each reply is merged into \

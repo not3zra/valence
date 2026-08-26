@@ -40,6 +40,7 @@ class EscalationReason(str, Enum):
     UNKNOWN_CUSTOMER = "unknown_customer"
     UNVERIFIED_NUMBER = "unverified_number"
     UNCATALOGED_PRODUCT = "uncataloged_product"
+    UNCATALOGED_LOCATION = "uncataloged_location"
     LOW_CONFIDENCE = "low_confidence"
     OVER_VALUE_CAP = "over_value_cap"
     ANOMALY = "anomaly"
@@ -214,6 +215,7 @@ class OrderDecision:
     clarify: bool = False
     missing_fields: list[str] = field(default_factory=list)
     late: bool = False
+    unavailable_items: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -230,4 +232,5 @@ class OrderDecision:
             "clarify": self.clarify,
             "missing_fields": list(self.missing_fields),
             "late": self.late,
+            "unavailable_items": list(self.unavailable_items),
         }
