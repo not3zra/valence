@@ -104,6 +104,16 @@ CUSTOMERS: list[Customer] = [
         agreed_rates={"p_hcl": 9.25},
         max_quantities={"p_hcl": 2500.0},
     ),
+    Customer(
+        id="c_sankar",
+        name="Sankar Testing",
+        phone="+918848943092",
+        gstin="29ABCDE1234F1Z5",
+        state="Karnataka",
+        ledger="SANKAR TESTING",
+        agreed_rates={"p_sulfuric98": 17.5, "p_hcl": 9.0, "p_naoh": 37.0, "p_toluene": 61.0, "p_xylene": 66.0},
+        max_quantities={"p_sulfuric98": 10000.0, "p_hcl": 5000.0, "p_naoh": 5000.0, "p_toluene": 3000.0, "p_xylene": 3000.0},
+    ),
 ]
 
 PRODUCTS: list[Product] = [
