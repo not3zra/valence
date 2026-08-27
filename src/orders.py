@@ -216,6 +216,7 @@ class OrderDecision:
     missing_fields: list[str] = field(default_factory=list)
     late: bool = False
     unavailable_items: list[str] = field(default_factory=list)
+    reply_hint: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -233,4 +234,5 @@ class OrderDecision:
             "missing_fields": list(self.missing_fields),
             "late": self.late,
             "unavailable_items": list(self.unavailable_items),
+            "reply_hint": self.reply_hint,
         }
