@@ -77,6 +77,7 @@ CANONICAL_REASON_ORDER: list[EscalationReason] = [
     EscalationReason.UNKNOWN_CUSTOMER,
     EscalationReason.UNVERIFIED_NUMBER,
     EscalationReason.UNCATALOGED_PRODUCT,
+    EscalationReason.UNCATALOGED_LOCATION,
     EscalationReason.LOW_CONFIDENCE,
     EscalationReason.OVER_VALUE_CAP,
     EscalationReason.ANOMALY,
@@ -98,6 +99,7 @@ class _Evaluation:
     customer: seed_data.Customer | None
     location: seed_data.DeliveryLocation | None
     resolved: list[ResolvedLine]
+    unavailable_items: list[str] = ()
 
 
 # Sentinel distinguishing "key absent" from "explicitly cleared" in edit_order.
@@ -341,6 +343,40 @@ class OrderProcessingCore:
         draft_total = evaluation.draft_total
 
         missing_fields = _missing_fields(order)
+
+        # If any requested product is not in the catalog, tell the customer
+        # the item is unavailable — no need to proceed further.
+        if evaluation.unavailable_items:
+            order.order_id = order.order_id or _new_order_id()
+            order.customer_id = customer.id if customer else None
+            order.delivery_location_id = location.id if location else None
+            order.draft_value_inr = draft_total
+            order.escalation_reasons = escalation_reasons
+            order.status = OrderStatus.PENDING_REVIEW
+            await self._store.create_order(order)
+            await self._store.append_order_event(
+                OrderEvent(
+                    order_id=order.order_id,
+                    event_type=EVENT_ORDER_CREATED,
+                    payload={
+                        "order_id": order.order_id,
+                        "phone": order.phone,
+                        "source_channel": order.source_channel,
+                    },
+                )
+            )
+            return OrderDecision(
+                order_id=order.order_id,
+                status=OrderStatus.PENDING_REVIEW.value,
+                approved=False,
+                escalation_reasons=escalation_reasons,
+                draft_value_inr=draft_total,
+                customer_id=customer.id if customer else None,
+                delivery_location_id=location.id if location else None,
+                items=[_resolved_item(line) for line in resolved],
+                unavailable_items=evaluation.unavailable_items,
+            )
+
         # Clarify only ever happens over WhatsApp (ADR-0004); a voice order is
         # never held for an answer. It applies when the only problems the
         # *customer* can fix are missing fields. Unknown/Unverified customer
@@ -477,6 +513,7 @@ class OrderProcessingCore:
                 reasons.add(EscalationReason.UNKNOWN_CUSTOMER.value)
 
         resolved: list[ResolvedLine] = []
+        unavailable: list[str] = []
         for item in order.items:
             product = resolve_product(item.product, products)
             missing_quantity = not math.isfinite(item.quantity) or item.quantity <= 0
@@ -484,6 +521,8 @@ class OrderProcessingCore:
                 reasons.add(EscalationReason.MISSING_FIELD.value)
             if product is None:
                 reasons.add(EscalationReason.UNCATALOGED_PRODUCT.value)
+                if item.product:
+                    unavailable.append(item.product)
             resolved.append(ResolvedLine(item=item, product=product))
 
         if not order.delivery_location:
@@ -519,16 +558,20 @@ class OrderProcessingCore:
             if rate_is_anomalous(line.item.rate_inr, agreed, rate_deviation):
                 reasons.add(EscalationReason.ANOMALY.value)
 
+        location = resolve_delivery_location(order.delivery_location, locations)
+        if order.delivery_location and location is None:
+            reasons.add(EscalationReason.UNCATALOGED_LOCATION.value)
+
         escalation_reasons: list[str] = [
             reason.value for reason in CANONICAL_REASON_ORDER if reason.value in reasons
         ]
-        location = resolve_delivery_location(order.delivery_location, locations)
         return _Evaluation(
             escalation_reasons=escalation_reasons,
             draft_total=draft_total,
             customer=customer,
             location=location,
             resolved=resolved,
+            unavailable_items=unavailable,
         )
 
     async def merge_held_order(self, held: Order, incoming: Order) -> Order:
