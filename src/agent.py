@@ -212,8 +212,8 @@ def run_turn(
     sender continue the same durable session (ADR-0001: one session keyed per
     WhatsApp sender, or per voice caller, issue #10). ``media``, when present,
     is attached as an inline media part — an image for a photo of a handwritten
-    order (issue #11), audio for a recorded call (issue #10) — understood in
-    the same Gemini call as text: one agent, every channel.
+    order (issue #11), audio for a recorded call (issue #10) — understood in the
+    same Gemini call as text: one agent, every channel.
 
     ``on_event``, when supplied, is invoked for every ADK event the turn
     produces before the next one is consumed. It is the eval harness's
@@ -226,6 +226,7 @@ def run_turn(
     if media is not None:
         parts.append(media_to_inline_part(media))
     content = types.Content(role="user", parts=parts)
+    last_reply_hint: str | None = None
     for event in runner.run(
         user_id=sender_id,
         session_id=sender_id,
@@ -233,6 +234,18 @@ def run_turn(
     ):
         if on_event is not None:
             on_event(event)
+        # Scan function-response parts for reply_hint from process_order tool.
+        # Gemini often ignores the hint in its generated text, so we intercept
+        # the tool result and force the hint as the final reply.
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.function_response and part.function_response.response:
+                    resp = part.function_response.response
+                    if isinstance(resp, dict) and "reply_hint" in resp:
+                        last_reply_hint = resp["reply_hint"]
         if event.is_final_response():
+            # Prefer the tool's reply_hint over the agent's generated text.
+            if last_reply_hint is not None:
+                return last_reply_hint
             return _event_text(event)
     return ""

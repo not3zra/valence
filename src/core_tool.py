@@ -229,8 +229,8 @@ def build_process_order_tool(
         if late_notifier is not None and decision.approved and decision.late:
             await late_notifier.on_order_late(decision.order_id)
 
-        result = {"reply_hint": _build_reply_hint(decision, config)}
-        result.update(decision.to_dict())
+        result = decision.to_dict()
+        result["reply_hint"] = _build_reply_hint(decision, config)
         return result
 
     return FunctionTool(process_order)
