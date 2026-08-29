@@ -71,6 +71,12 @@ class ApprovalError(RuntimeError):
 # or above this threshold resolves, anything below is an uncataloged product.
 FUZZY_MATCH_THRESHOLD = 0.6
 
+# Locations are shorter and more often abbreviated than product names, so
+# the matching threshold is lower.  A score of 0.4 catches "Peenya" →
+# "Peenya Industrial Area" and "Bommasandra" → "Bommasandra Industrial
+# Area" while still rejecting unrelated text.
+LOCATION_FUZZY_THRESHOLD = 0.4
+
 
 CANONICAL_REASON_ORDER: list[EscalationReason] = [
     EscalationReason.MISSING_FIELD,
@@ -188,10 +194,30 @@ def resolve_product(
 def resolve_delivery_location(
     text: str | None, locations: list[seed_data.DeliveryLocation]
 ) -> seed_data.DeliveryLocation | None:
-    """Match a delivery location by id or name, case-insensitively."""
+    """Match a delivery location by id, name, or address; fuzzy as fallback.
+
+    Exact match wins first; on a miss the normalized text is scored against
+    every location's name and address. Text that clears
+    ``LOCATION_FUZZY_THRESHOLD`` resolves to the closest location; anything
+    below is left unresolved. The threshold is lower than product matching
+    because location names are shorter and often abbreviated.
+    """
     for location in locations:
-        if _match(text, [location.id, location.name]):
+        if _match(text, [location.id, location.name, location.address]):
             return location
+
+    needle = _normalize(text) if text else ""
+    if not needle:
+        return None
+    best: seed_data.DeliveryLocation | None = None
+    best_score = 0.0
+    for location in locations:
+        for candidate in [location.name, location.address]:
+            score = _fuzzy_score(needle, _normalize(candidate))
+            if score > best_score:
+                best, best_score = location, score
+    if best is not None and best_score >= LOCATION_FUZZY_THRESHOLD:
+        return best
     return None
 
 
