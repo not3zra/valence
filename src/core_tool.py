@@ -27,14 +27,22 @@ def _build_reply_hint(decision, config: dict | None = None) -> str:
     if decision.approved:
         total = f"{decision.draft_value_inr:.2f}"
         return f"Your order has been confirmed. Estimated total is INR {total}."
-    # Not approved — check if it's an unregistered customer
+    # Not approved — check escalation reasons
     escalation = set(decision.escalation_reasons)
+    contact = (config or {}).get("registration_contact", "+919845000001")
+    # Unknown/unverified customer always gets the registration message
     if "unknown_customer" in escalation or "unverified_number" in escalation:
-        contact = (config or {}).get("registration_contact", "+919845000001")
         return (
             "It looks like you're ordering for the first time. "
             "Please contact our staff on "
             f"{contact} to register as a customer. Thank you."
+        )
+    # Known customer but unknown location — rejected
+    if "uncataloged_location" in escalation:
+        return (
+            "Sorry, we do not deliver to that location. "
+            "Please contact our staff on "
+            f"{contact} for assistance. Thank you."
         )
     # Other escalations — under review
     return "Your order has been received and is under review. We will get back to you shortly."
