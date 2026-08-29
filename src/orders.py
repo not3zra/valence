@@ -110,6 +110,7 @@ class Order:
     confidence: float = 0.0
     source_channel: str = "whatsapp"
     source_language: str = "en"
+    transcription: str | None = None
     order_id: str | None = None
     status: OrderStatus = OrderStatus.PENDING_REVIEW
     escalation_reasons: list[str] = field(default_factory=list)
@@ -133,6 +134,7 @@ class Order:
             "confidence": self.confidence,
             "source_channel": self.source_channel,
             "source_language": self.source_language,
+            "transcription": self.transcription,
             "status": self.status.value,
             "escalation_reasons": list(self.escalation_reasons),
             "draft_value_inr": self.draft_value_inr,
@@ -156,6 +158,7 @@ class Order:
             confidence=float(data.get("confidence", 0.0)),
             source_channel=str(data.get("source_channel", "whatsapp")),
             source_language=str(data.get("source_language", "en")),
+            transcription=data.get("transcription"),
             status=OrderStatus(data.get("status", OrderStatus.PENDING_REVIEW.value)),
             escalation_reasons=list(data.get("escalation_reasons", [])),
             draft_value_inr=float(data.get("draft_value_inr", 0.0)),
