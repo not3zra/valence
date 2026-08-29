@@ -368,6 +368,53 @@ class OrderProcessingCore:
         resolved = evaluation.resolved
         draft_total = evaluation.draft_total
 
+        # Unknown/unverified customers cannot place orders — reject immediately
+        # but still store the order for audit trail and edit by approver.
+        if not customer and order.customer_id is None:
+            has_unknown = {
+                EscalationReason.UNKNOWN_CUSTOMER.value,
+                EscalationReason.UNVERIFIED_NUMBER.value,
+            } & set(escalation_reasons)
+            if has_unknown:
+                order.order_id = order.order_id or _new_order_id()
+                order.customer_id = None
+                order.delivery_location_id = location.id if location else None
+                order.draft_value_inr = draft_total
+                order.escalation_reasons = escalation_reasons
+                order.status = OrderStatus.PENDING_REVIEW
+                await self._store.create_order(order)
+                await self._store.append_order_event(
+                    OrderEvent(
+                        order_id=order.order_id,
+                        event_type=EVENT_ORDER_CREATED,
+                        payload={
+                            "order_id": order.order_id,
+                            "phone": order.phone,
+                            "source_channel": order.source_channel,
+                        },
+                    )
+                )
+                await self._store.append_order_event(
+                    OrderEvent(
+                        order_id=order.order_id,
+                        event_type=EVENT_ORDER_ESCALATED,
+                        payload={
+                            "order_id": order.order_id,
+                            "reasons": escalation_reasons,
+                        },
+                    )
+                )
+                return OrderDecision(
+                    order_id=order.order_id,
+                    status=OrderStatus.PENDING_REVIEW.value,
+                    approved=False,
+                    escalation_reasons=escalation_reasons,
+                    draft_value_inr=draft_total,
+                    customer_id=None,
+                    delivery_location_id=location.id if location else None,
+                    items=[_resolved_item(line) for line in resolved],
+                )
+
         missing_fields = _missing_fields(order)
 
         # If any requested product is not in the catalog, tell the customer
