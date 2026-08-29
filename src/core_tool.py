@@ -218,6 +218,37 @@ def build_process_order_tool(
     return FunctionTool(process_order)
 
 
+def build_get_delivery_routes_tool(store) -> FunctionTool:
+    """Return available delivery routes and locations for the agent to check."""
+
+    async def get_delivery_routes() -> dict:
+        """Get available delivery routes and locations.
+
+        Returns the list of service areas the company delivers to.
+        The agent MUST check this before confirming an order — if the
+        customer's delivery location is not in this list, the order
+        cannot be auto-approved.
+        """
+        routes = await store.get_routes()
+        locations = await store.get_delivery_locations()
+        route_map = {r.id: r.name for r in routes}
+        loc_list = [
+            {
+                "name": loc.name,
+                "address": loc.address,
+                "state": loc.state,
+                "route": route_map.get(loc.route_id, loc.route_id),
+            }
+            for loc in locations
+        ]
+        return {
+            "routes": [r.name for r in routes],
+            "locations": loc_list,
+        }
+
+    return FunctionTool(get_delivery_routes)
+
+
 def build_approve_order_tool(
     core: OrderProcessingCore,
     store,

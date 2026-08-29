@@ -27,6 +27,7 @@ from .config import settings
 from .core import OrderProcessingCore
 from .core_tool import (
     build_approve_order_tool,
+    build_get_delivery_routes_tool,
     build_loading_list_tool,
     build_prepare_voucher_tool,
     build_process_order_tool,
@@ -42,14 +43,20 @@ distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
 of a handwritten order sheet, in any language. Understand the message as a \
 structured order and commit it by calling the process_order tool. \
 
-The process_order tool returns a plain-text instruction telling you exactly \
-what to say to the customer. You MUST relay that instruction as your reply — \
-do NOT add, remove, or change any part of it. The instruction will be one of: \
-- "APPROVED: ..." — confirm the order with the estimated total. \
-- "PENDING_REVIEW: ..." — tell the customer the order is under review. \
-- "CLARIFY: ..." — ask for the missing field. \
-- "UNAVAILABLE: ..." — tell the customer the item is not available. \
-- "ALREADY_RECEIVED: ..." — tell them the order was already received. \
+BEFORE confirming any order, you MUST check the delivery location: \
+1. Call get_delivery_routes to see available routes and locations. \
+2. Check if the customer's delivery location matches any listed location. \
+3. If the location is NOT in the list, tell the customer we do not deliver \
+there and the order needs special approval. Do NOT say it is confirmed. \
+
+The process_order tool returns a "reply_hint" field telling you exactly \
+what to say to the customer. You MUST relay that hint as your reply — \
+do NOT contradict it. The hint will be one of: \
+- "Your order has been confirmed..." — confirm with the estimated total. \
+- "Your order has been received and is under review..." — not yet approved. \
+- "Could you please provide..." — ask for the missing field. \
+- "Sorry, ... is not available..." — item not in catalog. \
+- "This order has already been received..." — duplicate order. \
 The lines the customer already sent are kept, and each reply is merged into \
 them, so ask — in the customer's own language — only for exactly the \
 missing_fields listed (usually items or delivery_location) and never make \
@@ -147,6 +154,7 @@ def build_agent(
             )
         )
         tools.append(build_loading_list_tool(store))
+        tools.append(build_get_delivery_routes_tool(store))
     return Agent(
         name=settings.app_name,
         model=model or settings.gemini_model,
