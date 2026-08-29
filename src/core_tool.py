@@ -14,7 +14,7 @@ from .store import OrderStore
 from .voucher import VoucherStore
 
 
-def _build_reply_hint(decision) -> str:
+def _build_reply_hint(decision, config: dict | None = None) -> str:
     """Build the exact reply the agent should relay to the customer."""
     if decision.duplicate:
         return "This order has already been received. No need to place it again."
@@ -27,7 +27,16 @@ def _build_reply_hint(decision) -> str:
     if decision.approved:
         total = f"{decision.draft_value_inr:.2f}"
         return f"Your order has been confirmed. Estimated total is INR {total}."
-    # Not approved — under review
+    # Not approved — check if it's an unregistered customer
+    escalation = set(decision.escalation_reasons)
+    if "unknown_customer" in escalation or "unverified_number" in escalation:
+        contact = (config or {}).get("registration_contact", "+919845000001")
+        return (
+            "It looks like you're ordering for the first time. "
+            "Please contact our staff on "
+            f"{contact} to register as a customer. Thank you."
+        )
+    # Other escalations — under review
     return "Your order has been received and is under review. We will get back to you shortly."
 
 # Session-state key that carries a partial order + clarify turn count across the
@@ -149,6 +158,7 @@ def build_process_order_tool(
         # customer never answered the clarifying question. The abandoned
         # partial escalates as it was held — the fresh message is handled on
         # its own below.
+        config = await core._store.get_config()
         if pending is not None:
             policy = await core.clarify_policy()
             try:
@@ -189,7 +199,7 @@ def build_process_order_tool(
                     "turn": turn,
                     "created_at": utcnow(),
                 }
-                result = {"reply_hint": _build_reply_hint(decision)}
+                result = {"reply_hint": _build_reply_hint(decision, config)}
                 result.update(decision.to_dict())
                 return result
 
@@ -211,7 +221,7 @@ def build_process_order_tool(
         if late_notifier is not None and decision.approved and decision.late:
             await late_notifier.on_order_late(decision.order_id)
 
-        result = {"reply_hint": _build_reply_hint(decision)}
+        result = {"reply_hint": _build_reply_hint(decision, config)}
         result.update(decision.to_dict())
         return result
 
