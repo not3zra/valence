@@ -65,7 +65,7 @@ def test_runner_invokes_tool_and_pins_sender_identity():
 
     reply = run_turn(runner, sender_id="+919812345001", message="2 tons of acid")
 
-    assert reply == "Order committed."
+    assert reply == "Your order has been confirmed. Estimated total is INR 35000.00."
     assert [(o.phone, o.status, o.customer_id) for o in store.orders] == [
         ("+919812345001", OrderStatus.APPROVED, "c_chemfab")
     ]
