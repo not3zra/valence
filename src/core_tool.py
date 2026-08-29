@@ -85,6 +85,7 @@ def build_process_order_tool(
         delivery_location: str | None = None,
         source_language: str = "en",
         source_channel: str = "whatsapp",
+        transcription: str | None = None,
         tool_context: ToolContext | None = None,
     ) -> dict:
         """Commit a structured order through the Order Processing Core.
@@ -97,6 +98,8 @@ def build_process_order_tool(
             delivery_location: Extracted delivery location name, if any.
             source_language: BCP-47 tag of the sender's language.
             source_channel: Intake channel (whatsapp, phone, or photo).
+            transcription: For voice orders, the full text of what the caller
+                said in the language they spoke. None for non-voice channels.
             tool_context: ADK invocation context; the order's phone is taken
                 from the caller's session identity here, never from the message.
 
@@ -115,6 +118,7 @@ def build_process_order_tool(
                 confidence=confidence,
                 source_language=source_language,
                 source_channel=source_channel,
+                transcription=transcription,
                 items=[OrderItem.from_dict(item) for item in items],
             )
         except (TypeError, ValueError):

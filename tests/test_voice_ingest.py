@@ -67,6 +67,7 @@ def test_ingest_commits_a_voice_order():
     assert order.phone == "+919812345001"
     assert order.source_channel == "voice"
     assert order.status.value == "approved"
+    assert order.transcription == "2 drums sulfuric acid, deliver to Peenya"
 
 
 def test_ingest_missing_field_escalates_never_clarifies():
@@ -81,6 +82,19 @@ def test_ingest_missing_field_escalates_never_clarifies():
     order = store.orders[0]
     assert order.status.value == "pending_review"
     assert "missing_field" in order.escalation_reasons
+    assert order.transcription == "2 drums sulfuric acid"
+
+
+def test_ingest_records_transcription_in_order_created_event():
+    store = InMemoryOrderStore()
+    client = _client(store=store)
+    response = client.post(INGEST_URL, json=_payload(), headers=_auth())
+    assert response.status_code == 200
+
+    events = [e for e in store.events if e.event_type == "order_created"]
+    assert len(events) == 1
+    assert events[0].payload["transcription"] == "2 drums sulfuric acid, deliver to Peenya"
+    assert events[0].payload["source_channel"] == "voice"
 
 
 def test_ingest_rejects_a_missing_token():

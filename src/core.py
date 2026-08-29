@@ -389,6 +389,7 @@ class OrderProcessingCore:
                     "phone": order.phone,
                     "source_channel": order.source_channel,
                     "source_language": order.source_language,
+                    "transcription": order.transcription,
                 },
             )
         )

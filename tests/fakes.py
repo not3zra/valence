@@ -476,6 +476,7 @@ class VoiceReadingLlm(BaseLlm):
                     "confidence": 0.9,
                     "delivery_location": "Peenya Industrial Area",
                     "source_channel": "voice",
+                    "transcription": "2 drums sulfuric acid, deliver to Peenya",
                 },
             )
         else:
@@ -486,6 +487,7 @@ class VoiceReadingLlm(BaseLlm):
                     "items": [],
                     "confidence": 0.1,
                     "source_channel": "voice",
+                    "transcription": "",
                 },
             )
         yield LlmResponse(
@@ -550,6 +552,7 @@ class VoiceMissingFieldLlm(BaseLlm):
                 ],
                 "confidence": 0.8,
                 "source_channel": "voice",
+                "transcription": "2 drums sulfuric acid",
             },
         )
         yield LlmResponse(

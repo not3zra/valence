@@ -359,7 +359,12 @@ def order_page(
         f"<dt>Confidence</dt><dd>{order.confidence:g}</dd>"
         f"<dt>Estimated total</dt><dd>{order.draft_value_inr:,.0f} INR</dd>"
         f"<dt>GST override</dt><dd>{escape(gst_override)}</dd>"
-        f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
+        + (
+            f"<dt>Transcription</dt><dd>{escape(order.transcription)}</dd>"
+            if order.transcription
+            else ""
+        )
+        + f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
         f"<div class='card'><h2>Items</h2><table class='timeline'>"
         f"<tr><th>Product</th><th>Quantity</th><th>Rate</th></tr>{items}</table></div>"
         f"{_voucher_card(order)}"
