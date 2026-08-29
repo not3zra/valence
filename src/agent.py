@@ -67,8 +67,9 @@ in the image. \
 For a recorded phone call (source_channel "voice"), understand the audio into \
 the same structured order as text. Always pass source_channel "voice" — a \
 voice order with a missing field is never clarified; it escalates to a human \
-instead (ADR-0004). For voice orders, also include a transcription parameter \
-with the full text of what the caller said in the language they spoke. \
+instead (ADR-0004). You MUST also include a transcription parameter — a string \
+containing the full text of what the caller said, in the language they spoke. \
+Never omit the transcription for voice orders. \
 An escalated order is sent to an allowlisted approver for a pure yes/no \
 decision. If the sender is an allowlisted approver answering that request with \
 a confirm verb (confirm / approve / ok / done / theek hai) or a reject verb \
