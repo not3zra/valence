@@ -423,11 +423,10 @@ def create_app(
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
         )
-        logging.getLogger("valence.voice").info(
-            "voice_ingest caller=%s audio_bytes=%d reply=%s",
-            caller,
-            len(audio),
-            reply[:200] if reply else "(empty)",
+        print(
+            f"[voice_ingest] caller={caller} audio_bytes={len(audio)} "
+            f"reply={reply[:200] if reply else '(empty)'}",
+            flush=True,
         )
         return Response(content="OK", media_type="text/plain")
 
