@@ -28,6 +28,7 @@ from .config import settings
 from .core import OrderProcessingCore
 from .core_tool import (
     build_approve_order_tool,
+    build_get_delivery_routes_tool,
     build_loading_list_tool,
     build_prepare_voucher_tool,
     build_process_order_tool,
@@ -42,16 +43,21 @@ AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
 distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
 of a handwritten order sheet, in any language. Understand the message as a \
 structured order and commit it by calling the process_order tool. \
-process_order returns the decision with the draft_value_inr estimated total; \
-after a successful commit, confirm the order to the customer in their own \
-language and include the estimated total from the tool result. If the order \
-was escalated (approved is false), tell the customer it is under approval. \
-If the decision says duplicate is true, the customer already sent this same \
-order inside the dedup window — never create a new order, never ask for \
-clarification, and never say it is under approval; just tell them the order \
-was already received. \
-If the decision says clarify is true, the order is missing a field the \
-customer can supply — never confirm it and never say it is under approval. \
+
+BEFORE confirming any order, you MUST check the delivery location: \
+1. Call get_delivery_routes to see available routes and locations. \
+2. Check if the customer's delivery location matches any listed location. \
+3. If the location is NOT in the list, tell the customer we do not deliver \
+there and the order needs special approval. Do NOT say it is confirmed. \
+
+The process_order tool returns a "reply_hint" field telling you exactly \
+what to say to the customer. You MUST relay that hint as your reply — \
+do NOT contradict it. The hint will be one of: \
+- "Your order has been confirmed..." — confirm with the estimated total. \
+- "Your order has been received and is under review..." — not yet approved. \
+- "Could you please provide..." — ask for the missing field. \
+- "Sorry, ... is not available..." — item not in catalog. \
+- "This order has already been received..." — duplicate order. \
 The lines the customer already sent are kept, and each reply is merged into \
 them, so ask — in the customer's own language — only for exactly the \
 missing_fields listed (usually items or delivery_location) and never make \
@@ -151,6 +157,7 @@ def build_agent(
             )
         )
         tools.append(build_loading_list_tool(store))
+        tools.append(build_get_delivery_routes_tool(store))
     return Agent(
         name=settings.app_name,
         model=model or settings.gemini_model,
@@ -208,8 +215,8 @@ def run_turn(
     sender continue the same durable session (ADR-0001: one session keyed per
     WhatsApp sender, or per voice caller, issue #10). ``media``, when present,
     is attached as an inline media part — an image for a photo of a handwritten
-    order (issue #11), audio for a recorded call (issue #10) — understood in
-    the same Gemini call as text: one agent, every channel.
+    order (issue #11), audio for a recorded call (issue #10) — understood in the
+    same Gemini call as text: one agent, every channel.
 
     ``on_event``, when supplied, is invoked for every ADK event the turn
     produces before the next one is consumed. It is the eval harness's
@@ -222,6 +229,7 @@ def run_turn(
     if media is not None:
         parts.append(media_to_inline_part(media))
     content = types.Content(role="user", parts=parts)
+    last_reply_hint: str | None = None
     for event in runner.run(
         user_id=sender_id,
         session_id=sender_id,
@@ -229,6 +237,18 @@ def run_turn(
     ):
         if on_event is not None:
             on_event(event)
+        # Scan function-response parts for reply_hint from process_order tool.
+        # Gemini often ignores the hint in its generated text, so we intercept
+        # the tool result and force the hint as the final reply.
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.function_response and part.function_response.response:
+                    resp = part.function_response.response
+                    if isinstance(resp, dict) and "reply_hint" in resp:
+                        last_reply_hint = resp["reply_hint"]
         if event.is_final_response():
+            # Prefer the tool's reply_hint over the agent's generated text.
+            if last_reply_hint is not None:
+                return last_reply_hint
             return _event_text(event)
     return ""
