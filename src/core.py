@@ -71,12 +71,19 @@ class ApprovalError(RuntimeError):
 # or above this threshold resolves, anything below is an uncataloged product.
 FUZZY_MATCH_THRESHOLD = 0.6
 
+# Locations are shorter and more often abbreviated than product names, so
+# the matching threshold is lower.  A score of 0.4 catches "Peenya" →
+# "Peenya Industrial Area" and "Bommasandra" → "Bommasandra Industrial
+# Area" while still rejecting unrelated text.
+LOCATION_FUZZY_THRESHOLD = 0.4
+
 
 CANONICAL_REASON_ORDER: list[EscalationReason] = [
     EscalationReason.MISSING_FIELD,
     EscalationReason.UNKNOWN_CUSTOMER,
     EscalationReason.UNVERIFIED_NUMBER,
     EscalationReason.UNCATALOGED_PRODUCT,
+    EscalationReason.UNCATALOGED_LOCATION,
     EscalationReason.LOW_CONFIDENCE,
     EscalationReason.OVER_VALUE_CAP,
     EscalationReason.ANOMALY,
@@ -98,6 +105,7 @@ class _Evaluation:
     customer: seed_data.Customer | None
     location: seed_data.DeliveryLocation | None
     resolved: list[ResolvedLine]
+    unavailable_items: list[str] = ()
 
 
 # Sentinel distinguishing "key absent" from "explicitly cleared" in edit_order.
@@ -186,10 +194,30 @@ def resolve_product(
 def resolve_delivery_location(
     text: str | None, locations: list[seed_data.DeliveryLocation]
 ) -> seed_data.DeliveryLocation | None:
-    """Match a delivery location by id or name, case-insensitively."""
+    """Match a delivery location by id, name, or address; fuzzy as fallback.
+
+    Exact match wins first; on a miss the normalized text is scored against
+    every location's name and address. Text that clears
+    ``LOCATION_FUZZY_THRESHOLD`` resolves to the closest location; anything
+    below is left unresolved. The threshold is lower than product matching
+    because location names are shorter and often abbreviated.
+    """
     for location in locations:
-        if _match(text, [location.id, location.name]):
+        if _match(text, [location.id, location.name, location.address]):
             return location
+
+    needle = _normalize(text) if text else ""
+    if not needle:
+        return None
+    best: seed_data.DeliveryLocation | None = None
+    best_score = 0.0
+    for location in locations:
+        for candidate in [location.name, location.address]:
+            score = _fuzzy_score(needle, _normalize(candidate))
+            if score > best_score:
+                best, best_score = location, score
+    if best is not None and best_score >= LOCATION_FUZZY_THRESHOLD:
+        return best
     return None
 
 
@@ -340,7 +368,88 @@ class OrderProcessingCore:
         resolved = evaluation.resolved
         draft_total = evaluation.draft_total
 
+        # Unknown/unverified customers cannot place orders — reject immediately
+        # but still store the order for audit trail and edit by approver.
+        if not customer and order.customer_id is None:
+            has_unknown = {
+                EscalationReason.UNKNOWN_CUSTOMER.value,
+                EscalationReason.UNVERIFIED_NUMBER.value,
+            } & set(escalation_reasons)
+            if has_unknown:
+                order.order_id = order.order_id or _new_order_id()
+                order.customer_id = None
+                order.delivery_location_id = location.id if location else None
+                order.draft_value_inr = draft_total
+                order.escalation_reasons = escalation_reasons
+                order.status = OrderStatus.PENDING_REVIEW
+                await self._store.create_order(order)
+                await self._store.append_order_event(
+                    OrderEvent(
+                        order_id=order.order_id,
+                        event_type=EVENT_ORDER_CREATED,
+                        payload={
+                            "order_id": order.order_id,
+                            "phone": order.phone,
+                            "source_channel": order.source_channel,
+                        },
+                    )
+                )
+                await self._store.append_order_event(
+                    OrderEvent(
+                        order_id=order.order_id,
+                        event_type=EVENT_ORDER_ESCALATED,
+                        payload={
+                            "order_id": order.order_id,
+                            "reasons": escalation_reasons,
+                        },
+                    )
+                )
+                return OrderDecision(
+                    order_id=order.order_id,
+                    status=OrderStatus.PENDING_REVIEW.value,
+                    approved=False,
+                    escalation_reasons=escalation_reasons,
+                    draft_value_inr=draft_total,
+                    customer_id=None,
+                    delivery_location_id=location.id if location else None,
+                    items=[_resolved_item(line) for line in resolved],
+                )
+
         missing_fields = _missing_fields(order)
+
+        # If any requested product is not in the catalog, tell the customer
+        # the item is unavailable — no need to proceed further.
+        if evaluation.unavailable_items:
+            order.order_id = order.order_id or _new_order_id()
+            order.customer_id = customer.id if customer else None
+            order.delivery_location_id = location.id if location else None
+            order.draft_value_inr = draft_total
+            order.escalation_reasons = escalation_reasons
+            order.status = OrderStatus.PENDING_REVIEW
+            await self._store.create_order(order)
+            await self._store.append_order_event(
+                OrderEvent(
+                    order_id=order.order_id,
+                    event_type=EVENT_ORDER_CREATED,
+                    payload={
+                        "order_id": order.order_id,
+                        "phone": order.phone,
+                        "source_channel": order.source_channel,
+                    },
+                )
+            )
+            return OrderDecision(
+                order_id=order.order_id,
+                status=OrderStatus.PENDING_REVIEW.value,
+                approved=False,
+                escalation_reasons=escalation_reasons,
+                draft_value_inr=draft_total,
+                customer_id=customer.id if customer else None,
+                delivery_location_id=location.id if location else None,
+                items=[_resolved_item(line) for line in resolved],
+                unavailable_items=evaluation.unavailable_items,
+            )
+
         # Clarify only ever happens over WhatsApp (ADR-0004); a voice order is
         # never held for an answer. And it only applies when the *only* problem
         # is a missing customer-answerable field — any other hard reason
@@ -470,6 +579,7 @@ class OrderProcessingCore:
                 reasons.add(EscalationReason.UNKNOWN_CUSTOMER.value)
 
         resolved: list[ResolvedLine] = []
+        unavailable: list[str] = []
         for item in order.items:
             product = resolve_product(item.product, products)
             missing_quantity = not math.isfinite(item.quantity) or item.quantity <= 0
@@ -477,6 +587,8 @@ class OrderProcessingCore:
                 reasons.add(EscalationReason.MISSING_FIELD.value)
             if product is None:
                 reasons.add(EscalationReason.UNCATALOGED_PRODUCT.value)
+                if item.product:
+                    unavailable.append(item.product)
             resolved.append(ResolvedLine(item=item, product=product))
 
         if not order.delivery_location:
@@ -516,12 +628,15 @@ class OrderProcessingCore:
             reason.value for reason in CANONICAL_REASON_ORDER if reason.value in reasons
         ]
         location = resolve_delivery_location(order.delivery_location, locations)
+        if order.delivery_location and location is None:
+            reasons.add(EscalationReason.UNCATALOGED_LOCATION.value)
         return _Evaluation(
             escalation_reasons=escalation_reasons,
             draft_total=draft_total,
             customer=customer,
             location=location,
             resolved=resolved,
+            unavailable_items=unavailable,
         )
 
     async def merge_held_order(self, held: Order, incoming: Order) -> Order:

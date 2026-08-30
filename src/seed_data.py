@@ -213,6 +213,7 @@ CONFIG: dict[str, object] = {
     "cutoff_time": "17:30",  # daily cutoff for a delivery day's Loading List
     "business_timezone": "Asia/Kolkata",  # cutoff and delivery day resolve here
     "dispatch_whatsapp_number": "+919845000003",  # late-order heads-up channel
+    "registration_contact": "+919845000001",  # staff number for new customer registration
     "currency": "INR",
     # Seller identity for the GST split on the Tally voucher (issue #8): the
     # delivery-location state (falling back to the customer state, then the
