@@ -104,16 +104,6 @@ CUSTOMERS: list[Customer] = [
         agreed_rates={"p_hcl": 9.25},
         max_quantities={"p_hcl": 2500.0},
     ),
-    Customer(
-        id="c_sankar",
-        name="Sankar",
-        phone="+918848943092",
-        gstin="29ABCDE1234F1Z9",
-        state="Karnataka",
-        ledger="SANKAR",
-        agreed_rates={},
-        max_quantities={},
-    ),
 ]
 
 PRODUCTS: list[Product] = [
