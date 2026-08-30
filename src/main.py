@@ -12,16 +12,15 @@ from .web import create_app
 
 store = FirestoreOrderStore()
 
+_whatsapp_sender = MetaWhatsAppSender(
+    settings.meta_access_token, settings.meta_phone_number_id
+)
+
 app = create_app(
-    agent=build_agent(store=store),
+    agent=build_agent(store=store, whatsapp_sender=_whatsapp_sender),
     session_service=build_session_service(),
     store=store,
-    # Deployment wiring selects Meta as the live WhatsApp sender (issue #13);
-    # MockWhatsAppSender remains the test/demo default. The sender fails
-    # closed when META_ACCESS_TOKEN / META_PHONE_NUMBER_ID are unset.
-    whatsapp_sender=MetaWhatsAppSender(
-        settings.meta_access_token, settings.meta_phone_number_id
-    ),
+    whatsapp_sender=_whatsapp_sender,
 )
 
 if __name__ == "__main__":
