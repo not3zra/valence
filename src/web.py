@@ -430,6 +430,27 @@ def create_app(
         )
         return Response(content="OK", media_type="text/plain")
 
+    @app.post("/api/admin/send-message")
+    async def admin_send_message(request: Request) -> Response:
+        """Send a WhatsApp message to any number (admin only, for testing)."""
+        expected = f"Bearer {ingest_token}"
+        if not ingest_token:
+            return Response(status_code=503, detail="not configured")
+        if not hmac.compare_digest(
+            request.headers.get("Authorization", ""), expected
+        ):
+            return Response(status_code=401)
+        try:
+            payload = json.loads(await request.body())
+        except (ValueError, TypeError):
+            return Response(status_code=400)
+        to = payload.get("to")
+        text = payload.get("text")
+        if not to or not text:
+            return Response(status_code=400, detail="missing 'to' or 'text'")
+        sender.send(to, text)
+        return Response(content="OK", media_type="text/plain")
+
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
         storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
