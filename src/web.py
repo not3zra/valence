@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from datetime import date, time
 from urllib.parse import quote, urlparse
@@ -417,10 +418,16 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        runner.run_turn(
+        reply = runner.run_turn(
             sender_id=caller,
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
+        )
+        logging.getLogger("valence.voice").info(
+            "voice_ingest caller=%s audio_bytes=%d reply=%s",
+            caller,
+            len(audio),
+            reply[:200] if reply else "(empty)",
         )
         return Response(content="OK", media_type="text/plain")
 
