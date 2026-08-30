@@ -220,9 +220,12 @@ class MetaWhatsAppSender:
         )
         try:
             with self._open(request) as response:
-                response.read()
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError):
-            return
+                body = response.read()
+                print(f"[meta_send] OK to={recipient} status={response.status}", flush=True)
+        except urllib.error.HTTPError as exc:
+            print(f"[meta_send] FAIL to={recipient} status={exc.code} body={exc.read().decode(errors='replace')[:200]}", flush=True)
+        except (OSError, urllib.error.URLError) as exc:
+            print(f"[meta_send] FAIL to={recipient} error={exc}", flush=True)
 
 
 # A media id must be a bare identifier — never a URL or a path-like value — so
