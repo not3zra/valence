@@ -296,12 +296,16 @@ def build_approve_order_tool(
 
     async def approve_order(
         approved: bool,
+        order_id: str | None = None,
         tool_context: ToolContext | None = None,
     ) -> dict:
-        """Apply an approver's yes/no decision to the order awaiting them.
+        """Apply an approver's yes/no decision to an order awaiting them.
 
         Args:
             approved: True to approve the order, False to reject it.
+            order_id: The specific order to approve/reject. If omitted and
+                there is exactly one pending order, it is used automatically.
+                If there are multiple pending orders, you MUST specify which one.
             tool_context: ADK invocation context; the approver's phone is the
                 caller's session identity, never anything from the message.
 
@@ -312,9 +316,25 @@ def build_approve_order_tool(
         if not phone:
             return {"error": "no verified sender identity is available"}
 
-        order_id = await store.get_pending_approval(phone)
-        if order_id is None:
+        pending_ids = await store.get_pending_approvals(phone)
+        if not pending_ids:
             return {"error": f"{phone} has no order awaiting approval"}
+
+        if order_id:
+            if order_id not in pending_ids:
+                return {"error": f"{phone} has no pending order {order_id}"}
+        else:
+            if len(pending_ids) > 1:
+                return {
+                    "error": "multiple_orders",
+                    "pending_order_ids": pending_ids,
+                    "message": (
+                        "You have multiple pending orders. "
+                        "Please specify which order to approve/reject "
+                        "by providing the order_id."
+                    ),
+                }
+            order_id = pending_ids[0]
 
         try:
             decision = await core.approve_order(
@@ -335,6 +355,49 @@ def build_approve_order_tool(
         return decision.to_dict()
 
     return FunctionTool(approve_order)
+
+
+def build_list_pending_approvals_tool(store: OrderStore) -> FunctionTool:
+    """Return pending orders awaiting an approver's decision."""
+
+    async def list_pending_approvals(
+        tool_context: ToolContext | None = None,
+    ) -> dict:
+        """List all pending orders awaiting this approver's decision.
+
+        Returns:
+            A dict with pending_order_ids and details for each order.
+        """
+        phone = tool_context.user_id if tool_context is not None else None
+        if not phone:
+            return {"error": "no verified sender identity is available"}
+
+        pending_ids = await store.get_pending_approvals(phone)
+        if not pending_ids:
+            return {"pending_orders": [], "message": "No orders awaiting your approval."}
+
+        orders = []
+        for oid in pending_ids:
+            order = await store.get_order(oid)
+            if order:
+                items = []
+                for item in (order.items or []):
+                    qty = f"{item.quantity:g}" if item.quantity else "?"
+                    unit = item.unit or "units"
+                    product = item.product or "unknown"
+                    items.append(f"{qty} {unit} of {product}")
+                orders.append({
+                    "order_id": oid,
+                    "items": items,
+                    "delivery_location": order.delivery_location or "unknown",
+                    "phone": order.phone or "unknown",
+                    "estimated_value": order.draft_value_inr,
+                    "escalation_reasons": order.escalation_reasons or [],
+                })
+
+        return {"pending_orders": orders}
+
+    return FunctionTool(list_pending_approvals)
 
 
 def build_loading_list_tool(store: OrderStore) -> FunctionTool:
