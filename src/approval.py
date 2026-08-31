@@ -11,6 +11,7 @@ and sender are the only seams this module touches.
 
 from __future__ import annotations
 
+from .config import settings
 from .orders import EVENT_ORDER_APPROVAL_REQUESTED, OrderEvent
 from .store import OrderStore
 from .whatsapp import WhatsAppSender
@@ -65,6 +66,11 @@ def _build_approval_message(order) -> str:
         lines.append(f"Reason: {', '.join(labels)}")
 
     lines.append("\nReply CONFIRM to approve, or REJECT to reject.")
+
+    base_url = settings.service_url.rstrip("/")
+    if base_url and order and order.order_id:
+        lines.append(f"\nReview: {base_url}/review/orders/{order.order_id}")
+
     return "\n".join(lines)
 
 
