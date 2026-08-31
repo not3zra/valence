@@ -676,9 +676,16 @@ def _register_review_routes(
         return passcode
 
     async def _authorized(request: Request) -> bool:
+        # Cookie-based auth (browser session).
         expected = _passcode_digest(await _passcode(), passcode_salt)
         cookie = request.cookies.get(review.PASSCODE_COOKIE, "")
-        return bool(cookie) and hmac.compare_digest(cookie, expected)
+        if bool(cookie) and hmac.compare_digest(cookie, expected):
+            return True
+        # Bearer-token auth (API scripts like tally_sync.py).
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and passcode:
+            return hmac.compare_digest(auth[7:], passcode)
+        return False
 
     async def _require(request: Request) -> None:
         if not await _authorized(request):

@@ -129,7 +129,11 @@ def build_agent(
     if store is not None:
         core = OrderProcessingCore(store)
         sender = whatsapp_sender or MockWhatsAppSender()
-        notifier = ApprovalNotifier(store, sender)
+        from .config import settings as _settings
+
+        notifier = ApprovalNotifier(
+            store, sender, service_url=_settings.service_url
+        )
         late_notifier = LateOrderNotifier(store, sender)
         tools.append(
             build_process_order_tool(

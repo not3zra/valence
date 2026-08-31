@@ -19,9 +19,16 @@ from .whatsapp import WhatsAppSender
 class ApprovalNotifier:
     """Tells every allowlisted approver an order needs a yes/no decision."""
 
-    def __init__(self, store: OrderStore, sender: WhatsAppSender) -> None:
+    def __init__(
+        self,
+        store: OrderStore,
+        sender: WhatsAppSender,
+        *,
+        service_url: str = "",
+    ) -> None:
         self._store = store
         self._sender = sender
+        self._service_url = service_url
 
     async def on_order_escalated(
         self,
@@ -49,6 +56,7 @@ class ApprovalNotifier:
             items=items,
             draft_value_inr=draft_value_inr,
             escalation_reasons=escalation_reasons,
+            service_url=self._service_url,
         )
         for approver in approvers:
             await self._store.set_pending_approval(approver.phone, order_id)
@@ -71,6 +79,7 @@ def _build_approval_message(
     items: list[dict] | None = None,
     draft_value_inr: float = 0.0,
     escalation_reasons: list[str] | None = None,
+    service_url: str = "",
 ) -> str:
     """Build a rich approval message with order context."""
     lines = [f"*New order awaiting approval*  ({order_id})"]
@@ -96,5 +105,7 @@ def _build_approval_message(
     if escalation_reasons:
         reasons = ", ".join(r.replace("_", " ") for r in escalation_reasons)
         lines.append(f"Reason: {reasons}")
+    if service_url:
+        lines.append(f"\nReview: {service_url.rstrip('/')}/review/orders/{order_id}")
     lines.append("\nReply CONFIRM to approve, or REJECT to reject.")
     return "\n".join(lines)
