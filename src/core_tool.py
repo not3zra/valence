@@ -185,7 +185,17 @@ def build_process_order_tool(
         # per committed escalation, including a clarify loop that promoted to
         # escalation on its final turn.
         if notifier is not None and not decision.approved and not decision.duplicate:
-            await notifier.on_order_escalated(decision.order_id)
+            from dataclasses import asdict
+
+            await notifier.on_order_escalated(
+                decision.order_id,
+                phone=order.phone,
+                customer=order.customer,
+                delivery_location=order.delivery_location,
+                items=[asdict(item) for item in order.items],
+                draft_value_inr=decision.draft_value_inr,
+                escalation_reasons=decision.escalation_reasons,
+            )
 
         # An auto-approved late order triggers an instant WhatsApp heads-up to
         # the dispatch channel (issue #9).

@@ -219,11 +219,11 @@ CONFIG: dict[str, object] = {
     # (intra-state) vs IGST.
     "seller_state": "Karnataka",
     # Mapped Tally GST duty ledgers — the voucher only references these names.
-    "gst_cgst_ledger": "CGST OUTPUT",
-    "gst_sgst_ledger": "SGST OUTPUT",
-    "gst_igst_ledger": "IGST OUTPUT",
+    "gst_cgst_ledger": "Output CGST 9%",
+    "gst_sgst_ledger": "Output SGST 9%",
+    "gst_igst_ledger": "Output IGST 18%",
     # Revenue ledger the inventory entries' sales allocations reference.
-    "gst_sales_ledger": "SALES",
+    "gst_sales_ledger": "Sales",
 }
 
 SeededDoc = Customer | Product | Route | DeliveryLocation | Approver
