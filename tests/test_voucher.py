@@ -464,6 +464,7 @@ async def test_non_approved_order_blocks_generation():
             customer=None,
             items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
             confidence=0.9,
+            source_channel="phone",
         )
     )
     assert not decision.approved

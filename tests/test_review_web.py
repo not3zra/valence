@@ -65,6 +65,7 @@ async def _escalated_order(store) -> str:
             items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
             delivery_location=None,
             confidence=0.9,
+            source_channel="phone",
         )
     )
     return decision.order_id

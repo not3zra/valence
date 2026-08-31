@@ -451,15 +451,23 @@ class OrderProcessingCore:
             )
 
         # Clarify only ever happens over WhatsApp (ADR-0004); a voice order is
-        # never held for an answer. And it only applies when the *only* problem
-        # is a missing customer-answerable field — any other hard reason
-        # (unknown customer, uncataloged product, low confidence, anomaly, over
-        # the cap) is an escalation a clarifying question cannot fix.
+        # never held for an answer. It applies when the only problems the
+        # *customer* can fix are missing fields. Unknown/Unverified customer
+        # and uncataloged product are our internal concerns — we still ask for
+        # the missing quantity/location and escalate the complete order for
+        # human review afterwards. Any other hard reason (low confidence,
+        # anomaly, over cap) is an escalation a clarifying question cannot fix.
+        _clarify_blocked = set(escalation_reasons) - {
+            EscalationReason.MISSING_FIELD.value,
+            EscalationReason.UNKNOWN_CUSTOMER.value,
+            EscalationReason.UNVERIFIED_NUMBER.value,
+            EscalationReason.UNCATALOGED_PRODUCT.value,
+        }
         is_clarifiable = (
             clarify
             and order.source_channel == "whatsapp"
             and not approved
-            and set(escalation_reasons) == {EscalationReason.MISSING_FIELD.value}
+            and not _clarify_blocked
             and bool(missing_fields)
         )
         if is_clarifiable:
@@ -622,6 +630,10 @@ class OrderProcessingCore:
             agreed = customer.agreed_rates.get(line.product.id)
             if rate_is_anomalous(line.item.rate_inr, agreed, rate_deviation):
                 reasons.add(EscalationReason.ANOMALY.value)
+
+        location = resolve_delivery_location(order.delivery_location, locations)
+        if order.delivery_location and location is None:
+            reasons.add(EscalationReason.UNCATALOGED_LOCATION.value)
 
         escalation_reasons: list[str] = [
             reason.value for reason in CANONICAL_REASON_ORDER if reason.value in reasons
