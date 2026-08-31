@@ -52,6 +52,7 @@ async def test_agent_with_store_exposes_core_tools():
         "approve_order",
         "prepare_voucher",
         "render_loading_list",
+        "list_pending_approvals",
     ]
 
 

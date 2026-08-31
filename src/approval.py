@@ -11,6 +11,8 @@ and sender are the only seams this module touches.
 
 from __future__ import annotations
 
+import logging
+
 from .orders import EVENT_ORDER_APPROVAL_REQUESTED, OrderEvent
 from .store import OrderStore
 from .whatsapp import WhatsAppSender
@@ -91,6 +93,11 @@ class ApprovalNotifier:
     ) -> None:
         """Notify the customer that their order was approved or rejected."""
         if not customer_phone:
+            logging.warning(
+                "[Approval] skipping customer notification for %s: "
+                "no customer phone",
+                order_id,
+            )
             return
         if approved:
             msg = (
@@ -102,6 +109,12 @@ class ApprovalNotifier:
                 f"Your order {order_id} has been *rejected*. "
                 "Please contact the staff for any queries regarding the order."
             )
+        logging.info(
+            "[Approval] notifying customer %s about order %s (approved=%s)",
+            customer_phone,
+            order_id,
+            approved,
+        )
         self._sender.send(customer_phone, msg)
 
 

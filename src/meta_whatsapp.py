@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -220,9 +221,24 @@ class MetaWhatsAppSender:
         )
         try:
             with self._open(request) as response:
-                response.read()
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError):
-            return
+                body = response.read().decode(errors="replace")
+                logging.info(
+                    "[MetaWhatsApp] sent to %s: status=%d",
+                    recipient,
+                    response.status,
+                )
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            logging.error(
+                "[MetaWhatsApp] FAILED to %s: HTTP %d %s",
+                recipient,
+                exc.code,
+                body[:300],
+            )
+        except (OSError, urllib.error.URLError) as exc:
+            logging.error(
+                "[MetaWhatsApp] FAILED to %s: %s", recipient, exc
+            )
 
 
 # A media id must be a bare identifier — never a URL or a path-like value — so

@@ -268,6 +268,27 @@ def build_approve_order_tool(
         elif len(pending_ids) == 1:
             order_id = pending_ids[0]
         else:
+            enriched = []
+            for oid in pending_ids:
+                o = await store.get_order(oid)
+                if o is None:
+                    enriched.append({"order_id": oid})
+                    continue
+                items = [
+                    {
+                        "product": it.product,
+                        "quantity": it.quantity,
+                        "unit": it.unit,
+                    }
+                    for it in o.items
+                ]
+                enriched.append({
+                    "order_id": oid,
+                    "customer": o.customer,
+                    "delivery_location": o.delivery_location,
+                    "items": items,
+                    "draft_value_inr": o.draft_value_inr,
+                })
             return {
                 "error": "multiple_orders",
                 "message": (
@@ -275,7 +296,7 @@ def build_approve_order_tool(
                     "Please specify the order ID to approve or reject "
                     "(e.g. CONFIRM ord_xxx or REJECT ord_xxx)."
                 ),
-                "pending_order_ids": pending_ids,
+                "pending_orders": enriched,
             }
 
         try:
@@ -397,3 +418,65 @@ def build_prepare_voucher_tool(
         return voucher.to_dict()
 
     return FunctionTool(prepare_voucher)
+
+
+def build_list_pending_approvals_tool(store) -> FunctionTool:
+    """Return a tool that lists all pending orders awaiting an approver's decision.
+
+    Approver-only (security #31): only an allowlisted approver can see pending
+    orders. Returns enriched order details so the agent can display them without
+    calling any other tool.
+    """
+
+    async def list_pending_approvals(
+        tool_context: ToolContext | None = None,
+    ) -> dict:
+        """List all pending orders awaiting this approver's decision.
+
+        Args:
+            tool_context: ADK invocation context; the sender must be an
+                allowlisted approver.
+
+        Returns:
+            A dict with the list of pending orders or an error dict.
+        """
+        phone = tool_context.user_id if tool_context is not None else None
+        if not phone:
+            return {"error": "no verified sender identity is available"}
+        if not await _is_approver(store, phone):
+            return {"error": "list_pending_approvals is approver-only (security #31)"}
+
+        pending_ids = await store.get_pending_approvals_list(phone)
+        if not pending_ids:
+            return {"message": "You have no pending orders."}
+
+        enriched = []
+        for oid in pending_ids:
+            o = await store.get_order(oid)
+            if o is None:
+                enriched.append({"order_id": oid})
+                continue
+            items = [
+                {
+                    "product": it.product,
+                    "quantity": it.quantity,
+                    "unit": it.unit,
+                }
+                for it in o.items
+            ]
+            enriched.append({
+                "order_id": oid,
+                "customer": o.customer,
+                "delivery_location": o.delivery_location,
+                "items": items,
+                "draft_value_inr": o.draft_value_inr,
+            })
+        return {
+            "pending_orders": enriched,
+            "message": (
+                f"You have {len(enriched)} pending order(s). "
+                "Reply CONFIRM <order_id> to approve or REJECT <order_id> to reject."
+            ),
+        }
+
+    return FunctionTool(list_pending_approvals)
