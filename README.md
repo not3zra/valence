@@ -4,7 +4,7 @@
 
 ### Order Intake & Fulfillment Agent
 
-**A single AI agent that turns orders arriving over WhatsApp, phone calls, or photos of handwritten order sheets — in any language — into structured orders with automated approval, dispatch lists, and billing.**
+**A single AI agent that turns orders arriving over WhatsApp or recorded phone calls — in any language — into structured orders with automated approval, dispatch lists, and Tally billing.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Google ADK](https://img.shields.io/badge/Google_ADK-2.6.3-4285F4.svg)](https://cloud.google.com/agent-engine)
@@ -28,15 +28,14 @@ Valence is a production-grade order intake system built for chemical distributor
 | Channel | Input | Processing |
 |---------|-------|------------|
 | **WhatsApp Text** | Free-text messages in any language | Gemini extracts structured order |
-| **WhatsApp Photo** | Photo of handwritten order sheet | Vision model reads handwriting |
 | **Phone Call** | Recorded sales calls (.wav/.ogg) | Audio understood in single model call |
 
 ### What It Does
 
-1. **Intake** — Receives orders via WhatsApp (text/photo), phone recordings, or API
+1. **Intake** — Receives orders via WhatsApp text or company-recorded phone calls
 2. **Extraction** — Gemini 3.5 Flash understands any language/format and extracts structured items
 3. **Decision** — Auto-escalates unknown customers, low confidence, anomalies, or missing fields
-4. **Approval** — Escalated orders notify allowlisted approvers via WhatsApp
+4. **Approval** — Escalated orders notify allowlisted approvers via WhatsApp; approvers confirm via WhatsApp reply or the review web dashboard
 5. **Dispatch** — Generates per-route Loading Lists for warehouse teams
 6. **Billing** — Produces GST-compliant Tally voucher XML for import
 
@@ -48,7 +47,6 @@ Valence is a production-grade order intake system built for chemical distributor
 graph TB
     subgraph "Intake Channels"
         WA[WhatsApp Text]
-        WP[WhatsApp Photo]
         VC[Phone Call Recording]
         API[REST API]
     end
@@ -73,7 +71,6 @@ graph TB
     end
 
     WA -->|Webhook| WH
-    WP -->|Media ID| WH
     VC -->|Audio bytes| WH
     API -->|Roundtrip probe| WH
 
@@ -148,6 +145,205 @@ stateDiagram-v2
 
 ---
 
+## Spin-Up Instructions
+
+These instructions let you run the full project locally or deploy it to Google Cloud. The project is fully reproducible — all dependencies, seed data, and configuration are in the repo.
+
+### Prerequisites
+
+| Requirement | Version | Install |
+|-------------|---------|---------|
+| **Python** | 3.10+ | [python.org](https://www.python.org/downloads/) |
+| **gcloud CLI** | Latest | [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install) |
+| **Firestore emulator** | — | `gcloud components install cloud-firestore-emulator` |
+| **Git** | — | [git-scm.com](https://git-scm.com/) |
+
+### Option A: Run Locally (Firestore Emulator + Vertex AI)
+
+This is the fastest way to test the agent. The Firestore emulator runs in-memory locally; Gemini runs through Vertex AI on the shared GCP project.
+
+#### Step 1: Clone and install dependencies
+
+```bash
+git clone https://github.com/not3zra/valence.git
+cd valence
+
+python -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+# .venv\Scripts\activate    # Windows
+
+pip install -e ".[dev]"
+```
+
+#### Step 2: Install the Firestore emulator
+
+```bash
+gcloud components install cloud-firestore-emulator
+```
+
+#### Step 3: Authenticate to Google Cloud
+
+You need access to the `valence-505412` project for Vertex AI (Gemini model). Ask the project owner to add your Google account.
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project valence-505412
+```
+
+#### Step 4: Start the service
+
+```bash
+./scripts/run_local.sh
+```
+
+This script:
+1. Starts the Firestore emulator on port 8686
+2. Seeds Firestore with customers, products, routes, approvers, and thresholds
+3. Starts uvicorn on port 8080
+
+The service is now live at `http://localhost:8080`.
+
+#### Step 5: Test it
+
+**Send a test order via the API:**
+
+```bash
+curl -s localhost:8080/api/roundtrip \
+  -H 'authorization: Bearer local-dev-roundtrip-token' \
+  -H 'content-type: application/json' \
+  -d '{"sender_id": "+919812345001", "message": "Namaste, 2 drums sulfuric acid chahiye"}'
+```
+
+**Open the review dashboard:**
+
+Navigate to `http://localhost:8080/review` in your browser. Enter the passcode: `valence-demo`
+
+**Open the loading list:**
+
+Navigate to `http://localhost:8080/loading` in your browser.
+
+### Option B: Run with Memory Store (No GCP Access)
+
+If you don't have GCP project access, use the in-memory store. The agent will still work but won't persist data across restarts.
+
+```bash
+# Set environment variables
+export SESSION_SERVICE=memory
+export ROUNDTRIP_TOKEN=local-dev-roundtrip-token
+export WEB_PASSCODE=valence-demo
+export WEB_PASSCODE_SALT=local-dev-salt
+
+# Start the service directly
+uvicorn src.main:app --host 0.0.0.0 --port 8080
+```
+
+### Option C: Deploy to Google Cloud Run
+
+#### Step 1: Set up secrets
+
+```bash
+# Set your project
+gcloud config set project valence-505412
+
+# Create secrets (replace with your actual values)
+echo -n "your-meta-app-secret" | gcloud secrets create META_APP_SECRET --data-file=-
+echo -n "your-meta-verify-token" | gcloud secrets create META_VERIFY_TOKEN --data-file=-
+echo -n "your-meta-access-token" | gcloud secrets create META_ACCESS_TOKEN --data-file=-
+echo -n "your-meta-phone-number-id" | gcloud secrets create META_PHONE_NUMBER_ID --data-file=-
+echo -n "your-roundtrip-token" | gcloud secrets create ROUNDTRIP_TOKEN --data-file=-
+echo -n "your-voice-ingest-token" | gcloud secrets create VOICE_INGEST_TOKEN --data-file=-
+echo -n "your-web-passcode" | gcloud secrets create WEB_PASSCODE --data-file=-
+echo -n "your-web-passcode-salt" | gcloud secrets create WEB_PASSCODE_SALT --data-file=-
+echo -n "your-cutoff-secret" | gcloud secrets create CUTOFF_SECRET --data-file=-
+```
+
+#### Step 2: Deploy
+
+```bash
+gcloud run deploy valence \
+  --source . \
+  --region=us-central1 \
+  --project=valence-505412 \
+  --allow-unauthenticated \
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=valence-505412,GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=valence-505412-vouchers" \
+  --set-secrets="META_APP_SECRET=META_APP_SECRET:latest,META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest,ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest,VOICE_INGEST_TOKEN=VOICE_INGEST_TOKEN:latest,WEB_PASSCODE=WEB_PASSCODE:latest,WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest"
+```
+
+#### Step 3: Redirect traffic
+
+```bash
+# Get the latest revision name
+REVISION=$(gcloud run revisions list --service=valence --region=us-central1 --project=valence-505412 --limit=1 --format="value(metadata.name)")
+
+# Route all traffic to it
+gcloud run services update-traffic valence \
+  --region=us-central1 \
+  --project=valence-505412 \
+  --to-revisions=$REVISION=100
+```
+
+### Option D: Full Provisioning (One-Shot)
+
+For a fresh GCP project, the provision script creates everything:
+
+```bash
+# Create .env.provision with your values
+cat > .env.provision << 'EOF'
+PROJECT_ID=valence-505412
+META_APP_SECRET=your-secret
+META_VERIFY_TOKEN=your-token
+META_ACCESS_TOKEN=your-token
+META_PHONE_NUMBER_ID=your-id
+ROUNDTRIP_TOKEN=your-token
+VOICE_INGEST_TOKEN=your-token
+WEB_PASSCODE=your-passcode
+WEB_PASSCODE_SALT=your-salt
+CUTOFF_SECRET=your-secret
+EOF
+
+source .env.provision
+./infra/provision.sh
+```
+
+This provisions: Cloud Run, Firestore, Cloud Storage, Pub/Sub, Cloud Scheduler, IAM, and Secret Manager.
+
+### Run Tests
+
+```bash
+# Full test suite (393 tests)
+pytest
+
+# Core logic tests only
+pytest tests/test_core.py
+
+# Linting
+ruff check .
+
+# Type checking
+mypy src
+```
+
+### Agent Evaluation
+
+Run the eval harness against the real Gemini model:
+
+```bash
+# Via Vertex AI (recommended)
+GOOGLE_GENAI_USE_VERTEXAI=true \
+GOOGLE_CLOUD_PROJECT=valence-505412 \
+GOOGLE_CLOUD_LOCATION=asia-southeast1 \
+python scripts/eval_agent.py
+
+# List available cases
+python scripts/eval_agent.py --list
+
+# Run specific category
+python scripts/eval_agent.py --category safety
+```
+
+---
+
 ## Tech Stack
 
 ### Core Services
@@ -168,7 +364,7 @@ stateDiagram-v2
 | Component | Version | Role |
 |-----------|---------|------|
 | **Google ADK** | `2.6.3` | Agent runtime, tool execution, session management |
-| **Gemini 3.5 Flash** | `gemini-3.5-flash` | Multimodal understanding (text, image, audio) |
+| **Gemini 3.5 Flash** | `gemini-3.5-flash` | Multimodal understanding (text + audio in one call) |
 | **Vertex AI** | Production | Model serving (not free-tier API key) |
 
 ### Application Stack
@@ -183,68 +379,6 @@ stateDiagram-v2
 | **Testing** | pytest + pytest-asyncio (393 tests) |
 | **Linting** | ruff + mypy |
 | **Containerization** | Docker (Python 3.12-slim) |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- `gcloud` CLI with Firestore emulator
-- Google Cloud project access (`valence-505412`)
-
-### Local Development
-
-```bash
-# Clone and setup
-git clone <repo-url> valence && cd valence
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Install Firestore emulator
-gcloud components install cloud-firestore-emulator
-
-# Authenticate to GCP
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project valence-505412
-
-# Run with emulator
-./scripts/run_local.sh
-```
-
-The service starts at `http://localhost:8080`:
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Health page |
-| `GET /health` | Liveness probe |
-| `GET /review` | Approval dashboard (passcode-gated) |
-| `GET /loading` | Dispatch loading list |
-| `POST /api/roundtrip` | Agent roundtrip (debug probe) |
-| `POST /api/whatsapp/webhook` | Meta WhatsApp webhook |
-| `POST /api/voice/ingest` | Company-recorded call ingestion |
-| `POST /api/cutoff` | Scheduled cutoff trigger |
-
-### Test the Agent
-
-```bash
-# Send a test order via API
-curl -s localhost:8080/api/roundtrip \
-  -H 'authorization: Bearer local-dev-roundtrip-token' \
-  -H 'content-type: application/json' \
-  -d '{"sender_id": "+919812345001", "message": "Namaste, 2 drums sulfuric acid chahiye"}'
-```
-
-### Run Tests
-
-```bash
-pytest                    # Full suite (393 tests)
-pytest tests/test_core.py # Core logic tests only
-ruff check .              # Linting
-mypy src                  # Type checking
-```
 
 ---
 
@@ -292,61 +426,6 @@ valence/
 
 ---
 
-## Provisioning
-
-### Full GCP Stack
-
-```bash
-source .env.provision   # Set PROJECT_ID, Meta credentials, tokens
-./infra/provision.sh
-```
-
-This creates and wires:
-
-- **Cloud Run** service with auto-deploy on push to `main`
-- **Firestore** database (native mode) seeded with customers, products, routes, approvers, thresholds
-- **Cloud Storage** bucket for Tally voucher XML
-- **Pub/Sub** topic + push subscription for cutoff chain
-- **Cloud Scheduler** job (daily 17:31 IST)
-- **IAM** bindings (Cloud Run → Firestore/Storage; push sub → Cloud Run invoker)
-- **Secret Manager** secrets (WhatsApp credentials, tokens, passcodes)
-
-### Secrets (never committed)
-
-| Secret | Purpose |
-|--------|---------|
-| `META_APP_SECRET` | WhatsApp webhook signature verification |
-| `META_ACCESS_TOKEN` | Graph API sender authentication |
-| `META_PHONE_NUMBER_ID` | WhatsApp business phone number |
-| `META_VERIFY_TOKEN` | Webhook verification handshake |
-| `ROUNDTRIP_TOKEN` | Debug probe bearer token |
-| `VOICE_INGEST_TOKEN` | Voice ingestion bearer token |
-| `WEB_PASSCODE` | Review dashboard access |
-| `WEB_PASSCODE_SALT` | Passcode HMAC salt |
-| `CUTOFF_SECRET` | Scheduled cutoff auth |
-
----
-
-## Design Decisions
-
-### ADR-0001: Unified Understanding Layer
-
-One ADK Agent receives messages from every channel (WhatsApp text, photo, voice) and runs Gemini to extract structured orders. No separate translate → transcribe → parse pipeline — a single model call keeps one source of truth.
-
-### ADR-0002: Graduated Approval
-
-Clean orders auto-approve. Exceptions escalate as hard blocks (unknown customer, low confidence, anomaly, missing field). Thresholds are Firestore-configurable, not hardcoded.
-
-### ADR-0003: Tally Pre-Seeded Masters
-
-Voucher generation references only pre-seeded, mapped Tally masters (party ledgers, stock items, GST ledgers). Any unmapped master blocks generation with an explicit error.
-
-### ADR-0004: Call Orders Flagged, Not Clarified
-
-Voice orders with missing fields escalate to human review immediately — no clarifying questions over recorded calls.
-
----
-
 ## API Reference
 
 ### `POST /api/roundtrip`
@@ -354,8 +433,8 @@ Voice orders with missing fields escalate to human review immediately — no cla
 Debug probe — drive the agent directly without WhatsApp.
 
 ```bash
-curl -X POST https://<service-url>/api/roundtrip \
-  -H "Authorization: Bearer <ROUNDTRIP_TOKEN>" \
+curl -X POST http://localhost:8080/api/roundtrip \
+  -H "Authorization: Bearer local-dev-roundtrip-token" \
   -H "Content-Type: application/json" \
   -d '{"sender_id": "+919812345001", "message": "2 drums sulfuric acid"}'
 ```
@@ -365,8 +444,8 @@ curl -X POST https://<service-url>/api/roundtrip \
 Company-recorded call ingestion.
 
 ```bash
-curl -X POST https://<service-url>/api/voice/ingest \
-  -H "Authorization: Bearer <VOICE_INGEST_TOKEN>" \
+curl -X POST http://localhost:8080/api/voice/ingest \
+  -H "Authorization: Bearer local-dev-ingest-token" \
   -H "Content-Type: application/json" \
   -d '{"caller": "+919812345001", "audio_base64": "<base64>", "mime_type": "audio/wav"}'
 ```
@@ -381,24 +460,23 @@ Push a prepared voucher directly to local Tally (requires `TALLY_PUSH_URL`).
 
 ---
 
-## Deployment
+## Design Decisions
 
-```bash
-# Deploy to Cloud Run
-gcloud run deploy valence \
-  --source . \
-  --region=us-central1 \
-  --project=valence-505412 \
-  --allow-unauthenticated
+### ADR-0001: Unified Understanding Layer
 
-# Redirect traffic to latest revision
-gcloud run services update-traffic valence \
-  --region=us-central1 \
-  --project=valence-505412 \
-  --to-revisions=<revision-name>=100
-```
+One ADK Agent receives messages from every channel (WhatsApp text, voice) and runs Gemini to extract structured orders. No separate translate → transcribe → parse pipeline — a single model call keeps one source of truth.
 
-**Live service:** https://valence-371317348606.us-central1.run.app
+### ADR-0002: Graduated Approval
+
+Clean orders auto-approve. Exceptions escalate as hard blocks (unknown customer, low confidence, anomaly, missing field). Thresholds are Firestore-configurable, not hardcoded.
+
+### ADR-0003: Tally Pre-Seeded Masters
+
+Voucher generation references only pre-seeded, mapped Tally masters (party ledgers, stock items, GST ledgers). Any unmapped master blocks generation with an explicit error.
+
+### ADR-0004: Call Orders Flagged, Not Clarified
+
+Voice orders with missing fields escalate to human review immediately — no clarifying questions over recorded calls.
 
 ---
 
