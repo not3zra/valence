@@ -13,6 +13,23 @@ from .orders import Order, OrderItem, utcnow
 from .store import OrderStore
 from .voucher import VoucherStore
 
+
+def _build_reply_hint(decision) -> str:
+    """Generate a reply hint telling the agent exactly what to say."""
+    if decision.duplicate:
+        return "ALREADY_RECEIVED: Tell the customer this order was already received."
+    if decision.unavailable_items:
+        items = ", ".join(decision.unavailable_items)
+        return f"UNAVAILABLE: Tell the customer {items} is not available."
+    if decision.clarify:
+        fields = ", ".join(decision.missing_fields)
+        return f"CLARIFY: Ask the customer for {fields}."
+    if decision.approved:
+        total = f"{decision.draft_value_inr:.2f}"
+        return f"APPROVED: Confirm the order. Estimated total is INR {total}."
+    # Not approved — under review
+    return "PENDING_REVIEW: Tell the customer the order is under review and awaiting approval."
+
 # Session-state key that carries a partial order + clarify turn count across the
 # durable per-sender session (issue #5). Held in ADK session state, so a Cloud
 # Run restart never loses an in-flight clarifying conversation.
@@ -172,7 +189,9 @@ def build_process_order_tool(
                     "turn": turn,
                     "created_at": utcnow(),
                 }
-                return decision.to_dict()
+                result = decision.to_dict()
+                result["reply_hint"] = _build_reply_hint(decision)
+                return result
 
         # The order committed (approved / escalated / duplicate): a fresh order,
         # so any held partial clarify state is no longer current.
@@ -192,7 +211,9 @@ def build_process_order_tool(
         if late_notifier is not None and decision.approved and decision.late:
             await late_notifier.on_order_late(decision.order_id)
 
-        return decision.to_dict()
+        result = decision.to_dict()
+        result["reply_hint"] = _build_reply_hint(decision)
+        return result
 
     return FunctionTool(process_order)
 

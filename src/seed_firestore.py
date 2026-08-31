@@ -5,14 +5,17 @@ resolves: the real project when running under ADC, or the local emulator when
 ``FIRESTORE_EMULATOR_HOST`` is set. Idempotent — re-running overwrites the
 seeded documents with the same content.
 """
-
 from __future__ import annotations
 
 import asyncio
 
-from google.cloud import firestore
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google.cloud import firestore
 
 from . import seed_data
+
 
 CONFIG_DOCUMENT = "order_processing"
 
@@ -25,6 +28,8 @@ async def seed_firestore(
     ``client`` is injectable so tests can drive this against a fake without a
     running emulator or a GCP project.
     """
+    from google.cloud import firestore
+
     client = client or firestore.AsyncClient()
     if wipe:
         for collection in seed_data.COLLECTIONS:
