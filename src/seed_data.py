@@ -206,7 +206,7 @@ CONFIG: dict[str, object] = {
     "quantity_deviation_above_pct": 0.5,  # qty > 50% above 90-day max is an anomaly
     "rate_deviation_pct": 0.2,  # estimated rate > 20% off agreed rate is an anomaly
     # same sender + first item qty within window -> duplicate
-    "dedup_window_minutes": 30,
+    "dedup_window_minutes": 1,
     "clarify_timeout_hours": 24,  # no reply -> partial order promotes to escalation
     "clarify_turn_cap": 3,  # clarify loop hands off to escalation after N turns
     "cutoff_time": "17:30",  # daily cutoff for a delivery day's Loading List
