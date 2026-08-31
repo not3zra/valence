@@ -185,9 +185,9 @@ async def test_voucher_for_approved_order_is_valid_balanced_xml():
     serialized = xml
     assert "CHEMFAB INDUSTRIES" in serialized
     assert "SULFURIC ACID 98%" in serialized
-    assert "CGST OUTPUT" in serialized
-    assert "SGST OUTPUT" in serialized
-    assert "IGST OUTPUT" not in serialized
+    assert "Output CGST 9%" in serialized
+    assert "Output SGST 9%" in serialized
+    assert "Output IGST 18%" not in serialized
     assert order.order_id in serialized
 
 

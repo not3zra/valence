@@ -39,7 +39,7 @@ class _RecordingNotifier:
     def __init__(self):
         self.escalations: list[str] = []
 
-    async def on_order_escalated(self, order_id: str) -> None:
+    async def on_order_escalated(self, order_id: str, **kwargs: object) -> None:
         self.escalations.append(order_id)
 
 

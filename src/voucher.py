@@ -543,3 +543,40 @@ def build_voucher_xml(voucher: Voucher) -> str:
         f"{''.join(inventory_entries)}"
         "</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>"
     )
+
+
+def push_voucher_to_tally(xml: str, tally_url: str) -> dict:
+    """Push voucher XML to a local Tally instance via HTTP import.
+
+    Tally Prime listens on a configurable port (default 9000) and accepts
+    XML import data via POST. The XML must be the full <ENVELOPE> document
+    produced by ``build_voucher_xml``.
+
+    Args:
+        xml: The Tally import XML document.
+        tally_url: The Tally import endpoint (e.g. "http://localhost:9000").
+
+    Returns:
+        A dict with "ok" True on success, or "ok" False and "error" on failure.
+    """
+    import urllib.request
+    import urllib.error
+
+    if not tally_url:
+        return {"ok": False, "error": "TALLY_PUSH_URL is not configured"}
+
+    url = tally_url.rstrip("/")
+    try:
+        req = urllib.request.Request(
+            url,
+            data=xml.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode(errors="replace")
+            return {"ok": True, "status": resp.status, "response": body[:500]}
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": f"HTTP {exc.code}: {exc.read().decode(errors='replace')[:200]}"}
+    except (OSError, urllib.error.URLError) as exc:
+        return {"ok": False, "error": str(exc)}

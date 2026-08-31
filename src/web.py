@@ -759,7 +759,8 @@ def _register_review_routes(
             raise HTTPException(status_code=404)
         events = await (store).list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
-        return review.order_page(order, events, message=message, notice=notice)
+        from .config import settings as _settings
+        return review.order_page(order, events, message=message, notice=notice, tally_push_url=_settings.tally_push_url)
 
     @app.get("/review/orders/{order_id}/edit", response_class=HTMLResponse)
     async def review_edit_page(
@@ -921,6 +922,45 @@ def _register_review_routes(
                 "Content-Disposition": f'attachment; filename="{safe_name}.xml"'
             },
         )
+
+    @app.post("/review/orders/{order_id}/push-to-tally")
+    async def review_push_to_tally(request: Request, order_id: str):
+        """Push a prepared voucher directly to the local Tally instance.
+
+        Requires TALLY_PUSH_URL to be set (e.g. http://localhost:9000).
+        """
+        await _require(request)
+        order = await store.get_order(order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        if not order.voucher_id:
+            raise HTTPException(status_code=404, detail="no voucher prepared")
+        xml = await storage.read(order.voucher_id)
+        if xml is None:
+            raise HTTPException(status_code=404, detail="voucher not found in storage")
+        from .config import settings as _settings
+        from .voucher import push_voucher_to_tally
+        result = push_voucher_to_tally(xml, _settings.tally_push_url)
+        if result["ok"]:
+            return {"status": "pushed", "order_id": order_id, "voucher_id": order.voucher_id}
+        raise HTTPException(status_code=502, detail=result.get("error", "push failed"))
+
+    @app.get("/api/vouchers")
+    async def list_vouchers(request: Request):
+        """List all orders that have prepared vouchers."""
+        await _require(request)
+        orders = await store.list_all_orders()
+        vouchers = []
+        for order in orders:
+            if order.voucher_id:
+                vouchers.append({
+                    "order_id": order.order_id,
+                    "voucher_id": order.voucher_id,
+                    "customer": order.customer,
+                    "total": order.draft_value_inr,
+                    "status": order.status.value,
+                })
+        return {"vouchers": vouchers}
 
     @app.post("/review/orders/{order_id}/billed")
     async def review_mark_billed(request: Request, order_id: str):
