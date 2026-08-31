@@ -59,77 +59,89 @@ class OrderStore(Protocol):
 
 
 class FirestoreOrderStore:
-    """OrderStore backed by Firestore, using whatever project the client resolves."""
+    """OrderStore backed by Firestore, using whatever project the client resolves.
+
+    The Firestore ``AsyncClient`` is created lazily on first use so that its
+    gRPC channels bind to the *running* event loop (uvicorn's), not the
+    import-time loop.
+    """
 
     def __init__(self, client: firestore.AsyncClient | None = None) -> None:
-        self._client = client or firestore.AsyncClient()
+        self._client = client
+        self._client_provided = client is not None
+
+    @property
+    def client(self) -> firestore.AsyncClient:
+        if self._client is None:
+            self._client = firestore.AsyncClient()
+        return self._client
 
     async def get_config(self) -> dict:
-        doc = await self._client.collection("config").document(CONFIG_DOCUMENT).get()
+        doc = await self.client.collection("config").document(CONFIG_DOCUMENT).get()
         data = doc.to_dict() or {}
         data.pop("id", None)
         return data
 
     async def get_customers(self) -> list[seed_data.Customer]:
         customers = []
-        async for doc in self._client.collection("customers").stream():
+        async for doc in self.client.collection("customers").stream():
             data = doc.to_dict() or {}
             customers.append(seed_data.Customer(**data))
         return customers
 
     async def get_products(self) -> list[seed_data.Product]:
         products = []
-        async for doc in self._client.collection("products").stream():
+        async for doc in self.client.collection("products").stream():
             data = doc.to_dict() or {}
             products.append(seed_data.Product(**data))
         return products
 
     async def get_delivery_locations(self) -> list[seed_data.DeliveryLocation]:
         locations = []
-        async for doc in self._client.collection("delivery_locations").stream():
+        async for doc in self.client.collection("delivery_locations").stream():
             data = doc.to_dict() or {}
             locations.append(seed_data.DeliveryLocation(**data))
         return locations
 
     async def get_approvers(self) -> list[seed_data.Approver]:
         approvers = []
-        async for doc in self._client.collection("approvers").stream():
+        async for doc in self.client.collection("approvers").stream():
             data = doc.to_dict() or {}
             approvers.append(seed_data.Approver(**data))
         return approvers
 
     async def get_routes(self) -> list[seed_data.Route]:
         routes = []
-        async for doc in self._client.collection("routes").stream():
+        async for doc in self.client.collection("routes").stream():
             data = doc.to_dict() or {}
             routes.append(seed_data.Route(**data))
         return routes
 
     async def create_order(self, order: Order) -> None:
-        await self._client.collection("orders").document(order.order_id).set(
+        await self.client.collection("orders").document(order.order_id).set(
             order.to_dict()
         )
 
     async def get_order(self, order_id: str) -> Order | None:
-        doc = await self._client.collection("orders").document(order_id).get()
+        doc = await self.client.collection("orders").document(order_id).get()
         data = doc.to_dict() or {}
         if not data:
             return None
         return Order.from_dict(data)
 
     async def update_order(self, order: Order) -> None:
-        await self._client.collection("orders").document(order.order_id).set(
+        await self.client.collection("orders").document(order.order_id).set(
             order.to_dict()
         )
 
     async def append_order_event(self, event: OrderEvent) -> None:
-        await self._client.collection("order_events").document(event.event_id).set(
+        await self.client.collection("order_events").document(event.event_id).set(
             event.to_dict()
         )
 
     async def list_orders(self, *, phone: str) -> list[Order]:
         orders = []
-        async for doc in self._client.collection("orders").where(
+        async for doc in self.client.collection("orders").where(
             "phone", "==", phone
         ).stream():
             data = doc.to_dict() or {}
@@ -138,7 +150,7 @@ class FirestoreOrderStore:
 
     async def list_all_orders(self) -> list[Order]:
         orders = []
-        async for doc in self._client.collection("orders").stream():
+        async for doc in self.client.collection("orders").stream():
             data = doc.to_dict() or {}
             orders.append(Order.from_dict(data))
         return orders
@@ -148,7 +160,7 @@ class FirestoreOrderStore:
         # Filter to the only status the Loading List ever renders (issue #9):
         # the stream is indexed on status, not a full-collection scan (security
         # #32), so an attacker-triggered render no longer reads every order.
-        async for doc in self._client.collection("orders").where(
+        async for doc in self.client.collection("orders").where(
             "status", "==", OrderStatus.APPROVED.value
         ).stream():
             data = doc.to_dict() or {}
@@ -157,7 +169,7 @@ class FirestoreOrderStore:
 
     async def list_order_events(self, order_id: str) -> list[OrderEvent]:
         events = []
-        async for doc in self._client.collection("order_events").where(
+        async for doc in self.client.collection("order_events").where(
             "order_id", "==", order_id
         ).stream():
             data = doc.to_dict() or {}
@@ -165,26 +177,26 @@ class FirestoreOrderStore:
         return events
 
     async def get_pending_approval(self, approver_phone: str) -> str | None:
-        doc = await self._client.collection("pending_approvals").document(
+        doc = await self.client.collection("pending_approvals").document(
             approver_phone
         ).get()
         data = doc.to_dict() or {}
         return data.get("order_id")
 
     async def set_pending_approval(self, approver_phone: str, order_id: str) -> None:
-        await self._client.collection("pending_approvals").document(
+        await self.client.collection("pending_approvals").document(
             approver_phone
         ).set({"approver_phone": approver_phone, "order_id": order_id})
 
     async def clear_pending_approval(self, approver_phone: str) -> None:
-        await self._client.collection("pending_approvals").document(
+        await self.client.collection("pending_approvals").document(
             approver_phone
         ).delete()
 
     async def clear_pending_approvals_for_order(self, order_id: str) -> None:
         # Query by order id instead of streaming the whole collection and
         # filtering (security #32): a single-field query on ``order_id``.
-        pending = self._client.collection("pending_approvals")
+        pending = self.client.collection("pending_approvals")
         async for doc in pending.where("order_id", "==", order_id).stream():
             await doc.reference.delete()
 
