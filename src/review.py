@@ -249,7 +249,7 @@ def order_page(
     items = "".join(
         f"<tr><td>{_escaped(item.product)}</td>"
         f"<td>{item.quantity:g} {escape(item.unit)}</td>"
-        f"<td>{'' if item.rate_inr is None else f'{item.rate_inr:,.2f} INR'}</td></tr>"
+        f"<td>{'—' if item.rate_inr is None else f'{item.rate_inr:,.2f}'}</td></tr>"
         for item in order.items
     )
     timeline = "".join(
@@ -298,7 +298,8 @@ def order_page(
         f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
         f"<div class='card'><h2>Items</h2>"
         f"<table class='timeline'>"
-        f"<tr><th>Product</th><th>Quantity</th><th>Rate</th></tr>{items}</table></div>"
+        f"<tr><th style='width:50%'>Product</th><th style='width:30%'>Quantity</th>"
+        f"<th style='width:20%'>Rate (INR)</th></tr>{items}</table></div>"
         f"{_voucher_card(order)}"
         f"<div class='card'><h2>Order Event timeline</h2>"
         f"<table class='timeline'>{timeline}</table></div>"
