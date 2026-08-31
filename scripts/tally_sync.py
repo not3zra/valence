@@ -105,10 +105,14 @@ def poll():
 
         result = push_to_tally(xml)
         if result["ok"]:
-            print(f"[ok] Pushed {order_id} to Tally (status={result['status']})", flush=True)
-            pushed.add(order_id)
-            state["pushed"] = list(pushed)
-            save_state(state)
+            resp = result.get("response", "")
+            if "LINEERROR" in resp:
+                print(f"[error] Tally rejected {order_id}: {resp[:300]}", flush=True)
+            else:
+                print(f"[ok] Pushed {order_id} to Tally (status={result['status']})", flush=True)
+                pushed.add(order_id)
+                state["pushed"] = list(pushed)
+                save_state(state)
         else:
             print(f"[error] Failed to push {order_id} to Tally: {result['error']}", flush=True)
 

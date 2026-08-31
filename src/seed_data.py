@@ -115,7 +115,7 @@ PRODUCTS: list[Product] = [
         aliases=["sulfuric", "sulphuric acid", "sulphuric", "h2so4", "98% acid"],
         current_price=18.0,
         tier_price=17.75,
-        stock_item="SULFURIC ACID 98%",
+        stock_item="Sulfuric Acid 98%",
     ),
     Product(
         id="p_hcl",
@@ -125,7 +125,7 @@ PRODUCTS: list[Product] = [
         aliases=["hydrochloric", "hcl", "muriatic acid", "32% hcl"],
         current_price=9.5,
         tier_price=9.25,
-        stock_item="HYDROCHLORIC ACID 32%",
+        stock_item="HCl 32%",
     ),
     Product(
         id="p_naoh",
@@ -134,7 +134,7 @@ PRODUCTS: list[Product] = [
         unit="kg",
         aliases=["caustic soda", "caustic", "naoh", "lye 48%"],
         current_price=38.0,
-        stock_item="CAUSTIC SODA LYE 48%",
+        stock_item="Caustic Soda Lye 48%",
     ),
     Product(
         id="p_toluene",
@@ -143,7 +143,7 @@ PRODUCTS: list[Product] = [
         unit="L",
         aliases=["toluene", "methylbenzene", "c7h8"],
         current_price=62.0,
-        stock_item="TOLUENE 99%",
+        stock_item="Toluene 99%",
     ),
     Product(
         id="p_xylene",
@@ -152,7 +152,7 @@ PRODUCTS: list[Product] = [
         unit="L",
         aliases=["xylene", "dimethylbenzene", "c8h10"],
         current_price=67.0,
-        stock_item="XYLENE 99%",
+        stock_item="Xylene 99%",
     ),
 ]
 

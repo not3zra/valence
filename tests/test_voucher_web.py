@@ -135,7 +135,7 @@ async def test_voucher_download_returns_the_stored_xml(client, store, storage):
     assert response.headers["content-type"].startswith("application/xml")
     assert f"voucher_{order_id}" in response.headers["content-disposition"]
     assert storage.blobs[f"voucher_{order_id}"] == response.text
-    assert "SULFURIC ACID 98%" in response.text
+    assert "Sulfuric Acid 98%" in response.text
 
 
 async def test_voucher_download_requires_login(client, store, storage):

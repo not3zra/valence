@@ -169,7 +169,7 @@ async def test_voucher_for_approved_order_is_valid_balanced_xml():
 
     assert voucher.order_id == order.order_id
     assert voucher.party_ledger == "CHEMFAB INDUSTRIES"
-    assert [line.stock_item for line in voucher.lines] == ["SULFURIC ACID 98%"]
+    assert [line.stock_item for line in voucher.lines] == ["Sulfuric Acid 98%"]
     assert voucher.taxable_amount == pytest.approx(17.5 * 2000)
     assert voucher.gst_type == "CGST"
     assert voucher.cgst_amount == pytest.approx(round(17.5 * 2000 * 0.09, 2))
@@ -184,7 +184,7 @@ async def test_voucher_for_approved_order_is_valid_balanced_xml():
     assert root.tag == "ENVELOPE"
     serialized = xml
     assert "CHEMFAB INDUSTRIES" in serialized
-    assert "SULFURIC ACID 98%" in serialized
+    assert "Sulfuric Acid 98%" in serialized
     assert "Output CGST 9%" in serialized
     assert "Output SGST 9%" in serialized
     assert "Output IGST 18%" not in serialized
@@ -513,7 +513,7 @@ async def test_xml_references_only_mapped_masters_never_chat_text():
     voucher = await _prepare(store, storage, order.order_id)
     xml = build_voucher_xml(voucher)
 
-    assert "SULFURIC ACID 98%" in xml
+    assert "Sulfuric Acid 98%" in xml
     assert "h2so4" not in xml
     assert "sulfuric acid" not in xml
 
