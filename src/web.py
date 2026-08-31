@@ -526,11 +526,7 @@ def create_app(
 
         if isinstance(store, _FOS):
             try:
-                from google.cloud import firestore as _firestore
-
-                web_store = _FOS(
-                    client=_firestore.AsyncClient(database="(default)")
-                )
+                web_store = _FOS()
             except Exception:
                 pass
 
