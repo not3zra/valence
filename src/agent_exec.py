@@ -21,6 +21,7 @@ from google.genai import types
 
 from .agent import _event_text, build_runner
 from .media import MediaObject, media_to_inline_part
+from .store import FirestoreOrderStore
 
 
 class TurnExecutor:
@@ -32,9 +33,20 @@ class TurnExecutor:
     still run against a live loop.
     """
 
-    def __init__(self, agent: Agent, session_service) -> None:
-        self._agent = agent
-        self._session_service = session_service
+    def __init__(self, agent_or_factory, session_service=None, store=None) -> None:
+        if session_service is not None or not callable(agent_or_factory):
+            # Legacy path: (agent, session_service) positional args for tests.
+            _agent = agent_or_factory
+            _session_service = session_service
+
+            def _factory(_firestore_client):
+                return _agent, _session_service
+
+            self._agent_factory = _factory
+        else:
+            # Production path: agent_session_factory callable.
+            self._agent_factory = agent_or_factory
+        self._store = store
         self._loop = asyncio.new_event_loop()
         self._runner: Runner | None = None
         self._error: BaseException | None = None
@@ -50,7 +62,22 @@ class TurnExecutor:
     def _bootstrap(self) -> None:
         try:
             asyncio.set_event_loop(self._loop)
-            self._runner = build_runner(self._agent, self._session_service)
+            # google.api_core caches gRPC channels by target. A channel created
+            # on the uvicorn loop gets reused, causing "attached to a different
+            # loop" errors.  Clear the cache so the new client gets a fresh
+            # channel bound to THIS executor loop.
+            try:
+                import google.api_core.grpc_helpers_async as _gh
+                if hasattr(_gh, "_channel_cache"):
+                    _gh._channel_cache.clear()
+            except Exception:
+                pass
+            from google.cloud import firestore as _firestore
+            client = _firestore.AsyncClient(database="(default)")
+            if self._store is not None and hasattr(self._store, "set_client"):
+                self._store.set_client(client)
+            agent, session_service = self._agent_factory(client)
+            self._runner = build_runner(agent, session_service)
         except BaseException as exc:  # pragma: no cover - defensive startup guard
             self._error = exc
         finally:

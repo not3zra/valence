@@ -14,13 +14,13 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from datetime import date, time
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
-from google.adk.agents import Agent
 from pydantic import BaseModel, Field
 
 from . import review
@@ -192,8 +192,9 @@ class RoundTripResponse(BaseModel):
 
 def create_app(
     *,
-    agent: Agent,
-    session_service,
+    agent=None,
+    session_service=None,
+    agent_session_factory=None,
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
@@ -252,7 +253,17 @@ def create_app(
     the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
     and is enforced by an in-memory per-instance limiter.
     """
-    runner = TurnExecutor(agent, session_service)
+    if agent_session_factory is not None:
+        runner = TurnExecutor(agent_session_factory, store=store)
+    else:
+        # Backward-compat for tests that pass agent + session_service directly.
+        _a = agent
+        _s = session_service
+
+        def _factory(_firestore_client):
+            return _a, _s
+
+        runner = TurnExecutor(_factory, store=store)
     sender = whatsapp_sender or MockWhatsAppSender()
     meta_app_secret_value = (
         meta_app_secret
@@ -468,11 +479,37 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        runner.run_turn(
+        reply = runner.run_turn(
             sender_id=caller,
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
         )
+        print(
+            f"[voice_ingest] caller={caller} audio_bytes={len(audio)} "
+            f"reply={reply[:200] if reply else '(empty)'}",
+            flush=True,
+        )
+        return Response(content="OK", media_type="text/plain")
+
+    @app.post("/api/admin/send-message")
+    async def admin_send_message(request: Request) -> Response:
+        """Send a WhatsApp message to any number (admin only, for testing)."""
+        expected = f"Bearer {ingest_token}"
+        if not ingest_token:
+            return Response(status_code=503, detail="not configured")
+        if not hmac.compare_digest(
+            request.headers.get("Authorization", ""), expected
+        ):
+            return Response(status_code=401)
+        try:
+            payload = json.loads(await request.body())
+        except (ValueError, TypeError):
+            return Response(status_code=400)
+        to = payload.get("to")
+        text = payload.get("text")
+        if not to or not text:
+            return Response(status_code=400, detail="missing 'to' or 'text'")
+        sender.send(to, text)
         return Response(content="OK", media_type="text/plain")
 
     if store is not None:
@@ -632,14 +669,41 @@ def _register_review_routes(
         if not await _authorized(request):
             raise HTTPException(status_code=401)
 
+    def _make_review_store() -> FirestoreOrderStore | None:
+        """Create a separate Firestore client for the review web views.
+
+        The executor loop owns one ``AsyncClient`` for agent turns; the
+        uvicorn event loop needs its own so gRPC channels are never shared
+        across event loops.
+        """
+        from .store import FirestoreOrderStore as _FOS
+
+        if not isinstance(store, _FOS):
+            return None
+        try:
+            from google.cloud import firestore as _firestore
+            return _FOS(
+                client=_firestore.AsyncClient(database="(default)")
+            )
+        except Exception:
+            return None
+
+    review_store = _make_review_store()
+
     async def _orders() -> list[Order]:
-        orders = await store.list_all_orders()
+        target = review_store or store
+        if target is None:
+            return []
+        orders = await target.list_all_orders()
         orders.sort(key=lambda o: o.created_at, reverse=True)
         return orders
 
     async def _searchable_text(order: Order) -> str:
         order_id = order.order_id or ""
-        events = await store.list_order_events(order_id)
+        target = review_store or store
+        if target is None:
+            return ""
+        events = await target.list_order_events(order_id)
         fields = " ".join(
             [
                 order_id,
@@ -653,7 +717,10 @@ def _register_review_routes(
         return fields.lower()
 
     async def _stats() -> dict[str, int]:
-        config = await store.get_config()
+        target = review_store or store
+        if target is None:
+            return {}
+        config = await target.get_config()
         cutoff = str(config.get("cutoff_time"))
         hour, minute = (int(part) for part in cutoff.split(":")) if cutoff else (
             review.DEFAULT_CUTOFF_TIME.hour,
@@ -695,10 +762,10 @@ def _register_review_routes(
         notice: str | None = None,
     ):
         await _require(request)
-        order = await store.get_order(order_id)
+        order = await (review_store or store).get_order(order_id)
         if order is None:
             raise HTTPException(status_code=404)
-        events = await store.list_order_events(order_id)
+        events = await (review_store or store).list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
         return review.order_page(order, events, message=message, notice=notice)
 
@@ -707,11 +774,11 @@ def _register_review_routes(
         request: Request, order_id: str, message: str | None = None
     ):
         await _require(request)
-        order = await store.get_order(order_id)
+        order = await (review_store or store).get_order(order_id)
         if order is None:
             raise HTTPException(status_code=404)
-        customers = await store.get_customers()
-        products = await store.get_products()
+        customers = await (review_store or store).get_customers()
+        products = await (review_store or store).get_products()
         return review.edit_page(order, customers, products, message=message)
 
     @app.post("/review/orders/{order_id}/edit")
@@ -724,7 +791,7 @@ def _register_review_routes(
         """
         await _require(request)
         _same_origin(request)
-        if await store.get_order(order_id) is None:
+        if await (review_store or store).get_order(order_id) is None:
             raise HTTPException(status_code=404)
         form = await request.form()
         try:

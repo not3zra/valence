@@ -7,21 +7,31 @@ import uvicorn
 from .agent import build_agent, build_session_service
 from .config import settings
 from .meta_whatsapp import MetaWhatsAppSender
-from .store import FirestoreOrderStore
+from .store import FirestoreOrderStore, InMemoryOrderStore
 from .web import create_app
 
-store = FirestoreOrderStore()
+if settings.session_service == "memory":
+    store = InMemoryOrderStore()
+else:
+    store = FirestoreOrderStore()
+
+
+def agent_session_factory(firestore_client):
+    """Build the agent and session service on the executor's event loop."""
+    session_service = build_session_service(firestore_client=firestore_client)
+    agent = build_agent(store=store)
+    return agent, session_service
+
+
+_whatsapp_sender = MetaWhatsAppSender(
+    settings.meta_access_token, settings.meta_phone_number_id
+)
 
 app = create_app(
-    agent=build_agent(store=store),
+    agent=build_agent(store=store, whatsapp_sender=_whatsapp_sender),
     session_service=build_session_service(),
     store=store,
-    # Deployment wiring selects Meta as the live WhatsApp sender (issue #13);
-    # MockWhatsAppSender remains the test/demo default. The sender fails
-    # closed when META_ACCESS_TOKEN / META_PHONE_NUMBER_ID are unset.
-    whatsapp_sender=MetaWhatsAppSender(
-        settings.meta_access_token, settings.meta_phone_number_id
-    ),
+    whatsapp_sender=_whatsapp_sender,
 )
 
 if __name__ == "__main__":
