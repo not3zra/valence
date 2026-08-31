@@ -90,23 +90,74 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Valence — Order Intake &amp; Fulfillment</title>
+  <style>
+    :root {
+      --color-bg: #f8fafc; --color-surface: #ffffff; --color-border: #e2e8f0;
+      --color-text: #0f172a; --color-text-secondary: #64748b;
+      --color-accent: #0d9488; --color-accent-light: #ccfbf1;
+      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --radius-lg: 12px; --radius-md: 8px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow-md: 0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+      --transition-fast: 120ms ease-out;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: var(--font-sans); margin: 0; background: var(--color-bg);
+           color: var(--color-text); -webkit-font-smoothing: antialiased; }
+    .hero { max-width: 640px; margin: 0 auto; padding: 80px 24px 60px; text-align: center; }
+    .hero h1 { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em;
+               margin: 0 0 12px; color: var(--color-text); }
+    .hero h1 span { color: var(--color-accent); }
+    .hero p { font-size: 1.05rem; color: var(--color-text-secondary);
+              line-height: 1.7; margin: 0 0 40px; max-width: 480px; margin-left: auto; margin-right: auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+             gap: 16px; max-width: 640px; margin: 0 auto; }
+    .card { background: var(--color-surface); border: 1px solid var(--color-border);
+            border-radius: var(--radius-lg); padding: 24px; text-decoration: none;
+            color: var(--color-text); transition: all var(--transition-fast);
+            box-shadow: var(--shadow-sm); display: block; }
+    .card:hover { box-shadow: var(--shadow-md); border-color: var(--color-accent);
+                  text-decoration: none; transform: translateY(-1px); }
+    .card h3 { font-size: 1rem; font-weight: 600; margin: 0 0 6px; }
+    .card p { font-size: 0.8125rem; color: var(--color-text-secondary);
+              margin: 0; line-height: 1.5; }
+    .card .tag { display: inline-block; font-size: 0.6875rem; font-weight: 600;
+                 text-transform: uppercase; letter-spacing: 0.05em;
+                 color: var(--color-accent); margin-bottom: 8px; }
+    .footer { text-align: center; padding: 40px 24px; color: var(--color-text-secondary);
+              font-size: 0.8125rem; }
+    .footer code { font-family: ui-monospace, SFMono-Regular, monospace;
+                   background: #f1f5f9; padding: 2px 6px; border-radius: 4px;
+                   font-size: 0.75rem; }
+  </style>
 </head>
 <body>
-  <h1>Valence</h1>
-  <p>Order intake &amp; fulfillment agent. One ADK agent receives WhatsApp text,
-  phone calls and photos of handwritten orders in any language, then runs a
-  graduated human-checked approval loop.</p>
-  <ul>
-    <li>Health: <a href="/health">/health</a></li>
-    <li>Review web view (escalation queue):
-    <a href="/review">/review</a></li>
-    <li>Loading List (dispatch):
-    <a href="/loading">/loading</a></li>
-    <li>Agent round-trip probe (message in → reply out):
-    <code>POST /api/roundtrip</code></li>
-    <li>Company-recorded call ingestion (token-gated):
-    <code>POST /api/voice/ingest</code></li>
-  </ul>
+  <div class="hero">
+    <h1><span>Valence</span></h1>
+    <p>Order intake &amp; fulfillment agent. Receives WhatsApp text, phone calls
+    and photos of handwritten orders in any language, then runs a graduated
+    human-checked approval loop.</p>
+    <div class="cards">
+      <a class="card" href="/review">
+        <div class="tag">Operations</div>
+        <h3>Review Queue</h3>
+        <p>Escalation queue, order detail, approve/reject, edit, and Tally voucher generation.</p>
+      </a>
+      <a class="card" href="/loading">
+        <div class="tag">Dispatch</div>
+        <h3>Loading List</h3>
+        <p>Printable delivery-day dispatch list with route grouping and late add-ons.</p>
+      </a>
+      <a class="card" href="/health">
+        <div class="tag">System</div>
+        <h3>Health Check</h3>
+        <p>Liveness probe for Cloud Run. Returns <code>{"{"}"status": "ok"{"}"}</code>.</p>
+      </a>
+    </div>
+  </div>
+  <div class="footer">
+    <p>API: <code>POST /api/roundtrip</code> &middot; <code>POST /api/voice/ingest</code></p>
+  </div>
 </body>
 </html>
 """

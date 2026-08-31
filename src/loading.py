@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 from .orders import Order, OrderItem, OrderStatus, iso_to_dt
 from .seed_data import DeliveryLocation, Route
 from .store import OrderStore
+from .ui import DESIGN_TOKENS, COMPONENT_CSS, login_page_shell
 
 DEFAULT_CUTOFF_TIME: time = time(17, 30)
 
@@ -228,42 +229,6 @@ async def load_loading_list(
     )
 
 
-_PAGE_CSS = """
-:root { color-scheme: light; }
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-       margin: 0; background: #f6f7f9; color: #1a202c; }
-.wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; }
-header { background: #111827; color: #f9fafb; padding: 14px 20px; }
-header a { color: #e5e7eb; margin-right: 18px; text-decoration: none; }
-header a:hover { color: #fff; }
-header form { display: inline; }
-h1 { font-size: 22px; margin: 0 0 4px; }
-h2 { font-size: 18px; margin: 26px 0 10px; }
-.sub { color: #6b7280; margin: 0 0 18px; }
-.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
-        padding: 16px; margin-bottom: 12px; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 8px 10px; vertical-align: top; }
-th { color: #6b7280; font-size: 12px; text-transform: uppercase;
-     letter-spacing: .03em; border-bottom: 1px solid #e5e7eb; }
-td { border-top: 1px solid #eef2f6; }
-.badge { display: inline-block; border-radius: 999px; padding: 2px 10px;
-         font-size: 12px; font-weight: 600; }
-.badge.late { background: #fee2e2; color: #b91c1c; }
-.badge.route { background: #e0e7ff; color: #3730a3; }
-button { border-radius: 6px; border: 1px solid #cbd5e1; background: #fff;
-         padding: 4px 10px; font-size: 13px; cursor: pointer; }
-button.dispatch { background: #f59e0b; border-color: #f59e0b; color: #fff; }
-@media print {
-  body { background: #fff; }
-  header, .no-print { display: none; }
-  .wrap { max-width: none; padding: 0; }
-  .card { border: 1px solid #000; border-radius: 0; }
-  button { display: none; }
-}
-"""
-
-
 def _escaped(value: object) -> str:
     return escape("" if value is None else str(value))
 
@@ -273,7 +238,7 @@ def _items_text(entry: LoadingEntry) -> str:
         f"{item.quantity:g} {item.unit} {item.product}".strip()
         for item in entry.items
     ]
-    return ", ".join(parts) if parts else "—"
+    return ", ".join(parts) if parts else "\u2014"
 
 
 def _entry_table(entries: list[LoadingEntry], *, with_action: bool) -> str:
@@ -287,83 +252,90 @@ def _entry_table(entries: list[LoadingEntry], *, with_action: bool) -> str:
             "</form></td>"
         ) if with_action else ""
         rows.append(
-            f"<tr><td>{_escaped(entry.order_id)}</td>"
-            f"<td>{_escaped(entry.customer or '—')}</td>"
-            f"<td>{_escaped(entry.delivery_location or '—')}</td>"
+            f"<tr><td style='font-weight:600'>{_escaped(entry.order_id)}</td>"
+            f"<td>{_escaped(entry.customer or '\u2014')}</td>"
+            f"<td>{_escaped(entry.delivery_location or '\u2014')}</td>"
             f"<td>{_escaped(_items_text(entry))}</td>{action}</tr>"
         )
     body = "".join(rows)
     if not body:
         body = "<tr><td colspan='5' class='sub'>None.</td></tr>"
-    return f"<table><thead><tr><th>Order</th><th>Customer</th>" \
-           f"<th>Delivery location</th><th>Items</th>" \
-           f"{'<th></th>' if with_action else ''}</tr></thead>" \
-           f"<tbody>{body}</tbody></table>"
+    return (
+        f"<table><thead><tr><th>Order</th><th>Customer</th>"
+        f"<th>Delivery location</th><th>Items</th>"
+        f"{'<th></th>' if with_action else ''}</tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+    )
 
 
 def render_loading_list_html(loading_list: LoadingList) -> str:
     """A printable, price-free HTML page for the delivery day's Loading List."""
     sections = "".join(
-        f"<div class='card'><h2 style='margin-top:0'>"
-        f"<span class='badge route'>{_escaped(section.route_name)}</span></h2>"
+        f"<div class='card'>"
+        f"<h2 style='margin-top:0'>"
+        f"<span class='badge n'>{_escaped(section.route_name)}</span></h2>"
         f"{_entry_table(section.entries, with_action=True)}</div>"
         for section in loading_list.sections
     )
     if not sections:
-        sections = "<div class='card'><p class='sub' style='margin:0'>" \
-                   "No approved orders to load for this day.</p></div>"
+        sections = (
+            "<div class='card empty-state'>"
+            "<p>No approved orders to load for this day.</p></div>"
+        )
 
     late_section = ""
     if loading_list.late:
         late_section = (
-            f"<div class='card'><h2 style='margin-top:0'>"
-            f"<span class='badge late'>Late add-ons — approved after cutoff</span></h2>"
+            f"<div class='card'>"
+            f"<h2 style='margin-top:0'>"
+            f"<span class='badge b'>Late add-ons \u2014 approved after cutoff</span>"
+            f"</h2>"
             f"{_entry_table(loading_list.late, with_action=True)}</div>"
         )
 
     unrouted_section = ""
     if loading_list.unrouted:
         unrouted_section = (
-            f"<div class='card'><h2 style='margin-top:0'>Unrouted</h2>"
+            f"<div class='card'>"
+            f"<h2 style='margin-top:0'>Unrouted</h2>"
             f"{_entry_table(loading_list.unrouted, with_action=True)}</div>"
         )
 
     body = (
-        f"<h1>Loading List — {_escaped(loading_list.delivery_day)}</h1>"
-        f"<p class='sub'>Cutoff {_escaped(loading_list.cutoff_time)} · live approved "
-        f"orders from the Order Processing Core · price-free.</p>"
-        f"<p class='no-print'><button onclick='window.print()'>Print</button></p>"
-        f"{late_section}{unrouted_section}<h2>Routes</h2>{sections}"
+        f"<h1>Loading List \u2014 {_escaped(loading_list.delivery_day)}</h1>"
+        f"<p class='sub'>Cutoff {_escaped(loading_list.cutoff_time)} \xb7 "
+        f"live approved orders from the Order Processing Core \xb7 price-free.</p>"
+        f"<p class='no-print' style='margin-bottom:var(--space-5)'>"
+        f"<button onclick='window.print()'>Print</button></p>"
+        f"{late_section}{unrouted_section}"
+        f"<h2>Routes</h2>{sections}"
     )
     return (
-        f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>Loading List {_escaped(loading_list.delivery_day)} — Valence</title>"
-        f"<style>{_PAGE_CSS}</style></head><body>"
-        f"<header><a href='/loading'>Loading list</a>"
-        f"<form method='post' action='/loading/logout'>"
-        f"<button class='no-print' type='submit'>Log out</button></form></header>"
-        f"<div class='wrap'>{body}</div></body></html>"
+        "<!doctype html><html lang='en'><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>Loading List {_escaped(loading_list.delivery_day)} \u2014 Valence</title>"
+        f"<style>{DESIGN_TOKENS}{COMPONENT_CSS}</style>"
+        "</head><body>"
+        "<header>"
+        "<a href='/' class='brand'>Valence</a>"
+        "<nav><a href='/loading'>Loading list</a></nav>"
+        "<form method='post' action='/loading/logout'>"
+        "<button class='btn-ghost' type='submit' "
+        "style='color:#94a3b8;border-color:transparent'>"
+        "Log out</button></form>"
+        "</header>"
+        f"<div class='wrap'>{body}</div>"
+        "</body></html>"
     )
 
 
 def loading_login_page(error: str | None = None) -> str:
     """Passcode login form gating the Loading List web view (issue #9)."""
-    err = (
-        f"<p class='error' style='color:#b91c1c'>{_escaped(error)}</p>"
-        if error else ""
-    )
-    return (
-        f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>Log in — Valence Loading</title>"
-        f"<style>{_PAGE_CSS}</style></head><body>"
-        f"<div class='wrap' style='max-width:420px'>"
-        f"<div class='card'><h1 style='margin-top:0'>Valence Loading</h1>"
-        f"<p class='sub'>Enter the demo passcode to open the day's Loading List.</p>"
-        f"{err}"
-        f"<form method='post' action='/loading/login'>"
-        f"<input type='password' name='passcode' placeholder='Passcode' "
-        f"autocomplete='current-password' required> "
-        f"<button type='submit'>Enter</button></form></div></div></body></html>"
+    return login_page_shell(
+        "Log in",
+        "Valence Loading",
+        "Enter the demo passcode to open the day's Loading List.",
+        "/loading/login",
+        error=error,
     )

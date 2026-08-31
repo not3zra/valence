@@ -14,6 +14,7 @@ from datetime import date, datetime, time, timezone
 from html import escape
 
 from .orders import Order, OrderEvent, OrderItem, OrderStatus
+from .ui import DESIGN_TOKENS, COMPONENT_CSS, page_shell, login_page_shell
 
 PASSCODE_COOKIE = "valence_review"
 
@@ -36,69 +37,6 @@ STATUS_LABELS: dict[str, str] = {
     OrderStatus.BILLED.value: "Billed",
     OrderStatus.REJECTED.value: "Rejected",
 }
-
-_BASE_CSS = """
-:root { color-scheme: light; }
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-       margin: 0; background: #f6f7f9; color: #1a202c; }
-.wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; }
-header { background: #111827; color: #f9fafb; padding: 14px 20px; }
-header a { color: #e5e7eb; margin-right: 18px; text-decoration: none; }
-header a:hover { color: #fff; }
-header form { display: inline; }
-h1 { font-size: 22px; margin: 0 0 4px; }
-h2 { font-size: 18px; margin: 26px 0 10px; }
-.sub { color: #6b7280; margin: 0 0 18px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr));
-         gap: 12px; margin: 18px 0 8px; }
-.stat { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
-        padding: 14px 16px; }
-.stat .n { font-size: 26px; font-weight: 600; }
-.stat .l { color: #6b7280; font-size: 13px; }
-.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
-        padding: 16px; margin-bottom: 12px; }
-.order-row { display: flex; justify-content: space-between; gap: 12px;
-             align-items: baseline; }
-.order-row .id { font-weight: 600; }
-.meta { color: #6b7280; font-size: 13px; margin-top: 6px; }
-.badges { margin-top: 8px; }
-.badge { display: inline-block; border-radius: 999px; padding: 2px 10px;
-         margin-right: 6px; font-size: 12px; font-weight: 600;
-         background: #fef3c7; color: #92400e; }
-.badge.b { background: #fee2e2; color: #b91c1c; }
-.badge.g { background: #dcfce7; color: #166534; }
-.badge.n { background: #e0e7ff; color: #3730a3; }
-.badge.d { background: #f3e8ff; color: #6b21a8; }
-table.timeline { width: 100%; border-collapse: collapse; font-size: 14px; }
-table.timeline td { border-top: 1px solid #eef2f6; padding: 8px 10px;
-                    vertical-align: top; }
-table.timeline .when { color: #6b7280; white-space: nowrap; width: 150px; }
-table.timeline .type { font-weight: 600; white-space: nowrap; width: 200px; }
-form.inline { display: inline; }
-button, .btn { border-radius: 6px; border: 1px solid #cbd5e1; background: #fff;
-       padding: 6px 14px; font-size: 14px; cursor: pointer; }
-button.approve { background: #16a34a; border-color: #16a34a; color: #fff; }
-button.reject { background: #dc2626; border-color: #dc2626; color: #fff; }
-input[type=text], input[type=password] { border: 1px solid #cbd5e1;
-       border-radius: 6px; padding: 8px 10px; font-size: 14px; }
-.searchbar { display: flex; gap: 8px; margin: 16px 0; }
-.error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca;
-         border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
-.notice { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0;
-         border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
-dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px;
-     font-size: 14px; }
-dt { color: #6b7280; font-weight: 600; }
-dd { margin: 0; }
-.login-card { max-width: 360px; margin: 60px auto; }
-input[type=number], select { border: 1px solid #cbd5e1; border-radius: 6px;
-        padding: 8px 10px; font-size: 14px; }
-.edit-items { width: 100%; border-collapse: collapse; }
-.edit-items th { text-align: left; color: #6b7280; font-size: 13px;
-        padding: 4px 8px; }
-.edit-items td { padding: 6px 8px 6px 0; }
-.edit-items input { width: 100%; box-sizing: border-box; }
-"""
 
 
 def _now() -> datetime:
@@ -172,37 +110,23 @@ def _items_summary(order: Order) -> str:
         f"{item.quantity:g} {item.unit} {item.product}".strip()
         for item in order.items
     ]
-    return escape(", ".join(parts)) if parts else "—"
+    return escape(", ".join(parts)) if parts else "\u2014"
 
 
 def page(title: str, body: str) -> str:
     """Wrap ``body`` in the shared review shell (header, nav, logout, CSS)."""
-    return (
-        f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{escape(title)} — Valence Review</title>"
-        f"<style>{_BASE_CSS}</style></head><body>"
-        f"<header><a href='/review'>Review</a>"
-        f"<a href='/review/orders'>All orders</a>"
-        f"<form method='post' action='/review/logout'>"
-        f"<button class='btn' type='submit'>Log out</button></form></header>"
-        f"<div class='wrap'>{body}</div></body></html>"
-    )
+    return page_shell(title, body)
 
 
 def login_page(error: str | None = None) -> str:
     """Passcode login form; ``error`` renders a banner above the field."""
-    err = f"<div class='error'>{escape(error)}</div>" if error else ""
-    body = (
-        f"<div class='login-card card'><h1>Valence Review</h1>"
-        f"<p class='sub'>Enter the demo passcode to open the escalation queue.</p>"
-        f"{err}"
-        f"<form method='post' action='/review/login'>"
-        f"<input type='password' name='passcode' placeholder='Passcode' "
-        f"autocomplete='current-password' required> "
-        f"<button class='btn' type='submit'>Enter</button></form></div>"
+    return login_page_shell(
+        "Log in",
+        "Valence Review",
+        "Enter the demo passcode to open the escalation queue.",
+        "/review/login",
+        error=error,
     )
-    return page("Log in", body)
 
 
 def stat_bar(stats: dict[str, int]) -> str:
@@ -251,19 +175,25 @@ def queue_page(orders: list[Order], stats: dict[str, int], q: str | None = None)
             f"<a class='id' href='/review/orders/{_escaped(order.order_id)}'>"
             f"{_escaped(order.order_id)}</a>"
             f"<span class='badge n'>{escape(status)}</span></div>"
-            f"<div class='meta'>phone {escape(order.phone)} · "
-            f"{escape(order.customer or 'unknown customer')} · "
-            f"{_items_summary(order)} · "
+            f"<div class='meta'>{escape(order.phone)} \xb7 "
+            f"{escape(order.customer or 'unknown customer')} \xb7 "
+            f"{_items_summary(order)} \xb7 "
             f"est. {order.draft_value_inr:,.0f} INR</div>"
             f"{_reason_badges(order.escalation_reasons)}</div>"
         )
-    list_html = "".join(rows) if rows else (
-        "<div class='card'><p class='sub' style='margin:0'>No orders found.</p></div>"
-    )
+    if rows:
+        list_html = "".join(rows)
+    else:
+        list_html = (
+            "<div class='card empty-state'>"
+            "<p>No orders found.</p></div>"
+        )
     body = (
-        f"<h1>Review</h1><p class='sub'>Live state from the Order Processing "
-        f"Core; web decisions stay in sync with WhatsApp.</p>"
-        f"{stat_bar(stats)}{search_bar(q)}<h2>Orders</h2>{list_html}"
+        f"<h1>Review</h1>"
+        f"<p class='sub'>Live state from the Order Processing Core; "
+        f"web decisions stay in sync with WhatsApp.</p>"
+        f"{stat_bar(stats)}{search_bar(q)}"
+        f"<h2>Orders</h2>{list_html}"
     )
     return page("Review", body)
 
@@ -287,7 +217,8 @@ def _voucher_card(order: Order) -> str:
                 f"<button class='btn' type='submit'>Mark billed</button></form>"
             )
         body = (
-            f"<p>Voucher <strong>{voucher_id}</strong> is ready.</p>"
+            f"<p style='margin:0 0 var(--space-3)'>Voucher "
+            f"<strong>{voucher_id}</strong> is ready.</p>"
             f"<a class='btn' href='/review/orders/{order_id}/voucher'>"
             f"Download voucher XML</a> {mark_billed}"
         )
@@ -299,7 +230,7 @@ def _voucher_card(order: Order) -> str:
         )
     else:
         body = (
-            "<p class='sub' style='margin:0'>No voucher — the order is not "
+            "<p class='sub' style='margin:0'>No voucher \u2014 the order is not "
             "approved.</p>"
         )
     return f"<div class='card'><h2>Tally voucher</h2>{body}</div>"
@@ -322,8 +253,10 @@ def order_page(
         for item in order.items
     )
     timeline = "".join(
-        f"<tr><td class='when'>{_escaped(event.created_at)}</td>"
-        f"<td class='type'>{_escaped(event.event_type)}</td>"
+        f"<tr><td style='white-space:nowrap;width:150px;color:var(--color-text-secondary)'>"
+        f"{_escaped(event.created_at)}</td>"
+        f"<td style='white-space:nowrap;width:200px;font-weight:600'>"
+        f"{_escaped(event.event_type)}</td>"
         f"<td>{escape(str(event.payload))}</td></tr>"
         for event in events
     )
@@ -345,27 +278,32 @@ def order_page(
         )
     back = "<p><a href='/review'>&larr; Back to review</a></p>"
     gst_override = (
-        "—" if order.gst_override_pct is None else f"{order.gst_override_pct:g}%"
+        "\u2014" if order.gst_override_pct is None else f"{order.gst_override_pct:g}%"
     )
     body = (
-        f"{back}{err}{ntc}<h1>Order {_escaped(order.order_id)}</h1>"
-        f"<div class='card'><dl>"
-        f"<dt>Status</dt><dd>{escape(status)}</dd>"
+        f"{back}{err}{ntc}"
+        f"<div style='display:flex;align-items:baseline;gap:var(--space-3);"
+        f"margin-bottom:var(--space-5)'>"
+        f"<h1 style='margin:0'>Order {_escaped(order.order_id)}</h1>"
+        f"<span class='badge n'>{escape(status)}</span></div>"
+        f"<div class='card'><dl class='fields'>"
         f"<dt>Phone</dt><dd>{escape(order.phone)}</dd>"
-        f"<dt>Customer</dt><dd>{escape(order.customer or '—')}</dd>"
-        f"<dt>Delivery location</dt><dd>{escape(order.delivery_location or '—')}</dd>"
+        f"<dt>Customer</dt><dd>{escape(order.customer or '\u2014')}</dd>"
+        f"<dt>Delivery location</dt><dd>{escape(order.delivery_location or '\u2014')}</dd>"
         f"<dt>Source channel</dt><dd>{escape(order.source_channel)}</dd>"
         f"<dt>Source language</dt><dd>{escape(order.source_language)}</dd>"
         f"<dt>Confidence</dt><dd>{order.confidence:g}</dd>"
         f"<dt>Estimated total</dt><dd>{order.draft_value_inr:,.0f} INR</dd>"
         f"<dt>GST override</dt><dd>{escape(gst_override)}</dd>"
         f"</dl>{_reason_badges(order.escalation_reasons)}</div>"
-        f"<div class='card'><h2>Items</h2><table class='timeline'>"
+        f"<div class='card'><h2>Items</h2>"
+        f"<table class='timeline'>"
         f"<tr><th>Product</th><th>Quantity</th><th>Rate</th></tr>{items}</table></div>"
         f"{_voucher_card(order)}"
         f"<div class='card'><h2>Order Event timeline</h2>"
         f"<table class='timeline'>{timeline}</table></div>"
-        f"<div class='card'><h2>Decision</h2>{actions}</div>"
+        f"<div class='card'><h2>Decision</h2><div style='display:flex;"
+        f"gap:var(--space-2);flex-wrap:wrap'>{actions}</div></div>"
     )
     return page(f"Order {order.order_id}", body)
 
@@ -439,13 +377,15 @@ def edit_page(
         "" if order.gst_override_pct is None else f"{order.gst_override_pct:g}"
     )
     body = (
-        f"{back}{err}<h1>Edit order {_escaped(order.order_id)}</h1>"
+        f"{back}{err}"
+        f"<h1>Edit order {_escaped(order.order_id)}</h1>"
         f"<form method='post' "
         f"action='/review/orders/{_escaped(order.order_id)}/edit'>"
-        f"<div class='card'><dl>"
+        f"<div class='card'><dl class='fields'>"
         f"<dt>Customer</dt><dd>"
         f"<input type='text' name='customer' value='{_escaped(order.customer or '')}'>"
-        f"<p class='sub' style='margin:6px 0 0'>Resolve an unknown customer: "
+        f"<p class='sub' style='margin:var(--space-1) 0 0;font-size:var(--text-xs)'>"
+        f"Resolve an unknown customer: "
         f"<select name='customer_id'><option value=''></option>"
         f"{customer_options}</select></p></dd>"
         f"<dt>Delivery location</dt><dd>"
@@ -456,14 +396,16 @@ def edit_page(
         f"<table class='edit-items'><tr><th>Product</th><th>Quantity</th>"
         f"<th>Unit</th><th>Rate (INR)</th><th>Resolve product</th></tr>"
         f"{rows}</table>"
-        f"<p class='sub' style='margin:8px 0 0'>Leave a row's product blank "
-        f"to remove it; pick a product to map an uncataloged line.</p></div>"
-        f"<div class='card'><dl>"
+        f"<p class='sub' style='margin:var(--space-2) 0 0;font-size:var(--text-xs)'>"
+        f"Leave a row's product blank to remove it; pick a product to map "
+        f"an uncataloged line.</p></div>"
+        f"<div class='card'><dl class='fields'>"
         f"<dt>GST override (%)</dt><dd>"
         f"<input type='number' name='gst_override_pct' min='0' max='100' "
-        f"step='0.01' value='{escape(gst_value)}'></dd>"
-        f"<dd class='sub'>Overrides the GST rate the billing path derives "
-        f"(issue #8); leave blank for the default.</dd>"
+        f"step='0.01' value='{escape(gst_value)}'>"
+        f"<p class='sub' style='margin:var(--space-1) 0 0;font-size:var(--text-xs)'>"
+        f"Overrides the GST rate the billing path derives "
+        f"(issue #8); leave blank for the default.</p></dd>"
         f"</dl></div>"
         f"<button class='approve' type='submit'>Save changes</button></form>"
     )
