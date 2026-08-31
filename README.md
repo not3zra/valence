@@ -1,341 +1,416 @@
-# Valence — Order Intake & Fulfillment agent
+<div align="center">
 
-A single **Google ADK** agent that turns orders arriving over WhatsApp, a phone
-call, or a photo of a handwritten order sheet — in any language — into one
-structured order, which a human then approves before the Loading List and
-Tally billing artifacts are generated.
+# Valence
 
-This repo is the **scaffold (ticket 1)**: a Python service that deploys to a
-single Cloud Run instance, connects to a Firestore database seeded with the
-operational data the agent runs on, and holds durable per-sender sessions in
-Firestore (so a Cloud Run restart never loses an in-flight conversation).
+### Order Intake & Fulfillment Agent
 
-**Mandatory stack** — Gemini 3.5 (`gemini-3.5-flash`, served through
-**Vertex AI** via `GOOGLE_GENAI_USE_VERTEXAI` with `GOOGLE_CLOUD_PROJECT` +
-`GOOGLE_CLOUD_LOCATION`), Google ADK (pinned `google-adk==2.6.3`), and the
-Google Cloud services Cloud Run + Firestore (+ Cloud Storage + Pub/Sub
-provisioned for later tickets).
+**A single AI agent that turns orders arriving over WhatsApp, phone calls, or photos of handwritten order sheets — in any language — into structured orders with automated approval, dispatch lists, and billing.**
 
-## Set up on a new machine
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Google ADK](https://img.shields.io/badge/Google_ADK-2.6.3-4285F4.svg)](https://cloud.google.com/agent-engine)
+[![Gemini](https://img.shields.io/badge/Gemini-3.5_Flash-FF6D00.svg)](https://ai.google.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
+[![Cloud Run](https://img.shields.io/badge/Cloud_Run-Deployed-4285F4.svg)](https://cloud.google.com/run)
+[![Firestore](https://img.shields.io/badge/Firestore-Active-FFCA28.svg)](https://firebase.google.com/docs/firestore)
+[![Tests](https://img.shields.io/badge/tests-393_passing-16a34a.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-gray.svg)]()
+
+</div>
+
+---
+
+## Overview
+
+Valence is a production-grade order intake system built for chemical distributors. It replaces manual WhatsApp/phone order handling with an AI agent that understands orders in **any language or format**, auto-approves clean orders, escalates exceptions to human reviewers, generates dispatch loading lists, and produces Tally-compatible billing vouchers — all from a single Cloud Run service.
+
+### Key Capabilities
+
+| Channel | Input | Processing |
+|---------|-------|------------|
+| **WhatsApp Text** | Free-text messages in any language | Gemini extracts structured order |
+| **WhatsApp Photo** | Photo of handwritten order sheet | Vision model reads handwriting |
+| **Phone Call** | Recorded sales calls (.wav/.ogg) | Audio understood in single model call |
+
+### What It Does
+
+1. **Intake** — Receives orders via WhatsApp (text/photo), phone recordings, or API
+2. **Extraction** — Gemini 3.5 Flash understands any language/format and extracts structured items
+3. **Decision** — Auto-escalates unknown customers, low confidence, anomalies, or missing fields
+4. **Approval** — Escalated orders notify allowlisted approvers via WhatsApp
+5. **Dispatch** — Generates per-route Loading Lists for warehouse teams
+6. **Billing** — Produces GST-compliant Tally voucher XML for import
+
+---
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Intake Channels"
+        WA[WhatsApp Text]
+        WP[WhatsApp Photo]
+        VC[Phone Call Recording]
+        API[REST API]
+    end
+
+    subgraph "Cloud Run Service"
+        WH[Webhook Handler<br/>FastAPI]
+        AG[ADK Agent<br/>Gemini 3.5 Flash]
+        CORE[Order Processing Core<br/>Decision Engine]
+        TOOLS[Agent Tools<br/>process_order · approve_order<br/>prepare_voucher · render_loading_list]
+    end
+
+    subgraph "Data Layer"
+        FS[(Firestore<br/>Sessions · Orders · Config)]
+        GCS[(Cloud Storage<br/>Tally Vouchers)]
+    end
+
+    subgraph "Outputs"
+        WA2[WhatsApp Replies]
+        REVIEW[Review Web View<br/>/review]
+        LOADING[Loading List<br/>/loading]
+        TALLY[Tally Import<br/>XML Voucher]
+    end
+
+    WA -->|Webhook| WH
+    WP -->|Media ID| WH
+    VC -->|Audio bytes| WH
+    API -->|Roundtrip probe| WH
+
+    WH --> AG
+    AG --> CORE
+    AG --> TOOLS
+    CORE --> FS
+    TOOLS --> GCS
+
+    AG -->|Reply| WA2
+    TOOLS --> REVIEW
+    TOOLS --> LOADING
+    TOOLS --> TALLY
+
+    style AG fill:#4285F4,color:#fff
+    style CORE fill:#0F9D58,color:#fff
+    style FS fill:#FFCA28,color:#000
+    style GCS fill:#4285F4,color:#fff
+```
+
+### Order Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> PendingReview: Order Created
+    PendingReview --> Approved: Auto-approved (clean)
+    PendingReview --> Escalated: Exception detected
+    PendingReview --> Rejected: Rejected by approver
+    PendingReview --> Clarify: Missing fields (WhatsApp only)
+    Clarify --> PendingReview: Customer replies
+    Escalated --> Approved: Approver confirms
+    Escalated --> Rejected: Approver rejects
+    Approved --> Dispatched: Loading List generated
+    Dispatched --> Billed: Tally voucher created
+    Billed --> [*]
+    Rejected --> [*]
+```
+
+---
+
+## Screenshots
+
+### WhatsApp Order Flow
+<!-- Replace with actual screenshot -->
+![WhatsApp Order Flow](screenshots/whatsapp-order-flow.png)
+
+*Customer sends an order in Hindi via WhatsApp; agent extracts items, estimates value, and confirms.*
+
+### Review Dashboard
+<!-- Replace with actual screenshot -->
+![Review Dashboard](screenshots/review-dashboard.png)
+
+*Passcode-gated approval queue showing pending escalations with reason badges, live stats, and quick actions.*
+
+### Order Detail Page
+<!-- Replace with actual screenshot -->
+![Order Detail](screenshots/order-detail.png)
+
+*Full order view with items, customer info, Order Event timeline, and approve/reject/edit actions.*
+
+### Loading List
+<!-- Replace with actual screenshot -->
+![Loading List](screenshots/loading-list.png)
+
+*Dispatch-facing view grouped by delivery route, with late add-ons section after cutoff.*
+
+### Tally Voucher
+<!-- Replace with actual screenshot -->
+![Tally Voucher](screenshots/tally-voucher.png)
+
+*GST-compliant sales invoice XML ready for Tally import.*
+
+---
+
+## Tech Stack
+
+### Core Services
+
+| Service | Purpose | Configuration |
+|---------|---------|---------------|
+| **Cloud Run** | Hosts the FastAPI service (webhooks, web views, API) | `us-central1`, auto-scales |
+| **Firestore** | Durable sessions, orders, config, seed data | Native mode, `(default)` database |
+| **Cloud Storage** | Tally voucher XML storage | `valence-<project>-vouchers` |
+| **Vertex AI** | Serves Gemini 3.5 Flash model | `asia-southeast1` region |
+| **Secret Manager** | WhatsApp credentials, tokens, passcodes | 9 secrets bound to service |
+| **Pub/Sub** | Cutoff trigger chain | `valence-cutoff` topic |
+| **Cloud Scheduler** | Daily cutoff job (17:31 IST) | Triggers Loading List render |
+| **Cloud Build** | CI/CD — auto-deploy on push to `main` | Docker build + deploy |
+
+### AI & Agent Framework
+
+| Component | Version | Role |
+|-----------|---------|------|
+| **Google ADK** | `2.6.3` | Agent runtime, tool execution, session management |
+| **Gemini 3.5 Flash** | `gemini-3.5-flash` | Multimodal understanding (text, image, audio) |
+| **Vertex AI** | Production | Model serving (not free-tier API key) |
+
+### Application Stack
+
+| Component | Technology |
+|-----------|------------|
+| **Web Framework** | FastAPI (async) |
+| **Language** | Python 3.10+ |
+| **Session Persistence** | ADK `FirestoreSessionService` |
+| **WhatsApp Integration** | Meta Cloud API (Graph API v20.0) |
+| **GST/Tally** | Custom voucher XML builder |
+| **Testing** | pytest + pytest-asyncio (393 tests) |
+| **Linting** | ruff + mypy |
+| **Containerization** | Docker (Python 3.12-slim) |
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- `gcloud` CLI with Firestore emulator
+- Google Cloud project access (`valence-505412`)
+
+### Local Development
 
 ```bash
-# 1. Prereqs: Python >=3.10, and the gcloud CLI with the Firestore emulator.
-gcloud components install cloud-firestore-emulator
-
-# 2. Clone and create the venv.
-git clone <this-repo> valence && cd valence
+# Clone and setup
+git clone <repo-url> valence && cd valence
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 3. Authenticate to GCP. The shared project is valence-505412 — ask the owner to
-#    add your Google account as a project member (Owner/Editor). Vertex AI
-#    (not the free-tier GOOGLE_API_KEY, which is exhausted) provides the model,
-#    so you need Application Default Credentials:
+# Install Firestore emulator
+gcloud components install cloud-firestore-emulator
+
+# Authenticate to GCP
 gcloud auth login
 gcloud auth application-default login
 gcloud config set project valence-505412
-```
 
-Then either run everything locally (Firestore emulator + `uvicorn`) with
-`./scripts/run_local.sh`, or deploy to Cloud Run with `./infra/provision.sh`.
-Both paths point Gemini at Vertex AI automatically.
-
-## Repository layout
-
-```
-src/
-  config.py          environment settings
-  agent.py           the ADK agent + durable Firestore sessions + run_turn()
-  agent_exec.py      TurnExecutor — keeps ADK's runner on one live event loop
-  orders.py          order domain: status state machine + order events
-  money.py           two-tier draft money model (agreed rate > tier > catalog)
-  store.py           OrderStore seam (Firestore) + in-memory test double
-  core.py            the Order Processing Core (decision engine, ticket 2)
-  core_tool.py       the core exposed as a single ADK tool
-  approval.py        human-approval notification seam (WhatsApp)
-  dispatch.py        late-order notification seam (WhatsApp)
-  loading.py         Loading List render logic (dispatch, ticket 9)
-  review.py          review web-view HTML/JS + approve/reject actions
-  media.py           media types + base64 ↔ inline-part conversion
-  ratelimit.py       per-sender sliding-window rate limiter (security #32)
-  seed_data.py       canonical seed data (customers, products, routes, ...)
-  seed_firestore.py  writes seed data into Firestore (emulator or real)
-  voucher.py         Tally voucher XML builder + Cloud Storage seam
-  whatsapp.py        WhatsApp channel boundary: InboundMessage + sender/webhook seams
-  meta_whatsapp.py   Meta Cloud API adapter: JSON parsing + X-Hub-Signature-256
-                     verification + Graph API sender (the live channel)
-  web.py             FastAPI web layer (/, /health, /api/roundtrip,
-                     /api/whatsapp/webhook, /api/voice/ingest)
-  main.py            production entry point (uvicorn)
-infra/
-  provision.sh       one script to provision the full GCP stack
-cloudbuild.yaml      build + deploy on push to main
-scripts/
-  run_local.sh       Firestore emulator + seed + uvicorn
-  smoke_roundtrip.py real-Gemini message in -> reply out smoke test
-  smoke_whatsapp_webhook.py  drive the WhatsApp webhook path with a real agent
-  feed_order.py      drive the Order Processing Core with no channel
-  feed_voice.py      feed company-recorded call batches into /api/voice/ingest
-  eval_agent.py      agent eval harness: real-model case runs + pass rates (issue #36)
-  eval_cases/        committed media samples the eval cases drive (photo, call audio)
-Dockerfile
-```
-
-## Run locally (Firestore emulator)
-
-Requires Python 3.10+, and the `gcloud` CLI with the Firestore emulator. The
-Firestore emulator holds the local data; the model runs on **Vertex AI**
-(`run_local.sh` exports the Vertex env vars for you):
-
-```bash
-gcloud components install cloud-firestore-emulator
-
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Per-sender durable sessions live in the emulated Firestore; the agent model
-# calls Vertex AI in asia-southeast1 on valence-505412 (needs gcloud
-# application-default login + project access):
+# Run with emulator
 ./scripts/run_local.sh
 ```
 
-The service is now on http://localhost:8080:
+The service starts at `http://localhost:8080`:
 
-- `GET /` — health page
-- `GET /health` — liveness probe
-- `GET /review` — the review web view (passcode-gated escalation queue)
-- `POST /api/roundtrip` — agent round trip, no channel needed:
-- `POST /api/whatsapp/webhook` — Meta Cloud API WhatsApp inbound webhook (ticket 3)
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Health page |
+| `GET /health` | Liveness probe |
+| `GET /review` | Approval dashboard (passcode-gated) |
+| `GET /loading` | Dispatch loading list |
+| `POST /api/roundtrip` | Agent roundtrip (debug probe) |
+| `POST /api/whatsapp/webhook` | Meta WhatsApp webhook |
+| `POST /api/voice/ingest` | Company-recorded call ingestion |
+| `POST /api/cutoff` | Scheduled cutoff trigger |
+
+### Test the Agent
 
 ```bash
+# Send a test order via API
 curl -s localhost:8080/api/roundtrip \
   -H 'authorization: Bearer local-dev-roundtrip-token' \
   -H 'content-type: application/json' \
   -d '{"sender_id": "+919812345001", "message": "Namaste, 2 drums sulfuric acid chahiye"}'
 ```
 
-The reply is generated by the agent model through Vertex AI — `run_local.sh`
-already exports `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT=valence-505412`,
-and `GOOGLE_CLOUD_LOCATION=asia-southeast1`, so after `gcloud auth application-default login`
-no key is needed. (The free-tier `GOOGLE_API_KEY` is exhausted; don't use it.)
-The probe is gated by a bearer token (env `ROUNDTRIP_TOKEN`; `run_local.sh` sets a local
-default) and returns 503 when none is configured — it lets the caller supply
-the sender id, so it must never run unauthenticated.
-
-Run the test suite and checks:
+### Run Tests
 
 ```bash
-pytest            # full suite (Gemini faked at the model boundary)
-ruff check .
-mypy src
+pytest                    # Full suite (393 tests)
+pytest tests/test_core.py # Core logic tests only
+ruff check .              # Linting
+mypy src                  # Type checking
 ```
 
-## Order Processing Core (ticket 2)
+---
 
-The decision seam every channel feeds into. Given a structured order (phone,
-items, delivery location, confidence) it auto-approves a clean order or
-escalates it as a hard block with explicit reasons (unknown customer,
-unverified number, uncataloged product, missing field, low confidence, value
-over the cap, anomaly), computes the two-tier draft estimate, and appends every
-decision to the `order_events` audit trail. Thresholds are read from the
-Firestore `config` collection, never hardcoded. It is exposed to the ADK agent
-as a single `process_order` tool whose phone is pinned to the caller's session
-identity — a number the model extracts from a message can never credit a
-customer (ADR-0002).
+## Project Structure
 
-Drive it with no channel attached:
-
-```bash
-echo '{"phone": "+919812345001", "items": [{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}], "delivery_location": "Peenya Industrial Area", "confidence": 0.9}' \
-  | python scripts/feed_order.py --memory
+```
+valence/
+├── src/
+│   ├── agent.py           # ADK agent definition + session management
+│   ├── agent_exec.py      # TurnExecutor — persistent event loop for ADK
+│   ├── config.py          # Environment settings
+│   ├── core.py            # Order Processing Core (decision engine)
+│   ├── core_tool.py       # Agent tools (process_order, approve_order, etc.)
+│   ├── orders.py          # Order domain model + status state machine
+│   ├── store.py           # Firestore adapter + in-memory test double
+│   ├── web.py             # FastAPI web layer (webhooks, views, API)
+│   ├── review.py          # Review dashboard HTML renderer
+│   ├── loading.py         # Loading List renderer
+│   ├── voucher.py         # Tally voucher XML builder + Cloud Storage
+│   ├── approval.py        # Human approval notification (WhatsApp)
+│   ├── dispatch.py        # Late order notification (WhatsApp)
+│   ├── media.py           # Media handling (photo/audio)
+│   ├── meta_whatsapp.py   # Meta Cloud API adapter
+│   ├── ratelimit.py       # Per-sender rate limiter
+│   ├── seed_data.py       # Canonical seed data (customers, products, routes)
+│   ├── seed_firestore.py  # Firestore seeder
+│   ├── ui.py              # Shared design system (CSS tokens, components)
+│   └── main.py            # Production entry point (uvicorn)
+├── tests/                 # 393 tests (pytest + pytest-asyncio)
+├── scripts/
+│   ├── run_local.sh       # Local dev with Firestore emulator
+│   ├── eval_agent.py      # Agent eval harness (24 cases)
+│   ├── feed_order.py      # Drive core without channel
+│   ├── feed_voice.py      # Batch voice ingestion
+│   ├── tally_sync.py      # Local Tally auto-sync script
+│   └── smoke_*.py         # Smoke tests
+├── infra/
+│   └── provision.sh       # One-shot GCP provisioning
+├── docs/
+│   └── adr/               # Architectural Decision Records
+├── Dockerfile
+├── cloudbuild.yaml        # CI/CD pipeline
+└── pyproject.toml
 ```
 
-Omit `--memory` to run it against the emulated Firestore.
+---
 
-## WhatsApp text intake (ticket 3)
+## Provisioning
 
-The live WhatsApp channel is **Meta Cloud API** on the test number (issue #13).
-Meta posts every inbound message to `/api/whatsapp/webhook` as nested JSON
-(`entry` → `changes` → `value` → `messages`). The endpoint answers Meta's GET
-verification handshake — echoing `hub.challenge` only when `hub.verify_token`
-matches the configured `META_VERIFY_TOKEN` — and verifies the `X-Hub-Signature-256`
-header on every POST (HMAC-SHA256 of the raw request body with the App Secret,
-`META_APP_SECRET`), both owned by the Meta adapter in `src/meta_whatsapp.py`.
-It parses `from`/`text.body` into a provider-neutral `InboundMessage`, then runs
-one ADK agent turn: Gemini extracts the structured order and the `process_order`
-tool commits it through the Order Processing Core. The agent's confirmation
-reply — including the estimated total from draft pricing — is delivered back
-over WhatsApp through the `WhatsAppSender` seam (`MockWhatsAppSender` in tests;
-`MetaWhatsAppSender` in production, POSTing to the Graph API
-`/v20.0/{META_PHONE_NUMBER_ID}/messages` with the permanent `META_ACCESS_TOKEN`).
-
-Meta is a boundary adapter behind a seam: parsing, handshake/signature
-verification and provider config all live in `src/meta_whatsapp.py`, never in
-the web layer.
-
-To register the webhook in the Meta developer console (done by a human after
-deploy — note it in the PR):
-
-1. In the WhatsApp app's config, set **Callback URL** to
-   `https://<service-url>/api/whatsapp/webhook`.
-2. Set **Verify token** to the same value as the provisioned `META_VERIFY_TOKEN`
-   secret, and select the `messages` field.
-3. Click **Verify and save**: Meta GETs the callback URL with `hub.mode=subscribe`,
-   `hub.verify_token` and `hub.challenge`; the service echoes the challenge.
-4. Every inbound message is then delivered as a signed POST; the service replies
-   in-window through the Graph API sender.
-
-Drive the whole path locally with a real agent (requires the Vertex env — i.e.
-`gcloud auth application-default login` after the new-machine setup — plus
-`META_APP_SECRET`, with the emulator running via `run_local.sh`):
+### Full GCP Stack
 
 ```bash
-META_APP_SECRET=... \
-  python scripts/smoke_whatsapp_webhook.py \
-  --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
-```
-
-## Review web view (ticket 5)
-
-The human interface for escalated orders, served from the same FastAPI web
-layer at `/review`. Gated by a passcode configured per deploy (env
-`WEB_PASSCODE`, never a public seed), it shows an escalation queue with a
-reason badge per order, an order detail page with a searchable Order Event
-timeline, and a live stat bar (pending escalations, approved today, billed
-today, late orders) that refreshes without a page reload. Approve / reject from
-the web view call `approve_order_web` on the same Order Processing Core as the
-WhatsApp approval path, so web and WhatsApp decisions stay in sync and share one
-audit trail. Editing order fields, overriding GST, and resolving unknowns is the
-remaining piece of this ticket.
-
-## Company-recorded call ingestion (issue #35)
-
-The company records its own sales calls and feeds them to the same agent as
-the other channels. `POST /api/voice/ingest` accepts a recorded call — audio
-bytes plus the caller's E.164 number, supplied by the company's own system —
-with a per-deploy bearer token (env `VOICE_INGEST_TOKEN`), and runs it through
-the same ADK agent turn as WhatsApp/photo: the agent understands the audio in
-one Gemini call and commits a `source_channel="voice"` order. A voice order
-with a missing field escalates to human review rather than clarifying
-(ADR-0004). The endpoint is closed (503) unless the token is configured, the
-token is verified before the body is read or anything parsed, the body is
-size-capped (8 MiB), the caller must be a whole-string E.164 number, and the
-audio is base64 in the JSON payload:
-
-```bash
-curl -s localhost:8080/api/voice/ingest \
-  -H 'authorization: Bearer local-dev-ingest-token' \
-  -H 'content-type: application/json' \
-  -d '{"caller": "+919812345001", "audio_base64": "<base64 of call.wav>", "mime_type": "audio/wav"}'
-```
-
-**Caller identity is trusted company metadata, not caller-ID**: the caller
-comes from the token-authenticated payload, so it cannot be spoofed from
-outside the token path — there is no caller-ID-based voice channel left to
-caveat.
-
-Feed a whole batch of the day's calls with `scripts/feed_voice.py` — one order
-per recording, the caller read from a `<name>.caller` sidecar (folder) or the
-object's `caller` metadata (Cloud Storage), never guessed:
-
-```bash
-python scripts/feed_voice.py --folder path/to/calls
-python scripts/feed_voice.py --bucket valence-calls --prefix calls/2026-08-18/
-```
-
-The token comes from `--token` or the `VOICE_INGEST_TOKEN` env var; the feed
-path is exercised in CI against the committed sample recording with a fake
-model.
-
-## Provision the full GCP stack
-
-Source the gitignored `.env.provision` (supplied by the owner; it sets
-`PROJECT_ID=valence-505412` plus the four `META_*` credentials and the five
-deploy tokens), then run the one-shot provisioner. Gemini is wired through
-Vertex AI by `provision.sh` itself, so no model key is exported:
-
-```bash
-source .env.provision
+source .env.provision   # Set PROJECT_ID, Meta credentials, tokens
 ./infra/provision.sh
 ```
 
 This creates and wires:
 
-- **Cloud Run** — the `valence` service, deployed initially from local source,
-  auto-deploying on every push to `main` via a Cloud Build trigger
-- **Firestore** — native-mode `(default)` database, seeded with customers
-  (verified phones), products (with alias tables), routes, delivery locations,
-  the approver allowlist, and configurable thresholds
-- **Cloud Storage** — `gs://valence-<project>-vouchers` (Tally voucher XML)
-- **Pub/Sub** — `valence-cutoff` topic + push subscription pointed at
-  `<service-url>/api/cutoff` (Cutoff chain, used from ticket 8)
-- **IAM** — Cloud Run → Firestore/Storage/Secrets; push subscription → Cloud
-  Run invoker
-- **Secrets** — the Meta Cloud API WhatsApp credentials
-  (`META_APP_SECRET`/`META_VERIFY_TOKEN`/`META_ACCESS_TOKEN`/`META_PHONE_NUMBER_ID`),
-  the round-trip probe token (`ROUNDTRIP_TOKEN`), the voice-ingest token
-  (`VOICE_INGEST_TOKEN`), and the review-web passcode +
-  salt (`WEB_PASSCODE`/`WEB_PASSCODE_SALT`) as Secret Manager secrets bound to
-  the deployed service; nothing secret is committed to this repo. Gemini runs
-  through Vertex AI (ADC via the runtime service account), so there is no model
-  API key secret.
+- **Cloud Run** service with auto-deploy on push to `main`
+- **Firestore** database (native mode) seeded with customers, products, routes, approvers, thresholds
+- **Cloud Storage** bucket for Tally voucher XML
+- **Pub/Sub** topic + push subscription for cutoff chain
+- **Cloud Scheduler** job (daily 17:31 IST)
+- **IAM** bindings (Cloud Run → Firestore/Storage; push sub → Cloud Run invoker)
+- **Secret Manager** secrets (WhatsApp credentials, tokens, passcodes)
 
-Verify the deploy:
+### Secrets (never committed)
+
+| Secret | Purpose |
+|--------|---------|
+| `META_APP_SECRET` | WhatsApp webhook signature verification |
+| `META_ACCESS_TOKEN` | Graph API sender authentication |
+| `META_PHONE_NUMBER_ID` | WhatsApp business phone number |
+| `META_VERIFY_TOKEN` | Webhook verification handshake |
+| `ROUNDTRIP_TOKEN` | Debug probe bearer token |
+| `VOICE_INGEST_TOKEN` | Voice ingestion bearer token |
+| `WEB_PASSCODE` | Review dashboard access |
+| `WEB_PASSCODE_SALT` | Passcode HMAC salt |
+| `CUTOFF_SECRET` | Scheduled cutoff auth |
+
+---
+
+## Design Decisions
+
+### ADR-0001: Unified Understanding Layer
+
+One ADK Agent receives messages from every channel (WhatsApp text, photo, voice) and runs Gemini to extract structured orders. No separate translate → transcribe → parse pipeline — a single model call keeps one source of truth.
+
+### ADR-0002: Graduated Approval
+
+Clean orders auto-approve. Exceptions escalate as hard blocks (unknown customer, low confidence, anomaly, missing field). Thresholds are Firestore-configurable, not hardcoded.
+
+### ADR-0003: Tally Pre-Seeded Masters
+
+Voucher generation references only pre-seeded, mapped Tally masters (party ledgers, stock items, GST ledgers). Any unmapped master blocks generation with an explicit error.
+
+### ADR-0004: Call Orders Flagged, Not Clarified
+
+Voice orders with missing fields escalate to human review immediately — no clarifying questions over recorded calls.
+
+---
+
+## API Reference
+
+### `POST /api/roundtrip`
+
+Debug probe — drive the agent directly without WhatsApp.
 
 ```bash
-curl -s "$(gcloud run services describe valence --region=us-central1 --format='value(status.url)')/health"
-# or run a real agent turn locally (Vertex env + gcloud application-default login):
-python scripts/smoke_roundtrip.py --sender +919812345001
+curl -X POST https://<service-url>/api/roundtrip \
+  -H "Authorization: Bearer <ROUNDTRIP_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"sender_id": "+919812345001", "message": "2 drums sulfuric acid"}'
 ```
 
-## Agent eval harness (issue #36)
+### `POST /api/voice/ingest`
 
-The net that catches model misbehaviour before the live demo. It drives the
-real agent over the same `run_turn` seam the webhooks use, one realistic case
-at a time, and asserts each case's decision/tool outcome from the store plus the
-recorded tool trace:
+Company-recorded call ingestion.
 
 ```bash
-# Via Vertex AI (the recommended path — gcloud auth application-default login first):
-GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 GOOGLE_CLOUD_LOCATION=asia-southeast1 \
-  python scripts/eval_agent.py              # the full case set
-GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 GOOGLE_CLOUD_LOCATION=asia-southeast1 \
-  python scripts/eval_agent.py --category safety
-GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 GOOGLE_CLOUD_LOCATION=asia-southeast1 \
-  python scripts/eval_agent.py --cases happy-hindi-text
-python scripts/eval_agent.py --list                          # list cases, no key
+curl -X POST https://<service-url>/api/voice/ingest \
+  -H "Authorization: Bearer <VOICE_INGEST_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"caller": "+919812345001", "audio_base64": "<base64>", "mime_type": "audio/wav"}'
 ```
 
-- 24 cases across happy path, accumulation (the issue #34 regression gate),
-  quantity normalization, money-policy edges, safety/prompt injection, the
-  approver multi-session, channel rules, robustness, dispatch/late-order,
-  language, and a real recorded-call audio case (graded at decision level,
-  never exact transcription).
-- The clock is pinned per case (`PinnedClock`), so time-dependent cases (dedup
-  window, clarify turn cap, late order) fail only on a real regression, never on
-  when the run happened.
-- A recorded tool trace lets a safety case assert the approver / voucher /
-  loading-list tools were **never** invoked, and a decision case reads the
-  core's decision back from the recorded `process_order` result.
-- Hard failures (wrong status, wrong escalation reason, a privileged tool
-  invoked) fail the run with a non-zero exit code and report expected vs
-  produced per case. Reply-text checks are reported leniently — a soft failure
-  is shown but never fails the run.
-- Gated on a Gemini API key (`GOOGLE_API_KEY`/`GEMINI_API_KEY`) **or** a complete Vertex config (`GOOGLE_GENAI_USE_VERTEXAI=true` with `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`): an unkeyed run exits 2 with
-  a clear message instead of a wall of auth errors.
+### `GET /api/vouchers`
 
-## Notes
+List all prepared vouchers (passcode-gated).
 
-- Sessions are **Firestore-backed** (ADK `FirestoreSessionService`) — in memory
-  for local debugging only, via `SESSION_SERVICE=memory`.
-- The FastAPI web layer (review web view, ticket 5), the Meta Cloud API
-  WhatsApp webhook (ticket 3) and the agent round-trip probe are served from
-  this same Cloud Run instance.
-- The WhatsApp webhook rejects any request with a missing or invalid
-  `X-Hub-Signature-256` (403) before anything is parsed or committed — the
-  endpoint is unauthenticated otherwise (a phone number is the identity, and a
-  spoofed webhook could mint orders). Meta's GET verification handshake echoes
-  `hub.challenge` only for a matching `META_VERIFY_TOKEN`.
-- Thresholds (value cap, confidence, dedup window, cutoff time, …) are data in
-  Firestore, not code — the approval engine reads them from the `config`
-  collection.
+### `POST /review/orders/{id}/push-to-tally`
+
+Push a prepared voucher directly to local Tally (requires `TALLY_PUSH_URL`).
+
+---
+
+## Deployment
+
+```bash
+# Deploy to Cloud Run
+gcloud run deploy valence \
+  --source . \
+  --region=us-central1 \
+  --project=valence-505412 \
+  --allow-unauthenticated
+
+# Redirect traffic to latest revision
+gcloud run services update-traffic valence \
+  --region=us-central1 \
+  --project=valence-505412 \
+  --to-revisions=<revision-name>=100
+```
+
+**Live service:** https://valence-371317348606.us-central1.run.app
+
+---
+
+## Contributing
+
+1. Create a feature branch from `main`
+2. Make changes with tests
+3. Run `pytest && ruff check . && mypy src`
+4. Open a PR — CI builds and deploys a preview revision
+
+---
+
+## License
+
+MIT

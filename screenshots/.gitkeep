@@ -1,0 +1,16 @@
+# Screenshots
+
+Replace the placeholder PNG files in this directory with actual screenshots:
+
+1. `whatsapp-order-flow.png` — Customer sending an order via WhatsApp, agent extracting items and confirming
+2. `review-dashboard.png` — The /review page showing pending escalations with reason badges and live stats
+3. `order-detail.png` — Order detail page with items, timeline, and approve/reject actions
+4. `loading-list.png` — The /loading page showing dispatch list grouped by route
+5. `tally-voucher.png` — Generated Tally voucher XML ready for import
+
+To capture screenshots:
+1. Start local dev: `./scripts/run_local.sh`
+2. Send test orders via the roundtrip API or WhatsApp
+3. Open browser to http://localhost:8080/review (passcode: from env)
+4. Take screenshots of each view
+5. Save to this directory with the names above
