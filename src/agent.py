@@ -15,9 +15,6 @@ from collections.abc import Callable
 
 from google.adk.agents import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.integrations.firestore.firestore_session_service import (
-    FirestoreSessionService,
-)
 from google.adk.models import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -171,17 +168,30 @@ def build_agent(
     )
 
 
-def build_session_service():
+def build_session_service(firestore_client=None):
     """Build the durable session service.
 
     Production and the local Firestore emulator both use ADK's
     FirestoreSessionService; the AsyncClient picks up ``FIRESTORE_EMULATOR_HOST``
     automatically. ``SESSION_SERVICE=memory`` swaps in the in-memory service for
     fast local debugging (sessions do not survive a restart there).
+
+    ``firestore_client``, when supplied, is used as-is instead of creating a new
+    one. This lets the TurnExecutor create the client on its own event loop so
+    all gRPC channels are bound to the correct loop.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
-    return FirestoreSessionService(root_collection=settings.firestore_root_collection)
+    from google.adk.integrations.firestore.firestore_session_service import (
+        FirestoreSessionService,
+    )
+    from google.cloud import firestore as _firestore
+
+    client = firestore_client or _firestore.AsyncClient(database="(default)")
+    return FirestoreSessionService(
+        root_collection=settings.firestore_root_collection,
+        client=client,
+    )
 
 
 def build_runner(agent: Agent, session_service) -> Runner:

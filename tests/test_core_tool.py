@@ -497,6 +497,7 @@ async def test_prepare_voucher_tool_returns_error_for_a_not_approved_order():
             customer=None,
             items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
             confidence=0.9,
+            source_channel="phone",
         )
     )
     tool = build_prepare_voucher_tool(store, storage)

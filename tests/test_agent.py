@@ -66,13 +66,17 @@ def test_agent_defaults_to_configured_gemini_model():
 
 
 def test_session_service_factory_uses_firestore_by_default():
+    mock_target = (
+        "google.adk.integrations.firestore.firestore_session_service"
+        ".FirestoreSessionService"
+    )
     with mock.patch.object(
         agent_module.settings, "session_service", "firestore"
-    ), mock.patch.object(agent_module, "FirestoreSessionService") as firestore_service:
+    ), mock.patch(mock_target) as firestore_service:
         build_session_service()
-    firestore_service.assert_called_once_with(
-        root_collection=agent_module.settings.firestore_root_collection
-    )
+    call_kwargs = firestore_service.call_args
+    assert call_kwargs[1]["root_collection"] == agent_module.settings.firestore_root_collection
+    assert "client" in call_kwargs[1]
 
 
 def test_session_service_factory_memory_override():
