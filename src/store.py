@@ -9,6 +9,7 @@ logic.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from google.cloud import firestore
@@ -205,6 +206,84 @@ class FirestoreOrderStore:
         pending = self.client.collection("pending_approvals")
         async for doc in pending.where("order_id", "==", order_id).stream():
             await doc.reference.delete()
+
+
+class ProxiedFirestoreStore:
+    """Proxies OrderStore calls through a remote event loop.
+
+    Web routes run on uvicorn's event loop; the agent's ``FirestoreOrderStore``
+    has gRPC channels bound to the executor's event loop.  Creating a second
+    ``AsyncClient`` doesn't help because gRPC channels are shared via the
+    ``_channel_cache``.  This wrapper schedules every call onto the executor's
+    loop, where the gRPC client already works, and awaits the result.
+    """
+
+    def __init__(self, store: OrderStore, loop: asyncio.AbstractEventLoop) -> None:
+        self._store = store
+        self._loop = loop
+
+    def _proxy(self, coro):  # type: ignore[no-untyped-def]
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    async def get_config(self) -> dict:
+        return await self._proxy(self._store.get_config())
+
+    async def get_customers(self) -> list[seed_data.Customer]:
+        return await self._proxy(self._store.get_customers())
+
+    async def get_products(self) -> list[seed_data.Product]:
+        return await self._proxy(self._store.get_products())
+
+    async def get_delivery_locations(self) -> list[seed_data.DeliveryLocation]:
+        return await self._proxy(self._store.get_delivery_locations())
+
+    async def get_approvers(self) -> list[seed_data.Approver]:
+        return await self._proxy(self._store.get_approvers())
+
+    async def get_routes(self) -> list[seed_data.Route]:
+        return await self._proxy(self._store.get_routes())
+
+    async def create_order(self, order: Order) -> None:
+        return await self._proxy(self._store.create_order(order))
+
+    async def get_order(self, order_id: str) -> Order | None:
+        return await self._proxy(self._store.get_order(order_id))
+
+    async def update_order(self, order: Order) -> None:
+        return await self._proxy(self._store.update_order(order))
+
+    async def append_order_event(self, event: OrderEvent) -> None:
+        return await self._proxy(self._store.append_order_event(event))
+
+    async def list_orders(self, *, phone: str) -> list[Order]:
+        return await self._proxy(self._store.list_orders(phone=phone))
+
+    async def list_all_orders(self) -> list[Order]:
+        return await self._proxy(self._store.list_all_orders())
+
+    async def list_approved_orders(self) -> list[Order]:
+        return await self._proxy(self._store.list_approved_orders())
+
+    async def list_order_events(self, order_id: str) -> list[OrderEvent]:
+        return await self._proxy(self._store.list_order_events(order_id))
+
+    async def get_pending_approval(self, approver_phone: str) -> str | None:
+        return await self._proxy(self._store.get_pending_approval(approver_phone))
+
+    async def set_pending_approval(
+        self, approver_phone: str, order_id: str
+    ) -> None:
+        return await self._proxy(
+            self._store.set_pending_approval(approver_phone, order_id)
+        )
+
+    async def clear_pending_approval(self, approver_phone: str) -> None:
+        return await self._proxy(self._store.clear_pending_approval(approver_phone))
+
+    async def clear_pending_approvals_for_order(self, order_id: str) -> None:
+        return await self._proxy(
+            self._store.clear_pending_approvals_for_order(order_id)
+        )
 
 
 class InMemoryOrderStore:

@@ -516,19 +516,17 @@ def create_app(
         late_notifier = LateOrderNotifier(store, sender)
         storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
 
-        # Web routes run on uvicorn's event loop; agent turns run on the
-        # executor's dedicated loop.  A Firestore AsyncClient binds gRPC
-        # channels to the loop that first uses it, so the two loops need
-        # separate store instances.  We create the web-facing store here
-        # once and share it across review, loading, and cutoff routes.
-        web_store = store
-        from .store import FirestoreOrderStore as _FOS
+        # Web routes run on uvicorn's event loop; the agent's FirestoreOrderStore
+        # has gRPC channels bound to the executor's event loop.  Creating a
+        # second AsyncClient doesn't help (gRPC channels are shared via the
+        # _channel_cache).  Instead, proxy all web store calls through the
+        # executor's event loop where the gRPC client already works.
+        from .store import FirestoreOrderStore as _FOS, ProxiedFirestoreStore
 
-        if isinstance(store, _FOS):
-            try:
-                web_store = _FOS()
-            except Exception:
-                pass
+        if isinstance(store, _FOS) and runner._loop is not None:
+            web_store = ProxiedFirestoreStore(store, runner._loop)
+        else:
+            web_store = store
 
         _register_review_routes(
             app,
