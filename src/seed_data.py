@@ -206,6 +206,7 @@ DELIVERY_LOCATIONS: list[DeliveryLocation] = [
 APPROVERS: list[Approver] = [
     Approver(id="a_nikhil", phone="+919845000001"),
     Approver(id="a_priya", phone="+919845000002"),
+    Approver(id="a_joy", phone="+919637284924"),
 ]
 
 # Firestore-configurable thresholds (ADR-0002): business judgment lives in the

@@ -40,6 +40,7 @@ class Settings:
         self.webhook_rate_limit: int = int(
             _env("WEBHOOK_RATE_LIMIT_PER_SENDER", "30")
         )
+        self.service_url: str = _env("SERVICE_URL", "")
 
 
 settings = Settings()

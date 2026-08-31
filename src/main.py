@@ -23,12 +23,15 @@ def agent_session_factory(firestore_client):
     return agent, session_service
 
 
+_whatsapp_sender = MetaWhatsAppSender(
+    settings.meta_access_token, settings.meta_phone_number_id
+)
+
 app = create_app(
-    agent_session_factory=agent_session_factory,
+    agent=build_agent(store=store, whatsapp_sender=_whatsapp_sender),
+    session_service=build_session_service(),
     store=store,
-    whatsapp_sender=MetaWhatsAppSender(
-        settings.meta_access_token, settings.meta_phone_number_id
-    ),
+    whatsapp_sender=_whatsapp_sender,
 )
 
 if __name__ == "__main__":

@@ -980,6 +980,9 @@ def _voice_missing_check(outcome: CaseOutcome) -> list[str]:
         "voice order must never be clarified (ADR-0004)"
         if result.get("clarify")
         else "",
+        f"expected a non-empty transcription, got {order.transcription!r}"
+        if not order.transcription
+        else "",
     )
 
 
@@ -1109,6 +1112,9 @@ def _audio_decision_check(outcome: CaseOutcome) -> list[str]:
         # escalated) — never a clarify hold or a lost order.
         f"expected a committed voice order, got {order.status.value}"
         if not committed
+        else "",
+        f"expected a non-empty transcription, got {order.transcription!r}"
+        if not order.transcription
         else "",
     )
 

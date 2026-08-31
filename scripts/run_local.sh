@@ -14,6 +14,12 @@ PORT="${PORT:-8080}"
 EMULATOR_PORT="${EMULATOR_PORT:-8686}"
 PROJECT_ID="${PROJECT_ID:-valence-local}"
 
+# Activate the virtualenv if present
+if [ -f ".venv/bin/activate" ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+fi
+
 if ! command -v gcloud >/dev/null 2>&1; then
   echo "gcloud CLI not found — install it and the cloud-firestore-emulator component." >&2
   exit 1
@@ -69,8 +75,8 @@ if [[ "$up" != "true" ]]; then
 fi
 
 echo "==> Seeding Firestore"
-python -m src.seed_firestore
+python3 -m src.seed_firestore
 
 echo "==> Starting Valence on :$PORT (Ctrl+C to stop)"
 echo "    (Firestore emulator log: /tmp/firestore-emulator.log)"
-uvicorn src.main:app --host 0.0.0.0 --port "$PORT"
+python3 -m uvicorn src.main:app --host 0.0.0.0 --port "$PORT"

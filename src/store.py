@@ -50,6 +50,8 @@ class OrderStore(Protocol):
 
     async def get_pending_approval(self, approver_phone: str) -> str | None: ...
 
+    async def get_pending_approvals(self, approver_phone: str) -> list[str]: ...
+
     async def set_pending_approval(
         self, approver_phone: str, order_id: str
     ) -> None: ...
@@ -180,18 +182,25 @@ class FirestoreOrderStore:
         return events
 
     async def get_pending_approval(self, approver_phone: str) -> str | None:
-        db = self._client
-        doc = await db.collection("pending_approvals").document(
+        """Return the most recent pending order_id for backward compatibility."""
+        order_ids = await self.get_pending_approvals(approver_phone)
+        return order_ids[-1] if order_ids else None
+
+    async def get_pending_approvals(self, approver_phone: str) -> list[str]:
+        doc = await self._client.collection("pending_approvals").document(
             approver_phone
         ).get()
         data = doc.to_dict() or {}
-        return data.get("order_id")
+        return data.get("order_ids", [])
 
     async def set_pending_approval(self, approver_phone: str, order_id: str) -> None:
-        db = self._client
-        await db.collection("pending_approvals").document(
-            approver_phone
-        ).set({"approver_phone": approver_phone, "order_id": order_id})
+        doc_ref = self._client.collection("pending_approvals").document(approver_phone)
+        doc = await doc_ref.get()
+        data = doc.to_dict() or {}
+        order_ids = data.get("order_ids", [])
+        if order_id not in order_ids:
+            order_ids.append(order_id)
+        await doc_ref.set({"approver_phone": approver_phone, "order_ids": order_ids})
 
     async def clear_pending_approval(self, approver_phone: str) -> None:
         db = self._client
@@ -200,10 +209,16 @@ class FirestoreOrderStore:
         ).delete()
 
     async def clear_pending_approvals_for_order(self, order_id: str) -> None:
-        db = self._client
-        pending = db.collection("pending_approvals")
-        async for doc in pending.where("order_id", "==", order_id).stream():
-            await doc.reference.delete()
+        pending = self._client.collection("pending_approvals")
+        async for doc in pending.stream():
+            data = doc.to_dict() or {}
+            order_ids = data.get("order_ids", [])
+            if order_id in order_ids:
+                order_ids.remove(order_id)
+                if order_ids:
+                    await doc.reference.update({"order_ids": order_ids})
+                else:
+                    await doc.reference.delete()
 
 
 class InMemoryOrderStore:
@@ -233,7 +248,7 @@ class InMemoryOrderStore:
         self.routes = routes if routes is not None else seed_data.ROUTES
         self.orders: list[Order] = []
         self.events: list[OrderEvent] = []
-        self.pending_approvals: dict[str, str] = {}
+        self.pending_approvals: dict[str, list[str]] = {}
 
     async def get_config(self) -> dict:
         return dict(self.config)
@@ -287,15 +302,25 @@ class InMemoryOrderStore:
         return [event for event in self.events if event.order_id == order_id]
 
     async def get_pending_approval(self, approver_phone: str) -> str | None:
-        return self.pending_approvals.get(approver_phone)
+        """Return the most recent pending order_id for backward compatibility."""
+        order_ids = await self.get_pending_approvals(approver_phone)
+        return order_ids[-1] if order_ids else None
+
+    async def get_pending_approvals(self, approver_phone: str) -> list[str]:
+        return list(self.pending_approvals.get(approver_phone, []))
 
     async def set_pending_approval(self, approver_phone: str, order_id: str) -> None:
-        self.pending_approvals[approver_phone] = order_id
+        if approver_phone not in self.pending_approvals:
+            self.pending_approvals[approver_phone] = []
+        if order_id not in self.pending_approvals[approver_phone]:
+            self.pending_approvals[approver_phone].append(order_id)
 
     async def clear_pending_approval(self, approver_phone: str) -> None:
         self.pending_approvals.pop(approver_phone, None)
 
     async def clear_pending_approvals_for_order(self, order_id: str) -> None:
-        for approver_phone, pending in list(self.pending_approvals.items()):
-            if pending == order_id:
-                self.pending_approvals.pop(approver_phone, None)
+        for approver_phone, order_ids in list(self.pending_approvals.items()):
+            if order_id in order_ids:
+                order_ids.remove(order_id)
+                if not order_ids:
+                    self.pending_approvals.pop(approver_phone, None)

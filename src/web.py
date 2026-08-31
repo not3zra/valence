@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from datetime import date, time
 from urllib.parse import quote, urlparse
@@ -427,11 +428,37 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        runner.run_turn(
+        reply = runner.run_turn(
             sender_id=caller,
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
         )
+        print(
+            f"[voice_ingest] caller={caller} audio_bytes={len(audio)} "
+            f"reply={reply[:200] if reply else '(empty)'}",
+            flush=True,
+        )
+        return Response(content="OK", media_type="text/plain")
+
+    @app.post("/api/admin/send-message")
+    async def admin_send_message(request: Request) -> Response:
+        """Send a WhatsApp message to any number (admin only, for testing)."""
+        expected = f"Bearer {ingest_token}"
+        if not ingest_token:
+            return Response(status_code=503, detail="not configured")
+        if not hmac.compare_digest(
+            request.headers.get("Authorization", ""), expected
+        ):
+            return Response(status_code=401)
+        try:
+            payload = json.loads(await request.body())
+        except (ValueError, TypeError):
+            return Response(status_code=400)
+        to = payload.get("to")
+        text = payload.get("text")
+        if not to or not text:
+            return Response(status_code=400, detail="missing 'to' or 'text'")
+        sender.send(to, text)
         return Response(content="OK", media_type="text/plain")
 
     if store is not None:
