@@ -73,6 +73,12 @@ class FirestoreOrderStore:
     @property
     def client(self) -> firestore.AsyncClient:
         if self._client is None:
+            try:
+                import google.api_core.grpc_helpers_async as _gh
+                if hasattr(_gh, "_channel_cache"):
+                    _gh._channel_cache.clear()
+            except Exception:
+                pass
             self._client = firestore.AsyncClient()
         return self._client
 
