@@ -211,6 +211,7 @@ def build_approve_order_tool(
     core: OrderProcessingCore,
     store,
     late_notifier: LateOrderNotifier | None = None,
+    approval_notifier: ApprovalNotifier | None = None,
 ) -> FunctionTool:
     """Wrap the human approval path as an ``approve_order`` ADK tool.
 
@@ -228,16 +229,22 @@ def build_approve_order_tool(
     after the daily cutoff — the same dispatch-channel heads-up the intake path
     fires for auto-approved late orders (issue #9), so a late order approved by
     an approver notifies the yard too.
+
+    ``approval_notifier``, when supplied, sends a WhatsApp message to the
+    customer with the approve/reject decision.
     """
 
     async def approve_order(
         approved: bool,
+        order_id: str | None = None,
         tool_context: ToolContext | None = None,
     ) -> dict:
         """Apply an approver's yes/no decision to the order awaiting them.
 
         Args:
             approved: True to approve the order, False to reject it.
+            order_id: The order to decide on. Required when multiple orders
+                are pending; when only one is pending it is used automatically.
             tool_context: ADK invocation context; the approver's phone is the
                 caller's session identity, never anything from the message.
 
@@ -248,9 +255,28 @@ def build_approve_order_tool(
         if not phone:
             return {"error": "no verified sender identity is available"}
 
-        order_id = await store.get_pending_approval(phone)
-        if order_id is None:
+        pending_ids = await store.get_pending_approvals_list(phone)
+        if not pending_ids:
             return {"error": f"{phone} has no order awaiting approval"}
+
+        if order_id is not None:
+            if order_id not in pending_ids:
+                return {
+                    "error": f"{order_id} is not pending for {phone}",
+                    "pending_order_ids": pending_ids,
+                }
+        elif len(pending_ids) == 1:
+            order_id = pending_ids[0]
+        else:
+            return {
+                "error": "multiple_orders",
+                "message": (
+                    "You have multiple pending orders. "
+                    "Please specify the order ID to approve or reject "
+                    "(e.g. CONFIRM ord_xxx or REJECT ord_xxx)."
+                ),
+                "pending_order_ids": pending_ids,
+            }
 
         try:
             decision = await core.approve_order(
@@ -267,6 +293,17 @@ def build_approve_order_tool(
             and decision.late
         ):
             await late_notifier.on_order_late(decision.order_id)
+
+        # Notify the customer of the decision.
+        if approval_notifier is not None:
+            order = await store.get_order(decision.order_id)
+            if order is not None:
+                await approval_notifier.on_order_decided(
+                    decision.order_id,
+                    approved=decision.approved,
+                    customer_phone=order.phone,
+                    customer_name=order.customer,
+                )
 
         return decision.to_dict()
 

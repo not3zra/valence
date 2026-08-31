@@ -142,7 +142,9 @@ def build_agent(
         )
         tools.append(
             build_approve_order_tool(
-                core, store, late_notifier=late_notifier
+                core, store,
+                late_notifier=late_notifier,
+                approval_notifier=notifier,
             )
         )
         tools.append(
