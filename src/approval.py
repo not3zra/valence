@@ -180,6 +180,11 @@ async def _build_list_pending_message(
         lines.append(f"   - *Location:* {location}")
         lines.append(f"   - *Items:* {items_text}")
         lines.append(f"   - *Value:* {value}")
+        if order.escalation_reasons:
+            reasons = ", ".join(
+                r.replace("_", " ").title() for r in order.escalation_reasons
+            )
+            lines.append(f"   - *Reason:* {reasons}")
         if service_url:
             lines.append(
                 f"   - *Review:* {service_url.rstrip('/')}/review/orders/{oid}"

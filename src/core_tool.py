@@ -288,6 +288,7 @@ def build_approve_order_tool(
                     "delivery_location": o.delivery_location,
                     "items": items,
                     "draft_value_inr": o.draft_value_inr,
+                    "escalation_reasons": o.escalation_reasons,
                 })
             return {
                 "error": "multiple_orders",
@@ -470,6 +471,7 @@ def build_list_pending_approvals_tool(store) -> FunctionTool:
                 "delivery_location": o.delivery_location,
                 "items": items,
                 "draft_value_inr": o.draft_value_inr,
+                "escalation_reasons": o.escalation_reasons,
             })
         return {
             "pending_orders": enriched,

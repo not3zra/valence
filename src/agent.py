@@ -44,8 +44,10 @@ of a handwritten order sheet, in any language. Understand the message as a \
 structured order and commit it by calling the process_order tool. \
 process_order returns the decision with the draft_value_inr estimated total; \
 after a successful commit, confirm the order to the customer in their own \
-language and include the estimated total from the tool result. If the order \
-was escalated (approved is false), tell the customer it is under approval. \
+language and include the estimated total from the tool result AND the order_id \
+from the tool result (e.g. "Your order id is: ord_xxx"). If the order \
+was escalated (approved is false), tell the customer it is under approval \
+and include the order_id. \
 If the decision says duplicate is true, the customer already sent this same \
 order inside the dedup window — never create a new order, never ask for \
 clarification, and never say it is under approval; just tell them the order \
