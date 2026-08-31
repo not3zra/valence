@@ -515,17 +515,38 @@ def create_app(
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
         storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
+
+        # Web routes run on uvicorn's event loop; agent turns run on the
+        # executor's dedicated loop.  A Firestore AsyncClient binds gRPC
+        # channels to the loop that first uses it, so the two loops need
+        # separate store instances.  We create the web-facing store here
+        # once and share it across review, loading, and cutoff routes.
+        web_store = store
+        from .store import FirestoreOrderStore as _FOS
+
+        if isinstance(store, _FOS):
+            try:
+                from google.cloud import firestore as _firestore
+
+                web_store = _FOS(
+                    client=_firestore.AsyncClient(database="(default)")
+                )
+            except Exception:
+                pass
+
         _register_review_routes(
             app,
-            store,
+            web_store,
             passcode,
             passcode_salt,
             cookie_secure,
             late_notifier,
             storage,
         )
-        _register_loading_routes(app, store, passcode, passcode_salt, cookie_secure)
-        _register_cutoff_endpoint(app, store)
+        _register_loading_routes(
+            app, web_store, passcode, passcode_salt, cookie_secure
+        )
+        _register_cutoff_endpoint(app, web_store)
 
     return app
 
@@ -669,41 +690,18 @@ def _register_review_routes(
         if not await _authorized(request):
             raise HTTPException(status_code=401)
 
-    def _make_review_store() -> FirestoreOrderStore | None:
-        """Create a separate Firestore client for the review web views.
-
-        The executor loop owns one ``AsyncClient`` for agent turns; the
-        uvicorn event loop needs its own so gRPC channels are never shared
-        across event loops.
-        """
-        from .store import FirestoreOrderStore as _FOS
-
-        if not isinstance(store, _FOS):
-            return None
-        try:
-            from google.cloud import firestore as _firestore
-            return _FOS(
-                client=_firestore.AsyncClient(database="(default)")
-            )
-        except Exception:
-            return None
-
-    review_store = _make_review_store()
-
     async def _orders() -> list[Order]:
-        target = review_store or store
-        if target is None:
+        if store is None:
             return []
-        orders = await target.list_all_orders()
+        orders = await store.list_all_orders()
         orders.sort(key=lambda o: o.created_at, reverse=True)
         return orders
 
     async def _searchable_text(order: Order) -> str:
         order_id = order.order_id or ""
-        target = review_store or store
-        if target is None:
+        if store is None:
             return ""
-        events = await target.list_order_events(order_id)
+        events = await store.list_order_events(order_id)
         fields = " ".join(
             [
                 order_id,
@@ -717,7 +715,7 @@ def _register_review_routes(
         return fields.lower()
 
     async def _stats() -> dict[str, int]:
-        target = review_store or store
+        target = store
         if target is None:
             return {}
         config = await target.get_config()
@@ -762,10 +760,10 @@ def _register_review_routes(
         notice: str | None = None,
     ):
         await _require(request)
-        order = await (review_store or store).get_order(order_id)
+        order = await (store).get_order(order_id)
         if order is None:
             raise HTTPException(status_code=404)
-        events = await (review_store or store).list_order_events(order_id)
+        events = await (store).list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
         return review.order_page(order, events, message=message, notice=notice)
 
@@ -774,11 +772,11 @@ def _register_review_routes(
         request: Request, order_id: str, message: str | None = None
     ):
         await _require(request)
-        order = await (review_store or store).get_order(order_id)
+        order = await (store).get_order(order_id)
         if order is None:
             raise HTTPException(status_code=404)
-        customers = await (review_store or store).get_customers()
-        products = await (review_store or store).get_products()
+        customers = await (store).get_customers()
+        products = await (store).get_products()
         return review.edit_page(order, customers, products, message=message)
 
     @app.post("/review/orders/{order_id}/edit")
@@ -791,7 +789,7 @@ def _register_review_routes(
         """
         await _require(request)
         _same_origin(request)
-        if await (review_store or store).get_order(order_id) is None:
+        if await (store).get_order(order_id) is None:
             raise HTTPException(status_code=404)
         form = await request.form()
         try:
