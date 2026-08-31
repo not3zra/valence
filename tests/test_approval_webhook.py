@@ -137,7 +137,7 @@ def test_escalation_notifies_approvers_then_approver_confirm_approves():
         and e.order_id == escalated.order_id
         for e in store.events
     )
-    assert store.pending_approvals[APPROVER_PHONE] == escalated.order_id
+    assert escalated.order_id in store.pending_approvals[APPROVER_PHONE]
 
     # The approver replies "ok" -> the agent parses a confirm verb and the
     # approve tool moves the order through the core.
@@ -186,7 +186,7 @@ def test_one_approvers_decision_clears_pending_for_every_other_approver():
     store = _escalate(sender)
     escalated = _order(store)
     second_approver = "+919845000002"  # another allowlisted approver
-    assert store.pending_approvals[second_approver] == escalated.order_id
+    assert escalated.order_id in store.pending_approvals[second_approver]
 
     # The first approver decides; the second's stale pending entry is cleared
     # too, so a later reply from them can never act on the decided order.
