@@ -99,7 +99,8 @@ async def test_mark_billed_rejects_a_pending_review_order():
             phone="+919999999999",
             customer=None,
             items=[OrderItem(product="sulfuric acid", quantity=2000, unit="kg")],
-            confidence=0.9,
+            delivery_location="Peenya Industrial Area",
+            confidence=0.1,
         )
     )
     assert not decision.approved

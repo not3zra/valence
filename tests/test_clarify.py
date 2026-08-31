@@ -95,13 +95,17 @@ async def test_voice_order_never_clarifies(core, store):
     assert store.orders[0].status is OrderStatus.PENDING_REVIEW
 
 
-async def test_unknown_customer_with_missing_field_escalates_not_clarifies(core, store):
+async def test_unknown_customer_with_missing_field_clarifies(core, store):
+    """New design: unknown customer is our internal concern — still ask for the
+    missing field first, then escalate the complete order for human review."""
     decision = await core.process(
         _order(phone="+919999999999", customer=None, delivery_location=None)
     )
-    assert decision.clarify is False
-    assert EscalationReason.UNKNOWN_CUSTOMER.value in decision.escalation_reasons
-    assert store.orders
+    assert decision.clarify is True
+    assert "delivery_location" in decision.missing_fields
+    # Order is NOT persisted yet — held in session state until the customer
+    # provides the missing field.
+    assert not store.orders
 
 
 async def test_low_confidence_with_missing_field_escalates_not_clarifies(core):
