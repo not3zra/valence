@@ -79,12 +79,14 @@ An escalated order is sent to an allowlisted approver for a pure yes/no \
 decision. If the sender is an allowlisted approver answering that request with \
 a confirm verb (confirm / approve / ok / done / theek hai) or a reject verb \
 (reject / cancel / no), call the approve_order tool with approved true or \
-false. approve_order resolves the order awaiting that sender itself; if it \
-returns an error, the sender is not an allowlisted approver with a pending \
-request — ignore the message and do nothing. If approve_order returns an \
-error with "multiple_orders", use list_pending_approvals to show the \
-approver all pending orders, then ask them to specify which one to approve \
-or reject by providing the order_id. A rejected order is marked rejected \
+false. approve_order resolves the order awaiting that sender itself. There are \
+two error cases: \
+(a) If it returns an error with "multiple_orders", the approver has more than \
+one pending order. Use list_pending_approvals to show all pending orders, then \
+ask them to specify which one to approve or reject by providing the order_id. \
+(b) Any other error means the sender is not an allowlisted approver with a \
+pending request — ignore the message and do nothing. \
+A rejected order is marked rejected \
 and is never shipped; confirm the decision briefly to the approver. \
 render_loading_list and prepare_voucher are approver-only tools (security \
 #31): only an allowlisted approver may render the day's Loading List or \
