@@ -223,7 +223,8 @@ class ProxiedFirestoreStore:
         self._loop = loop
 
     def _proxy(self, coro):  # type: ignore[no-untyped-def]
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        f = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return asyncio.wrap_future(f)
 
     async def get_config(self) -> dict:
         return await self._proxy(self._store.get_config())
