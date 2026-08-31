@@ -14,21 +14,38 @@ from .store import OrderStore
 from .voucher import VoucherStore
 
 
-def _build_reply_hint(decision) -> str:
-    """Generate a reply hint telling the agent exactly what to say."""
+def _build_reply_hint(decision, config: dict | None = None) -> str:
+    """Build the exact reply the agent should relay to the customer."""
     if decision.duplicate:
-        return "ALREADY_RECEIVED: Tell the customer this order was already received."
+        return "This order has already been received. No need to place it again."
     if decision.unavailable_items:
         items = ", ".join(decision.unavailable_items)
-        return f"UNAVAILABLE: Tell the customer {items} is not available."
+        return f"Sorry, {items} is not available in our catalog and cannot be ordered."
     if decision.clarify:
         fields = ", ".join(decision.missing_fields)
-        return f"CLARIFY: Ask the customer for {fields}."
+        return f"Could you please provide the {fields}? The order is incomplete."
     if decision.approved:
         total = f"{decision.draft_value_inr:.2f}"
-        return f"APPROVED: Confirm the order. Estimated total is INR {total}."
-    # Not approved — under review
-    return "PENDING_REVIEW: Tell the customer the order is under review and awaiting approval."
+        return f"Your order has been confirmed. Estimated total is INR {total}."
+    # Not approved — check escalation reasons
+    escalation = set(decision.escalation_reasons)
+    contact = (config or {}).get("registration_contact", "+919845000001")
+    # Unknown/unverified customer always gets the registration message
+    if "unknown_customer" in escalation or "unverified_number" in escalation:
+        return (
+            "It looks like you're ordering for the first time. "
+            "Please contact our staff on "
+            f"{contact} to register as a customer. Thank you."
+        )
+    # Known customer but unknown location — rejected
+    if "uncataloged_location" in escalation:
+        return (
+            "Sorry, we do not deliver to that location. "
+            "Please contact our staff on "
+            f"{contact} for assistance. Thank you."
+        )
+    # Other escalations — under review
+    return "Your order has been received and is under review. We will get back to you shortly."
 
 # Session-state key that carries a partial order + clarify turn count across the
 # durable per-sender session (issue #5). Held in ADK session state, so a Cloud
@@ -149,6 +166,7 @@ def build_process_order_tool(
         # customer never answered the clarifying question. The abandoned
         # partial escalates as it was held — the fresh message is handled on
         # its own below.
+        config = await core._store.get_config()
         if pending is not None:
             policy = await core.clarify_policy()
             try:
@@ -189,8 +207,8 @@ def build_process_order_tool(
                     "turn": turn,
                     "created_at": utcnow(),
                 }
-                result = decision.to_dict()
-                result["reply_hint"] = _build_reply_hint(decision)
+                result = {"reply_hint": _build_reply_hint(decision, config)}
+                result.update(decision.to_dict())
                 return result
 
         # The order committed (approved / escalated / duplicate): a fresh order,
@@ -212,10 +230,41 @@ def build_process_order_tool(
             await late_notifier.on_order_late(decision.order_id)
 
         result = decision.to_dict()
-        result["reply_hint"] = _build_reply_hint(decision)
+        result["reply_hint"] = _build_reply_hint(decision, config)
         return result
 
     return FunctionTool(process_order)
+
+
+def build_get_delivery_routes_tool(store) -> FunctionTool:
+    """Return available delivery routes and locations for the agent to check."""
+
+    async def get_delivery_routes() -> dict:
+        """Get available delivery routes and locations.
+
+        Returns the list of service areas the company delivers to.
+        The agent MUST check this before confirming an order — if the
+        customer's delivery location is not in this list, the order
+        cannot be auto-approved.
+        """
+        routes = await store.get_routes()
+        locations = await store.get_delivery_locations()
+        route_map = {r.id: r.name for r in routes}
+        loc_list = [
+            {
+                "name": loc.name,
+                "address": loc.address,
+                "state": loc.state,
+                "route": route_map.get(loc.route_id, loc.route_id),
+            }
+            for loc in locations
+        ]
+        return {
+            "routes": [r.name for r in routes],
+            "locations": loc_list,
+        }
+
+    return FunctionTool(get_delivery_routes)
 
 
 def build_approve_order_tool(
