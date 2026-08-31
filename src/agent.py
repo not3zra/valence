@@ -14,9 +14,6 @@ from collections.abc import Callable
 
 from google.adk.agents import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.integrations.firestore.firestore_session_service import (
-    FirestoreSessionService,
-)
 from google.adk.models import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -41,16 +38,15 @@ AGENT_INSTRUCTION = """You are Valence, the order intake agent for a chemical \
 distributor. A customer sends an order over WhatsApp, a phone call, or a photo \
 of a handwritten order sheet, in any language. Understand the message as a \
 structured order and commit it by calling the process_order tool. \
-process_order returns the decision with the draft_value_inr estimated total; \
-after a successful commit, confirm the order to the customer in their own \
-language and include the estimated total from the tool result. If the order \
-was escalated (approved is false), tell the customer it is under approval. \
-If the decision says duplicate is true, the customer already sent this same \
-order inside the dedup window — never create a new order, never ask for \
-clarification, and never say it is under approval; just tell them the order \
-was already received. \
-If the decision says clarify is true, the order is missing a field the \
-customer can supply — never confirm it and never say it is under approval. \
+
+After calling process_order, you MUST read the "reply_hint" field in the tool \
+result and follow it EXACTLY — it tells you what to say to the customer. \
+Never contradict the reply_hint. For example: \
+- "APPROVED: ..." means confirm the order and include the estimated total. \
+- "PENDING_REVIEW: ..." means tell the customer the order is under review. \
+- "CLARIFY: ..." means ask for the missing field. \
+- "UNAVAILABLE: ..." means tell the customer the item is not available. \
+- "ALREADY_RECEIVED: ..." means tell them the order was already received. \
 The lines the customer already sent are kept, and each reply is merged into \
 them, so ask — in the customer's own language — only for exactly the \
 missing_fields listed (usually items or delivery_location) and never make \
@@ -156,17 +152,30 @@ def build_agent(
     )
 
 
-def build_session_service():
+def build_session_service(firestore_client=None):
     """Build the durable session service.
 
     Production and the local Firestore emulator both use ADK's
     FirestoreSessionService; the AsyncClient picks up ``FIRESTORE_EMULATOR_HOST``
     automatically. ``SESSION_SERVICE=memory`` swaps in the in-memory service for
     fast local debugging (sessions do not survive a restart there).
+
+    ``firestore_client``, when supplied, is used as-is instead of creating a new
+    one. This lets the TurnExecutor create the client on its own event loop so
+    all gRPC channels are bound to the correct loop.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
-    return FirestoreSessionService(root_collection=settings.firestore_root_collection)
+    from google.adk.integrations.firestore.firestore_session_service import (
+        FirestoreSessionService,
+    )
+    from google.cloud import firestore as _firestore
+
+    client = firestore_client or _firestore.AsyncClient(database="(default)")
+    return FirestoreSessionService(
+        root_collection=settings.firestore_root_collection,
+        client=client,
+    )
 
 
 def build_runner(agent: Agent, session_service) -> Runner:
