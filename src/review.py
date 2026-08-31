@@ -198,29 +198,36 @@ def queue_page(orders: list[Order], stats: dict[str, int], q: str | None = None)
     return page("Review", body)
 
 
-def _voucher_card(order: Order) -> str:
+def _voucher_card(order: Order, tally_push_url: str = "") -> str:
     """The billing-voucher actions on an order detail (issue #8).
 
     An approved order can have its Tally voucher prepared from here (the same
     seam the ADK tool uses); a prepared voucher is downloadable for manual Tally
-    import and can be marked billed. Nothing is offered for a pending or
-    rejected order.
+    import, can be pushed directly to Tally if configured, and can be marked
+    billed. Nothing is offered for a pending or rejected order.
     """
     order_id = _escaped(order.order_id)
     if order.voucher_id:
         voucher_id = _escaped(order.voucher_id)
         mark_billed = ""
+        push_tally = ""
         if order.status in (OrderStatus.APPROVED, OrderStatus.DISPATCHED):
             mark_billed = (
                 f"<form class='inline' method='post' "
                 f"action='/review/orders/{order_id}/billed'>"
                 f"<button class='btn' type='submit'>Mark billed</button></form>"
             )
+        if tally_push_url:
+            push_tally = (
+                f"<form class='inline' method='post' "
+                f"action='/review/orders/{order_id}/push-to-tally'>"
+                f"<button class='approve' type='submit'>Push to Tally</button></form>"
+            )
         body = (
             f"<p style='margin:0 0 var(--space-3)'>Voucher "
             f"<strong>{voucher_id}</strong> is ready.</p>"
             f"<a class='btn' href='/review/orders/{order_id}/voucher'>"
-            f"Download voucher XML</a> {mark_billed}"
+            f"Download voucher XML</a> {push_tally} {mark_billed}"
         )
     elif order.status is OrderStatus.APPROVED:
         body = (
@@ -241,6 +248,7 @@ def order_page(
     events: list[OrderEvent],
     message: str | None = None,
     notice: str | None = None,
+    tally_push_url: str = "",
 ) -> str:
     """Order detail: fields, items, the Order Event timeline, and decision."""
     err = f"<div class='error'>{escape(message)}</div>" if message else ""
@@ -300,7 +308,7 @@ def order_page(
         f"<table class='timeline'>"
         f"<tr><th style='width:50%'>Product</th><th style='width:30%'>Quantity</th>"
         f"<th style='width:20%'>Rate (INR)</th></tr>{items}</table></div>"
-        f"{_voucher_card(order)}"
+        f"{_voucher_card(order, tally_push_url)}"
         f"<div class='card'><h2>Order Event timeline</h2>"
         f"<table class='timeline'>{timeline}</table></div>"
         f"<div class='card'><h2>Decision</h2><div style='display:flex;"
