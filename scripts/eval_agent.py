@@ -9,10 +9,10 @@ each case's decision/tool outcome from the store plus the recorded tool trace.
 Run with an API key, or via Vertex AI (ADC) instead:
 
     # The full set (Vertex AI):
-    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=<your-project> \\
         GOOGLE_CLOUD_LOCATION=asia-southeast1 python scripts/eval_agent.py
     # Safety cases only:
-    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=<your-project> \\
         GOOGLE_CLOUD_LOCATION=asia-southeast1 \\
         python scripts/eval_agent.py --category safety
     # Or a specific case via API key:

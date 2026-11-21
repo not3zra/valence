@@ -250,6 +250,8 @@ def test_mock_whatsapp_sender_records_outbound_messages():
 
 def _capturing_open(captured: dict):
     class FakeResponse:
+        status = 200
+
         def __enter__(self):
             return self
 

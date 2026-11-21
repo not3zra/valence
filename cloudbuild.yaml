@@ -1,3 +1,4 @@
+# LEGACY: GCP Cloud Build pipeline for the retired deployment.
 # Build + deploy the service to Cloud Run. Wired as a build trigger on `main`
 # by infra/provision.sh (auto-deploy on push to main).
 steps:

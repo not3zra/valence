@@ -21,7 +21,7 @@ from src.web import _passcode_digest, create_app
 
 from .fakes import FakeEchoLlm
 
-PASSCODE = "valence-demo"
+PASSCODE = "test-passcode"
 PASSCODE_SALT = "test-salt"
 ORIGIN = "http://testserver"
 

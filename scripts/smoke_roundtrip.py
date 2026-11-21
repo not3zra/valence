@@ -6,7 +6,7 @@ so set the Vertex env vars (or rely on ``./scripts/run_local.sh`` which exports
 them) and run ``gcloud auth application-default login`` once.
 
 Usage:
-    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=valence-505412 \\
+    GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=<your-project> \\
         GOOGLE_CLOUD_LOCATION=asia-southeast1 \\
         python scripts/smoke_roundtrip.py \\
         --sender +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"

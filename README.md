@@ -158,9 +158,13 @@ These instructions let you run the full project locally or deploy it to Google C
 | **Firestore emulator** | — | `gcloud components install cloud-firestore-emulator` |
 | **Git** | — | [git-scm.com](https://git-scm.com/) |
 
+> **Legacy:** Options A, C, and D below describe the retired GCP deployment.
+> The project is expired and the service is offline; these sections are kept for
+> reference until archival.
+
 ### Option A: Run Locally (Firestore Emulator + Vertex AI)
 
-This is the fastest way to test the agent. The Firestore emulator runs in-memory locally; Gemini runs through Vertex AI on the shared GCP project.
+This is the fastest way to test the agent. The Firestore emulator runs in-memory locally; Gemini runs through Vertex AI on your GCP project, or via `GOOGLE_API_KEY`.
 
 #### Step 1: Clone and install dependencies
 
@@ -181,14 +185,18 @@ pip install -e ".[dev]"
 gcloud components install cloud-firestore-emulator
 ```
 
-#### Step 3: Authenticate to Google Cloud
+#### Step 3: Configure model access
 
-You need access to the `valence-505412` project for Vertex AI (Gemini model). Ask the project owner to add your Google account.
+Set `GOOGLE_API_KEY` for Gemini. To use Vertex AI instead, set the Vertex variables and authenticate with `gcloud`:
 
 ```bash
-gcloud auth login
+export GOOGLE_API_KEY=<your-api-key>
+
+# Or, for Vertex AI:
+export GOOGLE_GENAI_USE_VERTEXAI=true
+export PROJECT_ID=<your-project>
+export GOOGLE_CLOUD_LOCATION=<your-region>
 gcloud auth application-default login
-gcloud config set project valence-505412
 ```
 
 #### Step 4: Start the service
@@ -198,9 +206,10 @@ gcloud config set project valence-505412
 ```
 
 This script:
-1. Starts the Firestore emulator on port 8686
-2. Seeds Firestore with customers, products, routes, approvers, and thresholds
-3. Starts uvicorn on port 8080
+1. Generates and prints local auth tokens and a review passcode
+2. Starts the Firestore emulator on port 8686
+3. Seeds Firestore with customers, products, routes, approvers, and thresholds
+4. Starts uvicorn on port 8080
 
 The service is now live at `http://localhost:8080`.
 
@@ -210,14 +219,14 @@ The service is now live at `http://localhost:8080`.
 
 ```bash
 curl -s localhost:8080/api/roundtrip \
-  -H 'authorization: Bearer local-dev-roundtrip-token' \
+  -H 'authorization: Bearer <roundtrip-token>' \
   -H 'content-type: application/json' \
   -d '{"sender_id": "+919812345001", "message": "Namaste, 2 drums sulfuric acid chahiye"}'
 ```
 
 **Open the review dashboard:**
 
-Navigate to `http://localhost:8080/review` in your browser. Enter the passcode: `valence-demo`
+Navigate to `http://localhost:8080/review` in your browser. Enter the passcode printed by `run_local.sh`.
 
 **Open the loading list:**
 
@@ -230,9 +239,11 @@ If you don't have GCP project access, use the in-memory store. The agent will st
 ```bash
 # Set environment variables
 export SESSION_SERVICE=memory
-export ROUNDTRIP_TOKEN=local-dev-roundtrip-token
-export WEB_PASSCODE=valence-demo
-export WEB_PASSCODE_SALT=local-dev-salt
+export ROUNDTRIP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+export WEB_PASSCODE="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+export WEB_PASSCODE_SALT="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+export GOOGLE_API_KEY=<your-api-key>
+echo "Review passcode: $WEB_PASSCODE"
 
 # Start the service directly
 uvicorn src.main:app --host 0.0.0.0 --port 8080
@@ -240,11 +251,13 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 ### Option C: Deploy to Google Cloud Run
 
+> **Legacy:** The GCP deployment path is retired; kept for reference until archival.
+
 #### Step 1: Set up secrets
 
 ```bash
 # Set your project
-gcloud config set project valence-505412
+gcloud config set project <your-project>
 
 # Create secrets (replace with your actual values)
 echo -n "your-meta-app-secret" | gcloud secrets create META_APP_SECRET --data-file=-
@@ -264,9 +277,9 @@ echo -n "your-cutoff-secret" | gcloud secrets create CUTOFF_SECRET --data-file=-
 gcloud run deploy valence \
   --source . \
   --region=us-central1 \
-  --project=valence-505412 \
+  --project=<your-project> \
   --allow-unauthenticated \
-  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=valence-505412,GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=valence-505412-vouchers" \
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<your-project>,GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=<your-project>-vouchers" \
   --set-secrets="META_APP_SECRET=META_APP_SECRET:latest,META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest,ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest,VOICE_INGEST_TOKEN=VOICE_INGEST_TOKEN:latest,WEB_PASSCODE=WEB_PASSCODE:latest,WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest"
 ```
 
@@ -274,23 +287,25 @@ gcloud run deploy valence \
 
 ```bash
 # Get the latest revision name
-REVISION=$(gcloud run revisions list --service=valence --region=us-central1 --project=valence-505412 --limit=1 --format="value(metadata.name)")
+REVISION=$(gcloud run revisions list --service=valence --region=us-central1 --project=<your-project> --limit=1 --format="value(metadata.name)")
 
 # Route all traffic to it
 gcloud run services update-traffic valence \
   --region=us-central1 \
-  --project=valence-505412 \
+  --project=<your-project> \
   --to-revisions=$REVISION=100
 ```
 
 ### Option D: Full Provisioning (One-Shot)
+
+> **Legacy:** The GCP provisioning path is retired; kept for reference until archival.
 
 For a fresh GCP project, the provision script creates everything:
 
 ```bash
 # Create .env.provision with your values
 cat > .env.provision << 'EOF'
-PROJECT_ID=valence-505412
+PROJECT_ID=<your-project>
 META_APP_SECRET=your-secret
 META_VERIFY_TOKEN=your-token
 META_ACCESS_TOKEN=your-token
@@ -331,7 +346,7 @@ Run the eval harness against the real Gemini model:
 ```bash
 # Via Vertex AI (recommended)
 GOOGLE_GENAI_USE_VERTEXAI=true \
-GOOGLE_CLOUD_PROJECT=valence-505412 \
+GOOGLE_CLOUD_PROJECT=<your-project> \
 GOOGLE_CLOUD_LOCATION=asia-southeast1 \
 python scripts/eval_agent.py
 
@@ -434,7 +449,7 @@ Debug probe — drive the agent directly without WhatsApp.
 
 ```bash
 curl -X POST http://localhost:8080/api/roundtrip \
-  -H "Authorization: Bearer local-dev-roundtrip-token" \
+  -H "Authorization: Bearer <roundtrip-token>" \
   -H "Content-Type: application/json" \
   -d '{"sender_id": "+919812345001", "message": "2 drums sulfuric acid"}'
 ```
@@ -445,7 +460,7 @@ Company-recorded call ingestion.
 
 ```bash
 curl -X POST http://localhost:8080/api/voice/ingest \
-  -H "Authorization: Bearer local-dev-ingest-token" \
+  -H "Authorization: Bearer <voice-ingest-token>" \
   -H "Content-Type: application/json" \
   -d '{"caller": "+919812345001", "audio_base64": "<base64>", "mime_type": "audio/wav"}'
 ```

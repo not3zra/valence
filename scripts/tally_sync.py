@@ -9,22 +9,35 @@ Usage:
     python scripts/tally_sync.py
 
 Environment variables:
-    VALENCE_SERVICE_URL  - The Cloud Run service URL
-    VALENCE_WEB_PASSCODE - The web passcode for authentication
+    VALENCE_SERVICE_URL  - The Valence service URL (required)
+    VALENCE_WEB_PASSCODE - The web passcode for authentication (required)
     TALLY_URL            - Your local Tally import URL (default: http://localhost:9000)
 """
 
 import json
 import os
-import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
+
 # Config
-SERVICE_URL = os.environ.get("VALENCE_SERVICE_URL", "https://valence-371317348606.us-central1.run.app")
-WEB_PASSCODE = os.environ.get("VALENCE_WEB_PASSCODE", "vlnc-49e90d31")
+def _required_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"{name} must be set")
+    return value
+
+
+def _require_http_url(name: str, value: str) -> str:
+    if not value.startswith(("http://", "https://")):
+        raise SystemExit(f"{name} must start with http:// or https://")
+    return value
+
+
+SERVICE_URL = ""
+WEB_PASSCODE = ""
 TALLY_URL = os.environ.get("TALLY_URL", "http://localhost:9000")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 STATE_FILE = Path(__file__).parent / ".tally_sync_state.json"
@@ -73,7 +86,8 @@ def push_to_tally(xml: str) -> dict:
             body = resp.read().decode(errors="replace")
             return {"ok": True, "status": resp.status, "response": body[:500]}
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "error": f"HTTP {exc.code}: {exc.read().decode(errors='replace')[:200]}"}
+        detail = exc.read().decode(errors="replace")[:200]
+        return {"ok": False, "error": f"HTTP {exc.code}: {detail}"}
     except (OSError, urllib.error.URLError) as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -95,12 +109,19 @@ def poll():
 
     for v in new_vouchers:
         order_id = v["order_id"]
-        print(f"[sync] Found new voucher: {order_id} (customer={v['customer']}, total={v['total']})", flush=True)
+        print(
+            f"[sync] Found new voucher: {order_id} "
+            f"(customer={v['customer']}, total={v['total']})",
+            flush=True,
+        )
 
         try:
             xml = fetch_voucher_xml(order_id)
         except Exception as exc:
-            print(f"[error] Failed to download voucher XML for {order_id}: {exc}", flush=True)
+            print(
+                f"[error] Failed to download voucher XML for {order_id}: {exc}",
+                flush=True,
+            )
             continue
 
         result = push_to_tally(xml)
@@ -109,16 +130,29 @@ def poll():
             if "LINEERROR" in resp:
                 print(f"[error] Tally rejected {order_id}: {resp[:300]}", flush=True)
             else:
-                print(f"[ok] Pushed {order_id} to Tally (status={result['status']})", flush=True)
+                print(
+                    f"[ok] Pushed {order_id} to Tally (status={result['status']})",
+                    flush=True,
+                )
                 pushed.add(order_id)
                 state["pushed"] = list(pushed)
                 save_state(state)
         else:
-            print(f"[error] Failed to push {order_id} to Tally: {result['error']}", flush=True)
+            print(
+                f"[error] Failed to push {order_id} to Tally: {result['error']}",
+                flush=True,
+            )
 
 
 def main():
-    print(f"[tally_sync] Starting Tally sync", flush=True)
+    global SERVICE_URL, WEB_PASSCODE
+    SERVICE_URL = _require_http_url(
+        "VALENCE_SERVICE_URL", _required_env("VALENCE_SERVICE_URL").rstrip("/")
+    )
+    WEB_PASSCODE = _required_env("VALENCE_WEB_PASSCODE")
+    _require_http_url("TALLY_URL", TALLY_URL)
+
+    print("[tally_sync] Starting Tally sync", flush=True)
     print(f"  Service: {SERVICE_URL}", flush=True)
     print(f"  Tally:   {TALLY_URL}", flush=True)
     print(f"  Poll:    every {POLL_INTERVAL}s", flush=True)
