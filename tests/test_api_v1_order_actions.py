@@ -353,7 +353,7 @@ async def test_mcp_order_action_requires_confirm_and_rejects_non_approvers():
     assert (await _aevents(store, "ord_mcp_act")).count("order_approved") == 1
 
 
-async def test_mcp_rejects_illegal_transitions_and_unimplemented_actions():
+async def test_mcp_rejects_illegal_transitions_and_unconfirmed_actions():
     client, store, auth, keys = await _aclient()
     await _aseed_order(store, "ord_mcp_approved", OrderStatus.APPROVED)
     await _aseed_order(store, "ord_mcp_pending")
@@ -369,14 +369,13 @@ async def test_mcp_rejects_illegal_transitions_and_unimplemented_actions():
                 "confirm": True,
             },
         )
-    with pytest.raises(ValueError, match="unsupported order action"):
+    with pytest.raises(ConfirmationRequired):
         await gateway.call(
             "order_action",
             api_key=keys["approver"],
             arguments={
                 "order_id": "ord_mcp_pending",
                 "action": "push_to_tally",
-                "confirm": True,
             },
         )
     with pytest.raises(ValueError, match="unsupported order action"):

@@ -430,6 +430,21 @@ class AuthService:
     async def integration_names(self) -> list[str]:
         return await self._store.list_integrations()
 
+    async def integration_url(self, service: str) -> str:
+        """Return a URL-bearing Integration's endpoint, never its credentials.
+
+        The Tally push needs only the endpoint; exposing the whole credentials
+        dict (which for other services holds secrets) would widen the read
+        surface beyond what any caller here needs.
+        """
+        if (
+            service not in INTEGRATION_SERVICES
+            or "url" not in INTEGRATION_FIELDS[service]
+        ):
+            raise ValueError(f"integration {service!r} has no endpoint URL")
+        values = await self._store.get_integration(service)
+        return (values or {}).get("url", "").strip()
+
     async def integration_health(self) -> dict[str, dict[str, bool]]:
         """Report configured/healthy per Integration, never the secret values.
 

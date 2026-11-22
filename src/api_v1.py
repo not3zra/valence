@@ -47,6 +47,7 @@ from .order_actions import (
 )
 from .orders import OrderStatus
 from .store import OrderStore
+from .tally import TallyPushError, TallyPushFailed
 from .voucher import VoucherError
 
 
@@ -139,7 +140,12 @@ class OrderEditRequest(BaseModel):
 
 class OrderActionRequest(BaseModel):
     action: Literal[
-        "approve", "reject", "dispatch", "prepare_voucher", "bill"
+        "approve",
+        "reject",
+        "dispatch",
+        "prepare_voucher",
+        "push_to_tally",
+        "bill",
     ]
     confirm: bool = False
 
@@ -520,7 +526,16 @@ def build_api_v1_router(
                     result = await order_service.act(
                         {"order_id": order_id, "action": payload.action}, principal
                     )
-                except (ApprovalError, ValueError, VoucherError) as error:
+                except TallyPushFailed as error:
+                    raise HTTPException(
+                        status_code=502, detail=str(error)
+                    ) from error
+                except (
+                    ApprovalError,
+                    ValueError,
+                    VoucherError,
+                    TallyPushError,
+                ) as error:
                     raise _unprocessable(error) from error
                 return OrderActionResponse(**result)
 

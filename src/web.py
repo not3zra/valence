@@ -51,6 +51,7 @@ from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
 from .runtime import AgentRuntime, build_runtime
 from .store import OrderStore
+from .tally import TallyPushError, TallyPushFailed, TallyPushService
 from .voucher import (
     VoucherError,
     VoucherStore,
@@ -287,6 +288,22 @@ def create_app(
     sender = runtime.whatsapp_sender
     store = runtime.store
     voucher_storage = runtime.voucher_storage
+    storage = voucher_storage or default_voucher_storage(
+        bucket=settings.voucher_bucket, directory=settings.voucher_dir
+    )
+
+    async def configured_tally_url() -> str:
+        """The instance's Tally endpoint, or the legacy env URL when no Agent
+        Interface is mounted. Never a module constant (issue #66)."""
+        if auth is not None:
+            return await auth.integration_url("tally")
+        return settings.tally_push_url.strip()
+
+    tally_push = (
+        TallyPushService(store, storage, configured_tally_url)
+        if store is not None
+        else None
+    )
     meta_app_secret_value = (
         meta_app_secret
         if meta_app_secret is not None
@@ -346,7 +363,7 @@ def create_app(
             intake_service = IntakeService(runtime, store)
         if order_service is None and store is not None:
             order_service = OrderActionService(
-                OrderProcessingCore(store), store, voucher_storage
+                OrderProcessingCore(store), store, storage, tally_push
             )
         app.include_router(
             build_api_v1_router(auth, admin, intake_service, store, order_service)
@@ -564,9 +581,6 @@ def create_app(
 
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
-        storage = voucher_storage or default_voucher_storage(
-            bucket=settings.voucher_bucket, directory=settings.voucher_dir
-        )
         web_store = store
 
         _register_review_routes(
@@ -577,6 +591,7 @@ def create_app(
             cookie_secure,
             late_notifier,
             storage,
+            tally_push,
         )
         _register_loading_routes(
             app, web_store, passcode, passcode_salt, cookie_secure
@@ -694,6 +709,7 @@ def _register_review_routes(
     cookie_secure: bool = True,
     late_notifier=None,
     voucher_storage: VoucherStore | None = None,
+    tally_push: TallyPushService | None = None,
 ) -> None:
     """Register the passcode-gated review web view (issue #6).
 
@@ -808,7 +824,14 @@ def _register_review_routes(
         events = await (store).list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
         from .config import settings as _settings
-        return review.order_page(order, events, message=message, notice=notice, tally_push_url=_settings.tally_push_url)
+        tally_url = (
+            await tally_push.configured_url()
+            if tally_push is not None
+            else _settings.tally_push_url
+        )
+        return review.order_page(
+            order, events, message=message, notice=notice, tally_push_url=tally_url
+        )
 
     @app.get("/review/orders/{order_id}/edit", response_class=HTMLResponse)
     async def review_edit_page(
@@ -973,25 +996,22 @@ def _register_review_routes(
 
     @app.post("/review/orders/{order_id}/push-to-tally")
     async def review_push_to_tally(request: Request, order_id: str):
-        """Push a prepared voucher directly to the local Tally instance.
-
-        Requires TALLY_PUSH_URL to be set (e.g. http://localhost:9000).
-        """
+        """Push a prepared voucher to the instance's configured Tally endpoint."""
         await _require(request)
+        if tally_push is None:
+            raise HTTPException(status_code=503, detail="Tally push is not configured")
+        try:
+            await tally_push.push(order_id)
+        except TallyPushFailed as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        except TallyPushError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         order = await store.get_order(order_id)
-        if order is None:
-            raise HTTPException(status_code=404, detail="order not found")
-        if not order.voucher_id:
-            raise HTTPException(status_code=404, detail="no voucher prepared")
-        xml = await storage.read(order.voucher_id)
-        if xml is None:
-            raise HTTPException(status_code=404, detail="voucher not found in storage")
-        from .config import settings as _settings
-        from .voucher import push_voucher_to_tally
-        result = push_voucher_to_tally(xml, _settings.tally_push_url)
-        if result["ok"]:
-            return {"status": "pushed", "order_id": order_id, "voucher_id": order.voucher_id}
-        raise HTTPException(status_code=502, detail=result.get("error", "push failed"))
+        return {
+            "status": "pushed",
+            "order_id": order_id,
+            "voucher_id": order.voucher_id if order else None,
+        }
 
     @app.get("/api/vouchers")
     async def list_vouchers(request: Request):
