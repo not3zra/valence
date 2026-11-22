@@ -44,6 +44,7 @@ from .media import (
     MetaMediaFetcher,
 )
 from .meta_whatsapp import MetaWhatsAppParser
+from .model_provider import ModelCapabilities, ModelProvider, build_model_provider
 from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
 from .store import OrderStore
@@ -210,6 +211,7 @@ def create_app(
     meta_verify_token: str | None = None,
     meta_access_token: str | None = None,
     webhook_rate_limit: int | None = None,
+    model_provider: ModelProvider | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to a specific agent + session service.
 
@@ -253,12 +255,22 @@ def create_app(
     ``webhook_rate_limit`` caps agent turns per WhatsApp sender per minute on
     the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
     and is enforced by an in-memory per-instance limiter.
+
+    ``model_provider`` selects the model and its capabilities; it defaults to
+    the configured provider. Capabilities gate the two media intake paths:
+    a provider without image support never fetches a WhatsApp photo, and voice
+    ingest is closed (503) without audio support. Text intake is always open.
     """
+    selected_provider = (
+        model_provider if model_provider is not None else build_model_provider()
+    )
+    capabilities: ModelCapabilities = selected_provider.capabilities
     if agent_session_factory is not None:
         runner = TurnExecutor(
             agent_session_factory,
             store=store,
             firestore_client_factory=firestore_client_factory,
+            capabilities=capabilities,
         )
     else:
         # Backward-compat for tests that pass agent + session_service directly.
@@ -272,6 +284,7 @@ def create_app(
             _factory,
             store=store,
             firestore_client_factory=firestore_client_factory,
+            capabilities=capabilities,
         )
     sender = whatsapp_sender or MockWhatsAppSender()
     meta_app_secret_value = (
@@ -419,7 +432,18 @@ def create_app(
             # exact for the single-instance demo deploy.
             if not rate_limiter.allow(message.sender):
                 return Response(status_code=429, content="rate limit exceeded")
-            media = fetcher.fetch(message.media[0]) if message.media else None
+            media_ref = message.media[0] if message.media else None
+            if media_ref is not None and not capabilities.image:
+                if not message.body:
+                    sender.send(
+                        message.sender,
+                        "Photo orders are not supported by the configured "
+                        "model provider. Please send the order as text.",
+                    )
+                    continue
+                media = None
+            else:
+                media = fetcher.fetch(media_ref) if media_ref else None
             reply = runner.run_turn(
                 sender_id=message.sender, message=message.body, media=media
             )
@@ -457,6 +481,11 @@ def create_app(
             request.headers.get("Authorization", ""), expected
         ):
             return Response(status_code=401)
+        if not capabilities.audio:
+            return Response(
+                status_code=503,
+                content="voice intake is not supported by the model provider",
+            )
         chunks: list[bytes] = []
         size = 0
         async for chunk in request.stream():

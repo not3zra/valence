@@ -238,10 +238,15 @@ Navigate to `http://localhost:8080/loading` in your browser.
 ### Option B: Run with Memory Store (No GCP Access)
 
 The default install uses the in-memory store, so no GCP project or `gcp` extra
-is needed. The agent still works but won't persist data across restarts.
+is needed. The agent still works but won't persist data across restarts. The
+model provider is selected with `MODEL_PROVIDER` (`gemini` by default, `fake`
+for offline runs); the native Gemini path never installs or imports LiteLLM,
+and a provider without image/audio capability gates photo/voice intake while
+text intake stays available.
 
 ```bash
 # Set environment variables
+export MODEL_PROVIDER=gemini
 export SESSION_SERVICE=memory
 export ROUNDTRIP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 export WEB_PASSCODE="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
@@ -383,6 +388,7 @@ python scripts/eval_agent.py --category safety
 | Component | Version | Role |
 |-----------|---------|------|
 | **Google ADK** | `2.6.3` | Agent runtime, tool execution, session management |
+| **Model provider** | `MODEL_PROVIDER` | Capability-aware seam: native Gemini default, fake for tests; no LiteLLM on the default path |
 | **Gemini 3.5 Flash** | `gemini-3.5-flash` | Multimodal understanding (text + audio in one call) |
 | **Vertex AI** | Production | Model serving (not free-tier API key) |
 

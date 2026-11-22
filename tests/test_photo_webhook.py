@@ -18,6 +18,7 @@ from google.adk.sessions import InMemorySessionService
 from src.agent import build_agent
 from src.media import MediaObject
 from src.meta_whatsapp import build_meta_signature
+from src.model_provider import FakeModelProvider, ModelCapabilities
 from src.store import InMemoryOrderStore
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
@@ -111,6 +112,33 @@ def test_photo_webhook_reads_order_and_confirms():
             "Order confirmed. Estimated total: 35,000 INR.",
         )
     ]
+
+
+def test_photo_webhook_skips_media_when_provider_cannot_read_images():
+    sender = MockWhatsAppSender()
+    store = InMemoryOrderStore()
+    fetcher = FakeMediaFetcher(
+        media=MediaObject(data=b"\xff\xd8fake-jpeg", mime_type="image/jpeg")
+    )
+    app = create_app(
+        agent=build_agent(model=PhotoReadingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        whatsapp_sender=sender,
+        media_fetcher=fetcher,
+        meta_app_secret=APP_SECRET,
+        meta_verify_token=VERIFY_TOKEN,
+        model_provider=FakeModelProvider(
+            capabilities=ModelCapabilities(image=False)
+        ),
+    )
+    client = TestClient(app)
+
+    response = _post(client, _payload(_image_message()))
+
+    assert response.status_code == 200
+    assert fetcher.requested_refs == []
+    assert store.orders == []
+    assert "not supported" in sender.sent[0][1]
 
 
 def test_photo_webhook_unreadable_handwriting_escalates():

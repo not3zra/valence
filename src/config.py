@@ -20,6 +20,7 @@ class Settings:
 
     def __init__(self) -> None:
         self.app_name: str = _env("APP_NAME", "valence")
+        self.model_provider: str = _env("MODEL_PROVIDER", "gemini")
         self.gemini_model: str = _env("GEMINI_MODEL", "gemini-3.5-flash")
         self.session_service: str = _env("SESSION_SERVICE", "memory")
         self.firestore_root_collection: str = _env(
