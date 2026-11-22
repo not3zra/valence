@@ -29,6 +29,7 @@ from .auth import AuthService
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
+from .intake import IntakeService
 from .loading import (
     PASSCODE_COOKIE as LOADING_PASSCODE_COOKIE,
 )
@@ -214,6 +215,7 @@ def create_app(
     model_provider=None,
     auth: AuthService | None = None,
     admin: AdminService | None = None,
+    intake_service: IntakeService | None = None,
 ) -> FastAPI:
     """Build the FastAPI app driven by one agent runtime.
 
@@ -338,7 +340,9 @@ def create_app(
     if auth is not None:
         if admin is None and store is not None:
             admin = AdminService(store)
-        app.include_router(build_api_v1_router(auth, admin))
+        if intake_service is None and store is not None:
+            intake_service = IntakeService(runtime, store)
+        app.include_router(build_api_v1_router(auth, admin, intake_service, store))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
