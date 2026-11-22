@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Any
 
 from sqlalchemy import JSON, ScalarResult, String, func, insert, select
@@ -27,9 +29,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 
 from . import seed_data
+from .auth import InstanceProfile, KeyRecord, Role
 from .orders import Order, OrderEvent, OrderStatus
 
 _CONFIG_KEY = "config"
+_INSTANCE_ID = "default"
 
 
 class Base(DeclarativeBase):
@@ -70,6 +74,39 @@ class CatalogRow(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+class InstanceRow(Base):
+    __tablename__ = "valence_instance"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    business_name: Mapped[str] = mapped_column(String)
+    timezone: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String)
+
+
+class ApiKeyRow(Base):
+    __tablename__ = "valence_api_keys"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String, index=True)
+    phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    key_hash: Mapped[str] = mapped_column(String)
+    salt: Mapped[str] = mapped_column(String)
+    prefix: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[str] = mapped_column(String)
+    revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class IntegrationCredentialRow(Base):
+    """Provider secrets, deliberately in a different table from user keys."""
+
+    __tablename__ = "valence_integration_credentials"
+
+    service: Mapped[str] = mapped_column(String, primary_key=True)
+    data: Mapped[dict[str, str]] = mapped_column(JSON)
+    updated_at: Mapped[str] = mapped_column(String)
+
+
 def _seed_rows() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = [
         {
@@ -97,9 +134,7 @@ class SqlOrderStore:
 
     def __init__(self, url: str) -> None:
         self._engine = create_async_engine(url, poolclass=NullPool)
-        self._sessions = async_sessionmaker(
-            self._engine, expire_on_commit=False
-        )
+        self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
         self._ready = False
         self._lock = asyncio.Lock()
 
@@ -107,6 +142,10 @@ class SqlOrderStore:
     def engine(self) -> AsyncEngine:
         """The shared engine the ADK session service uses for the same database."""
         return self._engine
+
+    async def initialize(self) -> None:
+        """Create the schema and seed the sample catalogue (``valence init``)."""
+        await self._ensure_ready()
 
     async def _ensure_ready(self) -> None:
         async with self._lock:
@@ -245,9 +284,7 @@ class SqlOrderStore:
             if order_id not in order_ids:
                 order_ids.append(order_id)
             await session.merge(
-                PendingApprovalRow(
-                    approver_phone=approver_phone, order_ids=order_ids
-                )
+                PendingApprovalRow(approver_phone=approver_phone, order_ids=order_ids)
             )
 
     async def clear_pending_approval(self, approver_phone: str) -> None:
@@ -282,3 +319,157 @@ def _order_row(order: Order) -> dict[str, Any]:
         "status": str(data["status"]),
         "data": data,
     }
+
+
+def _instance_profile(row: InstanceRow) -> InstanceProfile:
+    return InstanceProfile(
+        business_name=row.business_name,
+        timezone=row.timezone,
+        created_at=row.created_at,
+    )
+
+
+def _key_record(row: ApiKeyRow) -> KeyRecord:
+    return KeyRecord(
+        id=row.id,
+        name=row.name,
+        role=Role(row.role),
+        phone=row.phone,
+        key_hash=row.key_hash,
+        salt=row.salt,
+        prefix=row.prefix,
+        created_at=row.created_at,
+        revoked_at=row.revoked_at,
+    )
+
+
+class SqlAuthStore:
+    """SQL adapter for the Instance, API keys, and Integration credentials.
+
+    It can share an existing engine with the order store or open its own from a
+    database URL. Schema creation is idempotent so ``valence init`` and the
+    Alembic entrypoint both converge on the same tables.
+    """
+
+    def __init__(
+        self, url: str | None = None, *, engine: AsyncEngine | None = None
+    ) -> None:
+        if engine is None:
+            if not url:
+                raise ValueError("SqlAuthStore needs a database URL or an engine")
+            engine = create_async_engine(url, poolclass=NullPool)
+        self._engine = engine
+        self._sessions = async_sessionmaker(engine, expire_on_commit=False)
+        self._ready = False
+        self._lock = asyncio.Lock()
+
+    @property
+    def engine(self) -> AsyncEngine:
+        return self._engine
+
+    async def init_schema(self) -> None:
+        async with self._lock:
+            if self._ready:
+                return
+            async with self._engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            self._ready = True
+
+    async def create_instance(
+        self, *, business_name: str, timezone: str
+    ) -> InstanceProfile:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(InstanceRow, _INSTANCE_ID)
+            if row is None:
+                row = InstanceRow(
+                    id=_INSTANCE_ID,
+                    business_name=business_name,
+                    timezone=timezone,
+                    created_at=datetime.now(dt_timezone.utc).isoformat(),
+                )
+                session.add(row)
+            return _instance_profile(row)
+
+    async def get_instance(self) -> InstanceProfile | None:
+        await self.init_schema()
+        async with self._sessions() as session:
+            row = await session.get(InstanceRow, _INSTANCE_ID)
+            if row is None:
+                return None
+            return _instance_profile(row)
+
+    async def insert_key(self, record: KeyRecord) -> None:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            session.add(
+                ApiKeyRow(
+                    id=record.id,
+                    name=record.name,
+                    role=record.role.value,
+                    phone=record.phone,
+                    key_hash=record.key_hash,
+                    salt=record.salt,
+                    prefix=record.prefix,
+                    created_at=record.created_at,
+                    revoked_at=record.revoked_at,
+                )
+            )
+
+    async def key_by_prefix(self, prefix: str) -> list[KeyRecord]:
+        await self.init_schema()
+        async with self._sessions() as session:
+            result: ScalarResult[ApiKeyRow] = await session.scalars(
+                select(ApiKeyRow).where(ApiKeyRow.prefix == prefix)
+            )
+            return [_key_record(row) for row in result.all()]
+
+    async def get_key(self, key_id: str) -> KeyRecord | None:
+        await self.init_schema()
+        async with self._sessions() as session:
+            row = await session.get(ApiKeyRow, key_id)
+            return _key_record(row) if row is not None else None
+
+    async def list_keys(self) -> list[KeyRecord]:
+        await self.init_schema()
+        async with self._sessions() as session:
+            result: ScalarResult[ApiKeyRow] = await session.scalars(
+                select(ApiKeyRow).order_by(ApiKeyRow.created_at, ApiKeyRow.id)
+            )
+            return [_key_record(row) for row in result.all()]
+
+    async def revoke_key(self, key_id: str, *, revoked_at: str) -> bool:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(ApiKeyRow, key_id)
+            if row is None or row.revoked_at is not None:
+                return False
+            row.revoked_at = revoked_at
+            return True
+
+    async def set_integration(self, service: str, values: dict[str, str]) -> None:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            await session.merge(
+                IntegrationCredentialRow(
+                    service=service,
+                    data=dict(values),
+                    updated_at=datetime.now(dt_timezone.utc).isoformat(),
+                )
+            )
+
+    async def get_integration(self, service: str) -> dict[str, str] | None:
+        await self.init_schema()
+        async with self._sessions() as session:
+            row = await session.get(IntegrationCredentialRow, service)
+            return dict(row.data) if row is not None else None
+
+    async def list_integrations(self) -> list[str]:
+        await self.init_schema()
+        async with self._sessions() as session:
+            result: ScalarResult[str] = await session.scalars(
+                select(IntegrationCredentialRow.service).order_by(
+                    IntegrationCredentialRow.service
+                )
+            )
+            return list(result.all())

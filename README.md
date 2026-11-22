@@ -258,6 +258,27 @@ echo "Review passcode: $WEB_PASSCODE"
 uvicorn src.main:app --host 0.0.0.0 --port 8080
 ```
 
+### First-run bootstrap (API keys)
+
+For a durable local Instance, `valence init` creates the schema, the business
+profile, and the first admin key from an empty SQLite or Postgres database. The
+plaintext key is printed once; only a salted hash is stored. Integration
+credentials (Meta, Gemini, Tally) live in a separate table and are never
+returned by the API.
+
+```bash
+valence init --database-url sqlite+aiosqlite:///./valence.db \
+  --business-name "Acme Chemicals"
+```
+
+The one-time `POST /api/v1/setup` path is for deployments that cannot run the
+CLI against the database: set `VALENCE_SETUP_TOKEN`, post that token with a
+business name, and the endpoint disables itself as soon as an admin key exists.
+All keys are Bearer tokens with server-side roles (`admin`, `operator`,
+`approver`, `viewer`); approver keys are bound to an allowlisted phone. REST and
+the MCP gateway share this authorization layer, so neither can bypass roles or
+`confirm: true`.
+
 ### Docker Compose with Postgres (GCP-free)
 
 The Compose profile runs the app and Postgres, applies the Alembic schema

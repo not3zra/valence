@@ -16,6 +16,9 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0,<3",
 ]
 
+[project.scripts]
+valence = "src.cli:main"
+
 [project.optional-dependencies]
 gcp = [
     "google-cloud-firestore>=2.11,<3",
