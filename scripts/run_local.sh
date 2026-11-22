@@ -22,6 +22,9 @@ fi
 export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
 export FIRESTORE_EMULATOR_HOST="localhost:${EMULATOR_PORT}"
 export FIRESTORE_PROJECT_ID="$PROJECT_ID"
+# This path runs against the Firestore emulator, so select the optional GCP
+# adapters explicitly (the default install runs in memory).
+export SESSION_SERVICE=firestore
 
 generate_secret() {
   python3 -c 'import secrets; print(secrets.token_hex(16))'

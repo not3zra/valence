@@ -195,6 +195,7 @@ def create_app(
     agent=None,
     session_service=None,
     agent_session_factory=None,
+    firestore_client_factory=None,
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
@@ -254,7 +255,11 @@ def create_app(
     and is enforced by an in-memory per-instance limiter.
     """
     if agent_session_factory is not None:
-        runner = TurnExecutor(agent_session_factory, store=store)
+        runner = TurnExecutor(
+            agent_session_factory,
+            store=store,
+            firestore_client_factory=firestore_client_factory,
+        )
     else:
         # Backward-compat for tests that pass agent + session_service directly.
         _a = agent
@@ -263,7 +268,11 @@ def create_app(
         def _factory(_firestore_client):
             return _a, _s
 
-        runner = TurnExecutor(_factory, store=store)
+        runner = TurnExecutor(
+            _factory,
+            store=store,
+            firestore_client_factory=firestore_client_factory,
+        )
     sender = whatsapp_sender or MockWhatsAppSender()
     meta_app_secret_value = (
         meta_app_secret

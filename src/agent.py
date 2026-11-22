@@ -14,9 +14,6 @@ from collections.abc import Callable
 
 from google.adk.agents import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.integrations.firestore.firestore_session_service import (
-    FirestoreSessionService,
-)
 from google.adk.models import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -175,17 +172,33 @@ def build_agent(
     )
 
 
-def build_session_service():
-    """Build the durable session service.
+def build_session_service(client=None):
+    """Build the session service selected by ``SESSION_SERVICE``.
 
-    Production and the local Firestore emulator both use ADK's
-    FirestoreSessionService; the AsyncClient picks up ``FIRESTORE_EMULATOR_HOST``
-    automatically. ``SESSION_SERVICE=memory`` swaps in the in-memory service for
-    fast local debugging (sessions do not survive a restart there).
+    The default is the in-memory service, so a fresh install runs without the
+    optional GCP extra. ``SESSION_SERVICE=firestore`` loads ADK's
+    ``FirestoreSessionService`` lazily and requires ``valence-order-agent[gcp]``;
+    the injected ``client`` lets the caller create the async client on the same
+    event loop that runs the agent turns.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
-    return FirestoreSessionService(root_collection=settings.firestore_root_collection)
+    if settings.session_service == "firestore":
+        from .gcp import require_firestore
+
+        require_firestore()
+        from google.adk.integrations.firestore.firestore_session_service import (
+            FirestoreSessionService,
+        )
+
+        return FirestoreSessionService(
+            client=client,
+            root_collection=settings.firestore_root_collection,
+        )
+    raise ValueError(
+        f"Unknown SESSION_SERVICE {settings.session_service!r}; "
+        "expected 'memory' or 'firestore'"
+    )
 
 
 def build_runner(agent: Agent, session_service) -> Runner:
