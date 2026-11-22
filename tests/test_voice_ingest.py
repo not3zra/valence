@@ -19,6 +19,7 @@ from google.adk.sessions import InMemorySessionService
 from src.agent import build_agent
 from src.config import settings
 from src.media import MAX_MEDIA_BYTES
+from src.model_provider import FakeModelProvider, ModelCapabilities
 from src.store import InMemoryOrderStore
 from src.web import MAX_VOICE_INGEST_BODY_BYTES, create_app
 
@@ -81,6 +82,40 @@ def test_ingest_missing_field_escalates_never_clarifies():
     order = store.orders[0]
     assert order.status.value == "pending_review"
     assert "missing_field" in order.escalation_reasons
+
+
+def test_ingest_is_closed_when_provider_cannot_read_audio():
+    store = InMemoryOrderStore()
+    app = create_app(
+        agent=build_agent(model=VoiceReadingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        voice_ingest_token=TOKEN,
+        model_provider=FakeModelProvider(
+            capabilities=ModelCapabilities(audio=False)
+        ),
+    )
+    response = TestClient(app).post(INGEST_URL, json=_payload(), headers=_auth())
+    assert response.status_code == 503
+    assert store.orders == []
+
+
+def test_ingest_checks_the_token_before_provider_capabilities():
+    store = InMemoryOrderStore()
+    app = create_app(
+        agent=build_agent(model=VoiceReadingLlm(), store=store),
+        session_service=InMemorySessionService(),
+        voice_ingest_token=TOKEN,
+        model_provider=FakeModelProvider(
+            capabilities=ModelCapabilities(audio=False)
+        ),
+    )
+    response = TestClient(app).post(
+        INGEST_URL,
+        json=_payload(),
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert response.status_code == 401
+    assert store.orders == []
 
 
 def test_ingest_rejects_a_missing_token():

@@ -31,6 +31,7 @@ from .core_tool import (
 )
 from .dispatch import LateOrderNotifier
 from .media import MediaObject, media_to_inline_part
+from .model_provider import ModelCapabilities, ModelProvider, build_model_provider
 from .store import OrderStore
 from .voucher import VoucherStore, default_voucher_storage
 from .whatsapp import MockWhatsAppSender, WhatsAppSender
@@ -114,15 +115,18 @@ Keep replies short and natural."""
 
 def build_agent(
     model: str | BaseLlm | None = None,
+    provider: ModelProvider | None = None,
     store: OrderStore | None = None,
     whatsapp_sender: WhatsAppSender | None = None,
     voucher_storage: VoucherStore | None = None,
 ) -> Agent:
     """Build the root ADK agent.
 
-    ``model`` defaults to the configured Gemini model id and resolves through
-    ADK's LLM registry to the Gemini API. Tests inject a fake ``BaseLlm`` here
-    so the whole runner wiring runs without a network call (ADR testing seam).
+    ``model`` defaults to the configured model provider's model. The native
+    Gemini provider returns a Gemini model id that ADK resolves through its own
+    registry (no LiteLLM); a configured or injected provider can return a fake
+    ``BaseLlm`` so the whole runner wiring runs without a network call. An
+    explicitly injected ``model`` still wins, preserving the existing test seam.
     ``store`` wires the Order Processing Core as the agent's ``process_order``,
     ``approve_order``, ``prepare_voucher``, and ``render_loading_list`` tools;
     tests pass the in-memory store so the tools run without Firestore.
@@ -134,6 +138,9 @@ def build_agent(
     ``prepare_voucher`` tool (issue #8); it defaults to the configured Cloud
     Storage bucket, or the in-memory double when none is set.
     """
+    if model is None:
+        selected = provider if provider is not None else build_model_provider()
+        model = selected.model
     tools: list = []
     if store is not None:
         core = OrderProcessingCore(store)
@@ -166,7 +173,7 @@ def build_agent(
         tools.append(build_list_pending_approvals_tool(store))
     return Agent(
         name=settings.app_name,
-        model=model or settings.gemini_model,
+        model=model,
         instruction=AGENT_INSTRUCTION,
         tools=tools,
     )
@@ -229,6 +236,7 @@ def run_turn(
     sender_id: str,
     message: str,
     media: MediaObject | None = None,
+    capabilities: ModelCapabilities | None = None,
     on_event: Callable[[object], None] | None = None,
 ) -> str:
     """Run one agent turn for ``sender_id`` and return the final reply text.
@@ -240,6 +248,10 @@ def run_turn(
     order (issue #11), audio for a recorded call (issue #10) — understood in
     the same Gemini call as text: one agent, every channel.
 
+    ``capabilities`` gates media intake: a provider without image or audio
+    support never receives those inline parts, while text always reaches the
+    model. It defaults to the configured provider's capabilities.
+
     ``on_event``, when supplied, is invoked for every ADK event the turn
     produces before the next one is consumed. It is the eval harness's
     observation seam (issue #36): the harness records the model's tool calls
@@ -248,7 +260,9 @@ def run_turn(
     never invoked. Production callers never pass it.
     """
     parts = [types.Part(text=message)]
-    if media is not None:
+    if capabilities is None:
+        capabilities = build_model_provider().capabilities
+    if media is not None and capabilities.accepts(media):
         parts.append(media_to_inline_part(media))
     content = types.Content(role="user", parts=parts)
     for event in runner.run(

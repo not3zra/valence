@@ -21,6 +21,7 @@ from google.genai import types
 
 from .agent import _event_text, build_runner
 from .media import MediaObject, media_to_inline_part
+from .model_provider import ModelCapabilities, build_model_provider
 
 
 class TurnExecutor:
@@ -40,6 +41,7 @@ class TurnExecutor:
         session_service=None,
         store=None,
         firestore_client_factory=None,
+        capabilities: ModelCapabilities | None = None,
     ) -> None:
         if session_service is not None or not callable(agent_or_factory):
             # Legacy path: (agent, session_service) positional args for tests.
@@ -55,6 +57,11 @@ class TurnExecutor:
             self._agent_factory = agent_or_factory
         self._store = store
         self._firestore_client_factory = firestore_client_factory
+        self._capabilities = (
+            capabilities
+            if capabilities is not None
+            else build_model_provider().capabilities
+        )
         self._loop = asyncio.new_event_loop()
         self._runner: Runner | None = None
         self._error: BaseException | None = None
@@ -90,7 +97,7 @@ class TurnExecutor:
         runner = self._runner
         assert runner is not None
         parts = [types.Part(text=message)]
-        if media is not None:
+        if media is not None and self._capabilities.accepts(media):
             parts.append(media_to_inline_part(media))
         content = types.Content(role="user", parts=parts)
         reply = ""
