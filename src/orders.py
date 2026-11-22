@@ -78,6 +78,8 @@ EVENT_ORDER_EDITED = "order_edited"
 EVENT_ORDER_DISPATCHED = "order_dispatched"
 EVENT_ORDER_LATE = "order_late"
 EVENT_VOUCHER_READY = "voucher_ready"
+EVENT_VOUCHER_PUSHED = "voucher_pushed"
+EVENT_VOUCHER_PUSH_FAILED = "voucher_push_failed"
 EVENT_ORDER_BILLED = "order_billed"
 
 

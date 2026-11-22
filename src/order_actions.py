@@ -17,10 +17,18 @@ from typing import Any
 from .auth import Principal
 from .core import OrderProcessingCore
 from .orders import Order, OrderEvent
+from .tally import TallyPushError, TallyPushFailed, TallyPushService
 from .voucher import VoucherError, VoucherStore, prepare_voucher
 
 SUPPORTED_ACTIONS = frozenset(
-    {"approve", "reject", "dispatch", "prepare_voucher", "bill"}
+    {
+        "approve",
+        "reject",
+        "dispatch",
+        "prepare_voucher",
+        "push_to_tally",
+        "bill",
+    }
 )
 
 
@@ -77,10 +85,12 @@ class OrderActionService:
         core: OrderProcessingCore,
         store,
         voucher_storage: VoucherStore | None = None,
+        tally_push: TallyPushService | None = None,
     ) -> None:
         self._core = core
         self._store = store
         self._voucher_storage = voucher_storage
+        self._tally_push = tally_push
 
     async def edit(
         self, arguments: Mapping[str, Any], principal: Principal
@@ -108,6 +118,15 @@ class OrderActionService:
             updated = await self._store.get_order(order_id)
             if updated is None:
                 raise RuntimeError(f"order {order_id} vanished after preparation")
+        elif action == "push_to_tally":
+            if self._tally_push is None:
+                raise TallyPushError("Tally push is not configured")
+            result = await self._tally_push.push(order_id)
+            if not result.ok:
+                raise TallyPushFailed(result.error or "Tally push failed")
+            updated = await self._store.get_order(order_id)
+            if updated is None:
+                raise RuntimeError(f"order {order_id} vanished after the Tally push")
         elif action == "dispatch":
             updated = await self._core.mark_dispatched(order_id, by=principal.id)
         elif action == "bill":

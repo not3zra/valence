@@ -430,6 +430,17 @@ class AuthService:
     async def integration_names(self) -> list[str]:
         return await self._store.list_integrations()
 
+    async def integration_values(self, service: str) -> dict[str, str]:
+        """Return one Integration's stored values; callers must not log secrets.
+
+        Where ``integration_health`` reports only configured/healthy flags, this
+        is the read port for services that must *use* a per-instance credential
+        (the Tally push reads its endpoint URL here).
+        """
+        if service not in INTEGRATION_SERVICES:
+            raise ValueError(f"unknown integration service {service!r}")
+        return dict(await self._store.get_integration(service) or {})
+
     async def integration_health(self) -> dict[str, dict[str, bool]]:
         """Report configured/healthy per Integration, never the secret values.
 
