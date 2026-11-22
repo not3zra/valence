@@ -279,6 +279,26 @@ All keys are Bearer tokens with server-side roles (`admin`, `operator`,
 the MCP gateway share this authorization layer, so neither can bypass roles or
 `confirm: true`.
 
+### Catalogue, config, and Integration setup
+
+Once an admin key exists, `valence setup` applies a sample fixture over the
+admin API — no Python or SQL editing required:
+
+```bash
+valence setup --url http://localhost:8080 --admin-key "$ADMIN_KEY" \
+  --fixture examples/acme-chemicals
+```
+
+The fixture directory holds `instance.json` (business name and timezone),
+`catalog.json` (customers, products, routes, delivery locations, approvers), and
+`config.json` (thresholds, cutoff, GST/Tally mappings). Omitted flags are
+prompted for interactively; `--integrations <file.json>` optionally loads
+provider credentials. The same operations are available as
+`GET`/`PUT /api/v1/catalog/{kind}`, `PATCH /api/v1/instance`, and
+`GET`/`PUT /api/v1/integrations` — health reports only configured/healthy
+status, never secret values. Config is read on every order, so a change takes
+effect without a restart.
+
 ### Docker Compose with Postgres (GCP-free)
 
 The Compose profile runs the app and Postgres, applies the Alembic schema

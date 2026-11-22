@@ -10,7 +10,7 @@ logic.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from . import seed_data
 from .orders import Order, OrderEvent, OrderStatus
@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 
 class OrderStore(Protocol):
     async def get_config(self) -> dict: ...
+
+    async def set_config(self, values: dict[str, Any]) -> None: ...
+
+    async def upsert_catalog(self, kind: str, items: list[dict[str, Any]]) -> None: ...
 
     async def get_customers(self) -> list[seed_data.Customer]: ...
 
@@ -87,6 +91,21 @@ class FirestoreOrderStore:
         data = doc.to_dict() or {}
         data.pop("id", None)
         return data
+
+    async def set_config(self, values: dict[str, Any]) -> None:
+        doc_ref = self.client.collection("config").document(CONFIG_DOCUMENT)
+        doc = await doc_ref.get()
+        data = doc.to_dict() or {}
+        data.pop("id", None)
+        if not data:
+            data = dict(seed_data.CONFIG)
+        data.update(values)
+        await doc_ref.set({"id": CONFIG_DOCUMENT, **data})
+
+    async def upsert_catalog(self, kind: str, items: list[dict[str, Any]]) -> None:
+        seed_data.document_type_for(kind)
+        for item in items:
+            await self.client.collection(kind).document(str(item["id"])).set(dict(item))
 
     async def get_customers(self) -> list[seed_data.Customer]:
         customers = []
@@ -246,6 +265,12 @@ class LoopProxiedStore:
     async def get_config(self) -> dict:
         return await self._proxy(self._store.get_config())
 
+    async def set_config(self, values: dict[str, Any]) -> None:
+        return await self._proxy(self._store.set_config(values))
+
+    async def upsert_catalog(self, kind: str, items: list[dict[str, Any]]) -> None:
+        return await self._proxy(self._store.upsert_catalog(kind, items))
+
     async def get_customers(self) -> list[seed_data.Customer]:
         return await self._proxy(self._store.get_customers())
 
@@ -322,24 +347,42 @@ class InMemoryOrderStore:
         routes: list[seed_data.Route] | None = None,
         config: dict | None = None,
     ) -> None:
-        self.customers = (
+        self.customers = list(
             customers if customers is not None else seed_data.CUSTOMERS
         )
-        self.products = products if products is not None else seed_data.PRODUCTS
-        self.delivery_locations = (
+        self.products = list(products if products is not None else seed_data.PRODUCTS)
+        self.delivery_locations = list(
             delivery_locations
             if delivery_locations is not None
             else seed_data.DELIVERY_LOCATIONS
         )
-        self.config = config if config is not None else seed_data.CONFIG
-        self.approvers = approvers if approvers is not None else seed_data.APPROVERS
-        self.routes = routes if routes is not None else seed_data.ROUTES
+        self.config = dict(config if config is not None else seed_data.CONFIG)
+        self.approvers = list(
+            approvers if approvers is not None else seed_data.APPROVERS
+        )
+        self.routes = list(routes if routes is not None else seed_data.ROUTES)
         self.orders: list[Order] = []
         self.events: list[OrderEvent] = []
         self.pending_approvals: dict[str, list[str]] = {}
 
     async def get_config(self) -> dict:
         return dict(self.config)
+
+    async def set_config(self, values: dict[str, Any]) -> None:
+        self.config.update(values)
+
+    async def upsert_catalog(self, kind: str, items: list[dict[str, Any]]) -> None:
+        document_type = seed_data.document_type_for(kind)
+        collection: list[Any] = getattr(self, kind)
+        index = {item.id: position for position, item in enumerate(collection)}
+        for data in items:
+            document = document_type(**data)
+            position = index.get(document.id)
+            if position is None:
+                index[document.id] = len(collection)
+                collection.append(document)
+            else:
+                collection[position] = document
 
     async def get_customers(self) -> list[seed_data.Customer]:
         return list(self.customers)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uvicorn
 
+from .admin import AdminService
 from .auth import AuthService
 from .config import settings
 from .runtime import build_runtime
@@ -43,7 +44,11 @@ def create_valence_app():
         setup_token=settings.setup_token,
         approver_phones=_approver_phones(runtime),
     )
-    return create_app(runtime=runtime, auth=auth)
+    return create_app(
+        runtime=runtime,
+        auth=auth,
+        admin=AdminService(runtime.store) if runtime.store is not None else None,
+    )
 
 
 app = create_valence_app()

@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import review
+from .admin import AdminService
 from .api_v1 import build_api_v1_router
 from .auth import AuthService
 from .config import settings
@@ -212,6 +213,7 @@ def create_app(
     webhook_rate_limit: int | None = None,
     model_provider=None,
     auth: AuthService | None = None,
+    admin: AdminService | None = None,
 ) -> FastAPI:
     """Build the FastAPI app driven by one agent runtime.
 
@@ -262,9 +264,11 @@ def create_app(
     the configured provider. Capabilities gate the two media intake paths:
     a provider without image support never fetches a WhatsApp photo, and voice
     ingest is closed (503) without audio support. Text intake is always open.
-    ``auth``, when supplied, mounts the ``/api/v1`` bootstrap and key routes;
-    it is the same service the MCP gateway uses, so both enforce one set of
-    roles and confirmation rules.
+    ``auth``, when supplied, mounts the ``/api/v1`` bootstrap, key, instance,
+    and Integration routes; it is the same service the MCP gateway uses, so both
+    enforce one set of roles and confirmation rules. ``admin`` owns catalogue
+    and runtime config; when omitted it is built from the runtime's store so
+    the admin API serves the same data the agent reads.
     """
     if runtime is None:
         runtime = build_runtime(
@@ -332,7 +336,9 @@ def create_app(
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
     if auth is not None:
-        app.include_router(build_api_v1_router(auth))
+        if admin is None and store is not None:
+            admin = AdminService(store)
+        app.include_router(build_api_v1_router(auth, admin))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

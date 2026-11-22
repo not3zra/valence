@@ -164,5 +164,43 @@ async def test_bearer_header_is_parsed_for_shared_use():
     assert await service.authenticate_header("Bearer ") is None
 
 
+async def test_integration_health_reports_status_without_secret_values():
+    service = AuthService(InMemoryAuthStore())
+    await service.set_integration("meta", {"access_token": "meta-secret"})
+    await service.set_integration("gemini", {"api_key": ""})
+
+    health = await service.integration_health()
+
+    assert health["meta"] == {"configured": True, "healthy": True}
+    assert health["gemini"] == {"configured": True, "healthy": False}
+    assert health["tally"] == {"configured": False, "healthy": False}
+    assert "meta-secret" not in str(health)
+
+
+async def test_set_integration_validates_service_and_fields():
+    service = AuthService(InMemoryAuthStore())
+
+    with pytest.raises(ValueError, match="unknown integration service"):
+        await service.set_integration("email", {"api_key": "x"})
+    with pytest.raises(ValueError, match="unknown field"):
+        await service.set_integration("gemini", {"password": "x"})
+    with pytest.raises(ValueError, match="must be strings"):
+        await service.set_integration("gemini", {"api_key": 123})
+
+
+async def test_instance_profile_can_be_updated_after_bootstrap():
+    store = InMemoryAuthStore()
+    service = AuthService(store)
+    await service.create_instance(business_name="Acme", timezone="UTC")
+
+    profile = await service.update_instance(
+        business_name="Acme Chemicals", timezone="Asia/Kolkata"
+    )
+
+    assert profile.business_name == "Acme Chemicals"
+    assert profile.timezone == "Asia/Kolkata"
+    assert (await service.get_instance()).timezone == "Asia/Kolkata"
+
+
 async def _async(value):
     return value

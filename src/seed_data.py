@@ -228,6 +228,23 @@ CONFIG: dict[str, object] = {
 
 SeededDoc = Customer | Product | Route | DeliveryLocation | Approver
 
+DOCUMENT_TYPES: dict[str, type] = {
+    "customers": Customer,
+    "products": Product,
+    "routes": Route,
+    "delivery_locations": DeliveryLocation,
+    "approvers": Approver,
+}
+
+
+def document_type_for(kind: str) -> type:
+    """Resolve a catalog kind to its document shape, failing on unknown kinds."""
+    try:
+        return DOCUMENT_TYPES[kind]
+    except KeyError:
+        raise ValueError(f"unknown catalog kind {kind!r}") from None
+
+
 COLLECTIONS: dict[str, Sequence[SeededDoc]] = {
     "customers": CUSTOMERS,
     "products": PRODUCTS,
