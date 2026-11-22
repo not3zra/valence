@@ -179,19 +179,18 @@ def build_agent(
     )
 
 
-def build_session_service(client=None):
+def build_session_service():
     """Build the session service selected by ``SESSION_SERVICE``.
 
     The default is the in-memory service, so a fresh install runs without the
-    optional GCP extra. ``SESSION_SERVICE=firestore`` loads ADK's
-    ``FirestoreSessionService`` lazily and requires ``valence-order-agent[gcp]``;
-    the injected ``client`` lets the caller create the async client on the same
-    event loop that runs the agent turns.
+    optional GCP extra. The durable adapter loads lazily and requires
+    ``valence-order-agent[gcp]``. The runtime calls this factory on its
+    persistent loop, so any async client it creates binds to that loop.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
     if settings.session_service == "firestore":
-        from .gcp import require_firestore
+        from .gcp import create_firestore_client, require_firestore
 
         require_firestore()
         from google.adk.integrations.firestore.firestore_session_service import (
@@ -199,7 +198,7 @@ def build_session_service(client=None):
         )
 
         return FirestoreSessionService(
-            client=client,
+            client=create_firestore_client(),
             root_collection=settings.firestore_root_collection,
         )
     raise ValueError(

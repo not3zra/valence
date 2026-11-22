@@ -14,7 +14,6 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 import re
 from datetime import date, time
 from urllib.parse import quote, urlparse
@@ -24,7 +23,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import review
-from .agent_exec import TurnExecutor
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
@@ -44,9 +42,9 @@ from .media import (
     MetaMediaFetcher,
 )
 from .meta_whatsapp import MetaWhatsAppParser
-from .model_provider import ModelCapabilities, ModelProvider, build_model_provider
 from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
+from .runtime import AgentRuntime, build_runtime
 from .store import OrderStore
 from .voucher import (
     VoucherError,
@@ -193,10 +191,9 @@ class RoundTripResponse(BaseModel):
 
 def create_app(
     *,
+    runtime: AgentRuntime | None = None,
     agent=None,
     session_service=None,
-    agent_session_factory=None,
-    firestore_client_factory=None,
     whatsapp_sender: WhatsAppSender | None = None,
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
@@ -211,13 +208,15 @@ def create_app(
     meta_verify_token: str | None = None,
     meta_access_token: str | None = None,
     webhook_rate_limit: int | None = None,
-    model_provider: ModelProvider | None = None,
+    model_provider=None,
 ) -> FastAPI:
-    """Build the FastAPI app wired to a specific agent + session service.
+    """Build the FastAPI app driven by one agent runtime.
 
-    Both are injected so tests can run the whole HTTP surface against a fake
-    LLM and an in-memory session service, and so the production entry point
-    (`src.main`) wires the real Gemini agent + Firestore session service.
+    ``runtime`` is the single seam for turn execution, model capabilities, and
+    adapters; production and tests build it through
+    :func:`src.runtime.build_runtime`. The explicit ``agent``,
+    ``session_service``, and ``store`` arguments remain as a compatibility path
+    for existing callers and are composed into the same runtime.
 
     ``whatsapp_sender`` defaults to ``MockWhatsAppSender`` (the test/demo path,
     issue #4 design note); the live sender — ``MetaWhatsAppSender`` — is wired
@@ -261,32 +260,19 @@ def create_app(
     a provider without image support never fetches a WhatsApp photo, and voice
     ingest is closed (503) without audio support. Text intake is always open.
     """
-    selected_provider = (
-        model_provider if model_provider is not None else build_model_provider()
-    )
-    capabilities: ModelCapabilities = selected_provider.capabilities
-    if agent_session_factory is not None:
-        runner = TurnExecutor(
-            agent_session_factory,
+    if runtime is None:
+        runtime = build_runtime(
+            agent=agent,
+            session_service=session_service,
             store=store,
-            firestore_client_factory=firestore_client_factory,
-            capabilities=capabilities,
+            voucher_storage=voucher_storage,
+            model_provider=model_provider,
+            whatsapp_sender=whatsapp_sender or MockWhatsAppSender(),
         )
-    else:
-        # Backward-compat for tests that pass agent + session_service directly.
-        _a = agent
-        _s = session_service
-
-        def _factory(_firestore_client):
-            return _a, _s
-
-        runner = TurnExecutor(
-            _factory,
-            store=store,
-            firestore_client_factory=firestore_client_factory,
-            capabilities=capabilities,
-        )
-    sender = whatsapp_sender or MockWhatsAppSender()
+    capabilities = runtime.capabilities
+    sender = runtime.whatsapp_sender
+    store = runtime.store
+    voucher_storage = runtime.voucher_storage
     meta_app_secret_value = (
         meta_app_secret
         if meta_app_secret is not None
@@ -369,7 +355,7 @@ def create_app(
             raise HTTPException(
                 status_code=401, detail="invalid bearer token"
             )
-        reply = runner.run_turn(sender_id=payload.sender_id, message=payload.message)
+        reply = runtime.run_turn(sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
     @app.api_route("/api/whatsapp/webhook", methods=["GET", "POST"])
@@ -444,7 +430,7 @@ def create_app(
                 media = None
             else:
                 media = fetcher.fetch(media_ref) if media_ref else None
-            reply = runner.run_turn(
+            reply = runtime.run_turn(
                 sender_id=message.sender, message=message.body, media=media
             )
             if reply:
@@ -517,7 +503,7 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        reply = runner.run_turn(
+        reply = runtime.run_turn(
             sender_id=caller,
             message=VOICE_NUDGE,
             media=MediaObject(data=audio, mime_type=mime),
@@ -553,18 +539,7 @@ def create_app(
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
         storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
-
-        # Web routes run on uvicorn's event loop; the agent's FirestoreOrderStore
-        # has gRPC channels bound to the executor's event loop.  Creating a
-        # second AsyncClient doesn't help (gRPC channels are shared via the
-        # _channel_cache).  Instead, proxy all web store calls through the
-        # executor's event loop where the gRPC client already works.
-        from .store import FirestoreOrderStore as _FOS, ProxiedFirestoreStore
-
-        if isinstance(store, _FOS) and runner._loop is not None:
-            web_store = ProxiedFirestoreStore(store, runner._loop)
-        else:
-            web_store = store
+        web_store = store
 
         _register_review_routes(
             app,

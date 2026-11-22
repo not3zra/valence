@@ -226,14 +226,13 @@ class FirestoreOrderStore:
                     await doc.reference.delete()
 
 
-class ProxiedFirestoreStore:
-    """Proxies OrderStore calls through a remote event loop.
+class LoopProxiedStore:
+    """Proxies OrderStore calls through the runtime's event loop.
 
-    Web routes run on uvicorn's event loop; the agent's ``FirestoreOrderStore``
-    has gRPC channels bound to the executor's event loop.  Creating a second
-    ``AsyncClient`` doesn't help because gRPC channels are shared via the
-    ``_channel_cache``.  This wrapper schedules every call onto the executor's
-    loop, where the gRPC client already works, and awaits the result.
+    Web routes run on the server's event loop; a loop-bound store adapter has
+    its async client bound to the executor's event loop. This wrapper schedules
+    every call onto the executor's loop, where that client works, and awaits
+    the result.
     """
 
     def __init__(self, store: OrderStore, loop: asyncio.AbstractEventLoop) -> None:

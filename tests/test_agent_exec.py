@@ -95,6 +95,28 @@ def test_turn_executor_runs_consecutive_turns_on_one_live_loop(echo_agent):
         executor.stop()
 
 
+def test_turn_executor_builds_agent_and_session_on_its_persistent_loop():
+    # The runtime seam supplies one zero-argument factory; agent construction
+    # and session creation happen on the executor's long-lived loop, so a
+    # loop-bound session service keeps working for every later turn.
+    built_on: list[asyncio.AbstractEventLoop] = []
+
+    def factory():
+        built_on.append(asyncio.get_event_loop())
+        return build_agent(model=FakeEchoLlm()), _LoopBoundSessionService()
+
+    executor = TurnExecutor(factory)
+    try:
+        for message in ["first", "second"]:
+            assert executor.run_turn(sender_id="+9000000001", message=message) == (
+                f"Echo: {message}"
+            )
+        assert len(built_on) == 1
+        assert not built_on[0].is_closed()
+    finally:
+        executor.stop()
+
+
 def test_turn_executor_continues_durable_session(echo_agent):
     # The durable-session seam (ADR-0001): consecutive messages from the same
     # sender continue the same session on the executor path, so a clarifying
