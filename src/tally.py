@@ -24,6 +24,8 @@ from .voucher import VoucherStore
 
 TallyUrlProvider = Callable[[], Awaitable[str]]
 
+MAX_TALLY_RESPONSE_BYTES = 64 * 1024
+
 _LINEERROR_RE = re.compile(
     r"<LINEERROR\b[^>]*>(.*?)</LINEERROR>", re.IGNORECASE | re.DOTALL
 )
@@ -97,10 +99,12 @@ def push_voucher_to_tally(
     try:
         opener = urllib.request.build_opener(_NoRedirect)
         with opener.open(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
+            body = response.read(MAX_TALLY_RESPONSE_BYTES).decode(
+                "utf-8", errors="replace"
+            )
             status = response.status
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
+        body = exc.read(MAX_TALLY_RESPONSE_BYTES).decode("utf-8", errors="replace")
         return TallyPushResult(
             ok=False,
             status=exc.code,
