@@ -23,6 +23,16 @@ TOKEN_PREFIX = "vk_"
 LOOKUP_PREFIX_LENGTH = 8
 PBKDF2_ITERATIONS = 120_000
 INTEGRATION_SERVICES = frozenset({"meta", "gemini", "tally"})
+INTEGRATION_FIELDS: dict[str, tuple[str, ...]] = {
+    "meta": ("access_token", "app_secret", "phone_number_id", "verify_token"),
+    "gemini": ("api_key",),
+    "tally": ("url",),
+}
+REQUIRED_INTEGRATION_FIELDS: dict[str, tuple[str, ...]] = {
+    "meta": ("access_token",),
+    "gemini": ("api_key",),
+    "tally": ("url",),
+}
 CONFIRMED_ACTIONS = frozenset(
     {
         "approve",
@@ -151,6 +161,10 @@ class AuthStore(Protocol):
 
     async def get_instance(self) -> InstanceProfile | None: ...
 
+    async def update_instance(
+        self, *, business_name: str, timezone: str
+    ) -> InstanceProfile: ...
+
     async def insert_key(self, record: KeyRecord) -> None: ...
 
     async def key_by_prefix(self, prefix: str) -> list[KeyRecord]: ...
@@ -191,6 +205,20 @@ class InMemoryAuthStore:
         return self.instance
 
     async def get_instance(self) -> InstanceProfile | None:
+        return self.instance
+
+    async def update_instance(
+        self, *, business_name: str, timezone: str
+    ) -> InstanceProfile:
+        if self.instance is None:
+            return await self.create_instance(
+                business_name=business_name, timezone=timezone
+            )
+        self.instance = InstanceProfile(
+            business_name=business_name,
+            timezone=timezone,
+            created_at=self.instance.created_at,
+        )
         return self.instance
 
     async def insert_key(self, record: KeyRecord) -> None:
@@ -267,6 +295,21 @@ class AuthService:
     async def get_instance(self) -> InstanceProfile | None:
         return await self._store.get_instance()
 
+    async def update_instance(
+        self, *, business_name: str, timezone: str
+    ) -> InstanceProfile:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        if not business_name.strip():
+            raise ValueError("a business name is required")
+        try:
+            ZoneInfo(timezone)
+        except (ValueError, ZoneInfoNotFoundError) as error:
+            raise ValueError(f"unknown timezone {timezone!r}") from error
+        return await self._store.update_instance(
+            business_name=business_name, timezone=timezone
+        )
+
     async def has_admin_key(self) -> bool:
         return any(
             record.role is Role.ADMIN for record in await self._store.list_keys()
@@ -301,6 +344,7 @@ class AuthService:
     async def issue_key(
         self, *, name: str, role: Role, phone: str | None = None
     ) -> IssuedKey:
+        role = Role(role)
         if not name.strip():
             raise ValueError("a key name is required")
         if role is Role.APPROVER:
@@ -372,10 +416,45 @@ class AuthService:
     async def set_integration(self, service: str, values: dict[str, str]) -> None:
         if service not in INTEGRATION_SERVICES:
             raise ValueError(f"unknown integration service {service!r}")
+        if not isinstance(values, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in values.items()
+        ):
+            raise ValueError("integration values must be strings")
+        allowed = INTEGRATION_FIELDS[service]
+        unknown = [key for key in values if key not in allowed]
+        if unknown:
+            raise ValueError(f"unknown field(s) for {service}: {', '.join(unknown)}")
         await self._store.set_integration(service, values)
 
     async def integration_names(self) -> list[str]:
         return await self._store.list_integrations()
+
+    async def integration_health(self) -> dict[str, dict[str, bool]]:
+        """Report configured/healthy per Integration, never the secret values.
+
+        "Healthy" here means the required credentials for the service are
+        present on this Instance; active provider probes belong to
+        ``valence doctor``. A service with no stored credentials is reported as
+        unconfigured rather than omitted, so the whole picture is visible.
+        """
+        configured = set(await self.integration_names())
+        report: dict[str, dict[str, bool]] = {}
+        for service in sorted(INTEGRATION_SERVICES):
+            values = (
+                await self._store.get_integration(service)
+                if service in configured
+                else None
+            )
+            healthy = bool(values) and all(
+                (values or {}).get(field, "").strip()
+                for field in REQUIRED_INTEGRATION_FIELDS[service]
+            )
+            report[service] = {
+                "configured": values is not None,
+                "healthy": healthy,
+            }
+        return report
 
     async def authorize(
         self,

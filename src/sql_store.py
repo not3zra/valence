@@ -176,6 +176,47 @@ class SqlOrderStore:
             row = await session.get(CatalogRow, (_CONFIG_KEY, _CONFIG_KEY))
             return dict(row.data) if row is not None else dict(seed_data.CONFIG)
 
+    async def set_config(self, values: dict[str, Any]) -> None:
+        await self._ensure_ready()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(CatalogRow, (_CONFIG_KEY, _CONFIG_KEY))
+            data = dict(row.data) if row is not None else dict(seed_data.CONFIG)
+            data.update(values)
+            await session.merge(
+                CatalogRow(
+                    collection=_CONFIG_KEY,
+                    item_id=_CONFIG_KEY,
+                    position=-1,
+                    data=data,
+                )
+            )
+
+    async def upsert_catalog(self, kind: str, items: list[dict[str, Any]]) -> None:
+        seed_data.document_type_for(kind)
+        await self._ensure_ready()
+        async with self._sessions() as session, session.begin():
+            result: ScalarResult[CatalogRow] = await session.scalars(
+                select(CatalogRow)
+                .where(CatalogRow.collection == kind)
+                .order_by(CatalogRow.position)
+            )
+            positions = {row.item_id: row.position for row in result.all()}
+            next_position = max(positions.values(), default=-1) + 1
+            for item in items:
+                item_id = str(item["id"])
+                position = positions.get(item_id)
+                if position is None:
+                    position = next_position
+                    next_position += 1
+                await session.merge(
+                    CatalogRow(
+                        collection=kind,
+                        item_id=item_id,
+                        position=position,
+                        data=dict(item),
+                    )
+                )
+
     async def get_customers(self) -> list[seed_data.Customer]:
         from .seed_data import Customer
 
@@ -397,6 +438,25 @@ class SqlAuthStore:
             row = await session.get(InstanceRow, _INSTANCE_ID)
             if row is None:
                 return None
+            return _instance_profile(row)
+
+    async def update_instance(
+        self, *, business_name: str, timezone: str
+    ) -> InstanceProfile:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(InstanceRow, _INSTANCE_ID)
+            if row is None:
+                row = InstanceRow(
+                    id=_INSTANCE_ID,
+                    business_name=business_name,
+                    timezone=timezone,
+                    created_at=datetime.now(dt_timezone.utc).isoformat(),
+                )
+            else:
+                row.business_name = business_name
+                row.timezone = timezone
+            await session.merge(row)
             return _instance_profile(row)
 
     async def insert_key(self, record: KeyRecord) -> None:

@@ -10,10 +10,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 from collections.abc import Sequence
 
 from .auth import AuthService
 from .config import settings
+from .setup import (
+    HttpSetupClient,
+    load_fixture,
+    run_setup,
+    with_integrations,
+)
 from .sql_store import SqlAuthStore, SqlOrderStore
 
 _SUPPORTED_SCHEMES = ("sqlite+aiosqlite://", "postgresql+asyncpg://")
@@ -34,6 +41,15 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--timezone", default="UTC")
     init.add_argument("--admin-name", default="first-admin")
     init.add_argument("--json", action="store_true", help="emit a machine-readable key")
+    setup = commands.add_parser(
+        "setup", help="configure an initialized Instance from a sample fixture"
+    )
+    setup.add_argument("--url", default=None, help="Instance base URL")
+    setup.add_argument("--admin-key", default=None, help="first admin API key")
+    setup.add_argument("--fixture", default=None, help="sample fixture directory")
+    setup.add_argument(
+        "--integrations", default=None, help="JSON file of Integration credentials"
+    )
     return parser
 
 
@@ -78,11 +94,33 @@ async def _init(args: argparse.Namespace) -> int:
         await orders.engine.dispose()
 
 
+def _setup(args: argparse.Namespace) -> int:
+    url = args.url or input(
+        f"Instance URL [{settings.service_url or 'http://localhost:8080'}]: "
+    ).strip() or (settings.service_url or "http://localhost:8080")
+    admin_key = args.admin_key or getpass.getpass("Admin API key: ")
+    if not admin_key:
+        raise SystemExit("an admin key is required; run 'valence init' first")
+    fixture_path = args.fixture or input(
+        "Fixture directory [examples/acme-chemicals]: "
+    ).strip() or "examples/acme-chemicals"
+    fixture = load_fixture(fixture_path)
+    if args.integrations:
+        fixture = with_integrations(fixture, args.integrations)
+    steps = run_setup(HttpSetupClient(url, admin_key), fixture)
+    for step in steps:
+        print(f"configured {step}")
+    print("Instance setup complete.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point; returns a process exit code."""
     args = _parser().parse_args(argv)
     if args.command == "init":
         return asyncio.run(_init(args))
+    if args.command == "setup":
+        return _setup(args)
     raise SystemExit(f"unknown command {args.command!r}")
 
 
