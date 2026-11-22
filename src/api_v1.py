@@ -9,9 +9,8 @@ principal more power than the other.
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import asdict
 from datetime import date as _date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -19,6 +18,7 @@ from pydantic import BaseModel, Field
 from .admin import AdminService, CatalogValidationError
 from .auth import (
     ADMIN_ROLES,
+    APPROVER_ROLES,
     READ_ROLES,
     AuthError,
     AuthService,
@@ -28,6 +28,7 @@ from .auth import (
     Role,
     bearer_token,
 )
+from .core import ApprovalError
 from .intake import (
     E164_PATTERN,
     CapabilityError,
@@ -38,7 +39,12 @@ from .intake import (
     decode_attachment,
     fingerprint_of,
 )
-from .orders import Order, OrderEvent, OrderStatus
+from .order_actions import (
+    OrderActionService,
+    order_detail,
+    order_summary,
+)
+from .orders import OrderStatus
 from .store import OrderStore
 
 
@@ -120,6 +126,27 @@ class OrderDetailResponse(OrderSummaryResponse):
     events: list[OrderEventResponse]
 
 
+class OrderEditRequest(BaseModel):
+    customer: str | None = None
+    delivery_location: str | None = None
+    items: list[dict[str, Any]] | None = None
+    gst_override_pct: float | None = None
+    customer_id: str | None = None
+    product_resolutions: list[dict[str, Any]] | None = None
+
+
+class OrderActionRequest(BaseModel):
+    action: Literal["approve", "reject", "dispatch"]
+    confirm: bool = False
+
+
+class OrderActionResponse(BaseModel):
+    order_id: str
+    action: str
+    status: str
+    order: OrderDetailResponse
+
+
 INTAKE_ROLES = (Role.ADMIN, Role.OPERATOR)
 
 
@@ -127,47 +154,8 @@ def _fail(error: AuthError) -> HTTPException:
     return HTTPException(status_code=error.status_code, detail=str(error))
 
 
-def _invalid(error: ValueError) -> HTTPException:
+def _invalid(error: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(error))
-
-
-def _order_summary(order: Order) -> dict[str, Any]:
-    return {
-        "order_id": order.order_id,
-        "status": order.status.value,
-        "customer": order.customer,
-        "phone": order.phone,
-        "source_channel": order.source_channel,
-        "draft_value_inr": order.draft_value_inr,
-        "escalation_reasons": list(order.escalation_reasons),
-        "voucher_id": order.voucher_id,
-        "created_at": order.created_at,
-    }
-
-
-def _order_detail(order: Order, events: list[OrderEvent]) -> dict[str, Any]:
-    return {
-        **_order_summary(order),
-        "customer_id": order.customer_id,
-        "delivery_location": order.delivery_location,
-        "delivery_location_id": order.delivery_location_id,
-        "items": [asdict(item) for item in order.items],
-        "confidence": order.confidence,
-        "updated_at": order.updated_at,
-        "voucher": {
-            "prepared": order.voucher_id is not None,
-            "voucher_id": order.voucher_id,
-        },
-        "events": [
-            {
-                "event_id": event.event_id,
-                "event_type": event.event_type,
-                "payload": dict(event.payload),
-                "created_at": event.created_at,
-            }
-            for event in sorted(events, key=lambda event: event.created_at)
-        ],
-    }
 
 
 def build_api_v1_router(
@@ -175,17 +163,25 @@ def build_api_v1_router(
     admin_service: AdminService | None = None,
     intake_service: IntakeService | None = None,
     store: OrderStore | None = None,
+    order_service: OrderActionService | None = None,
 ) -> APIRouter:
     """Build the authenticated ``/api/v1`` router for one Instance."""
 
     router = APIRouter(prefix="/api/v1", tags=["agent-interface"])
 
     async def identify(
-        request: Request, *, roles: Collection[Role] = READ_ROLES
+        request: Request,
+        *,
+        roles: Collection[Role] = READ_ROLES,
+        action: str | None = None,
+        confirm: bool = False,
     ) -> Principal:
         try:
             return await auth.require(
-                bearer_token(request.headers.get("Authorization")), roles=roles
+                bearer_token(request.headers.get("Authorization")),
+                roles=roles,
+                action=action,
+                confirm=confirm,
             )
         except AuthError as error:
             raise _fail(error) from error
@@ -462,7 +458,7 @@ def build_api_v1_router(
                 day = wanted_day.isoformat()
                 orders = [order for order in orders if order.created_at[:10] == day]
             orders.sort(key=lambda order: order.created_at, reverse=True)
-            return [OrderSummaryResponse(**_order_summary(order)) for order in orders]
+            return [OrderSummaryResponse(**order_summary(order)) for order in orders]
 
         @router.get(
             "/orders/{order_id}", response_model=OrderDetailResponse, tags=["orders"]
@@ -473,6 +469,51 @@ def build_api_v1_router(
             if order is None:
                 raise HTTPException(status_code=404, detail="order not found")
             events = await store.list_order_events(order_id)
-            return OrderDetailResponse(**_order_detail(order, events))
+            return OrderDetailResponse(**order_detail(order, events))
+
+        if order_service is not None:
+
+            @router.patch(
+                "/orders/{order_id}",
+                response_model=OrderDetailResponse,
+                tags=["orders"],
+            )
+            async def edit_order(
+                order_id: str, payload: OrderEditRequest, request: Request
+            ) -> OrderDetailResponse:
+                principal = await identify(request, roles=APPROVER_ROLES)
+                try:
+                    result = await order_service.edit(
+                        {
+                            "order_id": order_id,
+                            "changes": payload.model_dump(exclude_unset=True),
+                        },
+                        principal,
+                    )
+                except (ApprovalError, ValueError) as error:
+                    raise _invalid(error) from error
+                return OrderDetailResponse(**result)
+
+            @router.post(
+                "/orders/{order_id}/actions",
+                response_model=OrderActionResponse,
+                tags=["orders"],
+            )
+            async def act_on_order(
+                order_id: str, payload: OrderActionRequest, request: Request
+            ) -> OrderActionResponse:
+                principal = await identify(
+                    request,
+                    roles=APPROVER_ROLES,
+                    action=payload.action,
+                    confirm=payload.confirm,
+                )
+                try:
+                    result = await order_service.act(
+                        {"order_id": order_id, "action": payload.action}, principal
+                    )
+                except (ApprovalError, ValueError) as error:
+                    raise _invalid(error) from error
+                return OrderActionResponse(**result)
 
     return router

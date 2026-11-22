@@ -46,6 +46,7 @@ from .media import (
     MetaMediaFetcher,
 )
 from .meta_whatsapp import MetaWhatsAppParser
+from .order_actions import OrderActionService
 from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
 from .runtime import AgentRuntime, build_runtime
@@ -216,6 +217,7 @@ def create_app(
     auth: AuthService | None = None,
     admin: AdminService | None = None,
     intake_service: IntakeService | None = None,
+    order_service: OrderActionService | None = None,
 ) -> FastAPI:
     """Build the FastAPI app driven by one agent runtime.
 
@@ -342,7 +344,11 @@ def create_app(
             admin = AdminService(store)
         if intake_service is None and store is not None:
             intake_service = IntakeService(runtime, store)
-        app.include_router(build_api_v1_router(auth, admin, intake_service, store))
+        if order_service is None and store is not None:
+            order_service = OrderActionService(OrderProcessingCore(store), store)
+        app.include_router(
+            build_api_v1_router(auth, admin, intake_service, store, order_service)
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

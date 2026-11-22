@@ -24,6 +24,7 @@ from .auth import (
     Role,
     UnauthorizedError,
 )
+from .order_actions import OrderActionService
 
 Handler = Callable[..., Awaitable[Any]]
 
@@ -39,8 +40,21 @@ class ToolPolicy:
 DEFAULT_POLICIES: Mapping[str, ToolPolicy] = {
     "get_instance": ToolPolicy(READ_ROLES),
     "issue_key": ToolPolicy(ADMIN_ROLES),
+    "edit_order": ToolPolicy(APPROVER_ROLES),
     "order_action": ToolPolicy(APPROVER_ROLES, action="approve"),
 }
+
+
+def build_order_tool_operations(
+    service: OrderActionService,
+) -> Mapping[str, Handler]:
+    """Expose the shared order service as MCP tool handlers.
+
+    Both handlers already take ``(arguments, principal)``, so MCP and REST run
+    the exact same implementation; this gateway supplies the authorization the
+    REST router supplies for its routes.
+    """
+    return {"edit_order": service.edit, "order_action": service.act}
 
 
 class McpToolGateway:
