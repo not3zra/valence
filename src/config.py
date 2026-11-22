@@ -51,6 +51,7 @@ class Settings:
         )
         self.tally_push_url: str = _env("TALLY_PUSH_URL", "")
         self.service_url: str = _env("SERVICE_URL", "")
+        self.setup_token: str = _env("VALENCE_SETUP_TOKEN", "")
 
 
 settings = Settings()

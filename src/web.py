@@ -23,6 +23,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import review
+from .api_v1 import build_api_v1_router
+from .auth import AuthService
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
@@ -209,6 +211,7 @@ def create_app(
     meta_access_token: str | None = None,
     webhook_rate_limit: int | None = None,
     model_provider=None,
+    auth: AuthService | None = None,
 ) -> FastAPI:
     """Build the FastAPI app driven by one agent runtime.
 
@@ -259,6 +262,9 @@ def create_app(
     the configured provider. Capabilities gate the two media intake paths:
     a provider without image support never fetches a WhatsApp photo, and voice
     ingest is closed (503) without audio support. Text intake is always open.
+    ``auth``, when supplied, mounts the ``/api/v1`` bootstrap and key routes;
+    it is the same service the MCP gateway uses, so both enforce one set of
+    roles and confirmation rules.
     """
     if runtime is None:
         runtime = build_runtime(
@@ -325,6 +331,8 @@ def create_app(
     )
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
+    if auth is not None:
+        app.include_router(build_api_v1_router(auth))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
