@@ -10,7 +10,7 @@ and WhatsApp decisions in sync through the same Order Processing Core.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import datetime, time, timezone, tzinfo
 from html import escape
 
 from .orders import Order, OrderEvent, OrderItem, OrderStatus
@@ -50,8 +50,8 @@ def _iso_to_dt(value: str) -> datetime:
     return dt
 
 
-def _local_day(value: str) -> date:
-    return _iso_to_dt(value).date()
+def _local_time(value: datetime, business_tz: tzinfo | None) -> datetime:
+    return value.astimezone(business_tz) if business_tz is not None else value
 
 
 def compute_stats(
@@ -59,6 +59,7 @@ def compute_stats(
     *,
     now: datetime | None = None,
     cutoff_time: time = DEFAULT_CUTOFF_TIME,
+    business_tz: tzinfo | None = None,
 ) -> dict[str, int]:
     """Live stat-bar counts over the order set (issue #6).
 
@@ -67,21 +68,26 @@ def compute_stats(
     approved / billed today (the status change stamps ``updated_at``). A
     ``late_orders`` count is an approved order approved today after the
     configured daily cutoff — the same live definition the Loading List renderer
-    will use (issue #9). ``now`` pins today for deterministic tests.
+    uses (issue #9). ``now`` pins today for deterministic tests; ``business_tz``
+    resolves today, the cutoff comparison and the billed day in the business
+    timezone, so a late order reads as late in the same zone the Loading List
+    renders (issue #62).
     """
-    today = (now if now is not None else _now()).date()
+    reference = now if now is not None else _now()
+    today = _local_time(reference, business_tz).date()
     pending = approved = billed = late = 0
     for order in orders:
         if order.status is OrderStatus.PENDING_REVIEW:
             pending += 1
         elif order.status is OrderStatus.APPROVED:
-            updated = _iso_to_dt(order.updated_at)
+            updated = _local_time(_iso_to_dt(order.updated_at), business_tz)
             if updated.date() == today:
                 approved += 1
                 if updated.time() > cutoff_time:
                     late += 1
         elif order.status is OrderStatus.BILLED:
-            if _local_day(order.updated_at) == today:
+            updated = _local_time(_iso_to_dt(order.updated_at), business_tz)
+            if updated.date() == today:
                 billed += 1
     return {
         "pending_escalations": pending,
