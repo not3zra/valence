@@ -17,7 +17,7 @@ from google.adk.sessions import InMemorySessionService
 from src.agent import build_agent
 from src.auth import AuthService, InMemoryAuthStore
 from src.media import MediaObject
-from src.meta_whatsapp import MetaWhatsAppSender, build_meta_signature
+from src.meta_whatsapp import MetaCredentials, MetaWhatsAppSender, build_meta_signature
 from src.store import InMemoryOrderStore
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
@@ -97,6 +97,20 @@ def _post(client, path, payload, secret):
             "X-Hub-Signature-256": build_meta_signature(body, secret),
         },
     )
+
+
+def test_credentials_never_appear_in_repr():
+    credentials = MetaCredentials(
+        app_secret="APP-SECRET-VALUE",
+        verify_token="VERIFY-TOKEN-VALUE",
+        access_token="ACCESS-TOKEN-VALUE",
+        phone_number_id="PHONE-ID-VALUE",
+    )
+    text = repr(credentials)
+    assert "APP-SECRET-VALUE" not in text
+    assert "VERIFY-TOKEN-VALUE" not in text
+    assert "ACCESS-TOKEN-VALUE" not in text
+    assert "PHONE-ID-VALUE" not in text
 
 
 async def test_handshake_uses_the_instance_verify_token():

@@ -27,7 +27,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .whatsapp import InboundMessage
 
@@ -41,10 +41,10 @@ class MetaCredentials:
     signature, and the sender/fetcher make no network calls.
     """
 
-    app_secret: str = ""
-    verify_token: str = ""
-    access_token: str = ""
-    phone_number_id: str = ""
+    app_secret: str = field(default="", repr=False)
+    verify_token: str = field(default="", repr=False)
+    access_token: str = field(default="", repr=False)
+    phone_number_id: str = field(default="", repr=False)
 
     @classmethod
     def from_values(cls, values: Mapping[str, str]) -> MetaCredentials:
