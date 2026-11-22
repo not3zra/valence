@@ -561,7 +561,7 @@ class OrderProcessingCore:
             items=items,
         )
 
-    async def edit_order(self, order_id: str, *, changes: dict) -> Order:
+    async def edit_order(self, order_id: str, *, changes: dict, by: str = "") -> Order:
         """Apply an approver's corrections to an order (issue #6, follow-up).
 
         The review web view's edit actions go through this same Order
@@ -729,6 +729,7 @@ class OrderProcessingCore:
                     "changes": diff,
                     "status": order.status.value,
                     "reopened": reopened,
+                    "by": by,
                 },
             )
         )
@@ -844,7 +845,7 @@ class OrderProcessingCore:
             late=await self._is_late_for(order),
         )
 
-    async def mark_dispatched(self, order_id: str) -> Order:
+    async def mark_dispatched(self, order_id: str, *, by: str = "") -> Order:
         """Transition an approved order to dispatched and record the event.
 
         The order must be in ``approved`` status; the transition to ``dispatched``
@@ -861,7 +862,7 @@ class OrderProcessingCore:
             OrderEvent(
                 order_id=order_id,
                 event_type=EVENT_ORDER_DISPATCHED,
-                payload={"order_id": order_id},
+                payload={"order_id": order_id, "by": by},
             )
         )
         return order
