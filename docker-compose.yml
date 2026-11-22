@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: valence
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: valence
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U valence -d valence"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  app:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ORDER_STORE: postgres
+      SESSION_SERVICE: postgres
+      DATABASE_URL: postgresql+asyncpg://valence:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/valence
+      VOUCHER_DIR: /var/lib/valence/vouchers
+      WEB_COOKIE_SECURE: ${WEB_COOKIE_SECURE:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - voucher-data:/var/lib/valence/vouchers
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8080/health')
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  postgres-data:
+  voucher-data:

@@ -15,8 +15,10 @@ class Settings:
     The defaults keep the service runnable in a fresh clone without Google
     Cloud: sessions and orders stay in memory, and vouchers use the in-memory
     store. For a durable local Instance without GCP, set ``ORDER_STORE=sqlite``,
-    ``SESSION_SERVICE=sqlite``, ``DATABASE_URL`` and ``VOUCHER_DIR``. The optional
-    ``firestore`` adapters remain available with the ``[gcp]`` extra.
+    ``SESSION_SERVICE=sqlite``, ``DATABASE_URL`` and ``VOUCHER_DIR``. Use
+    ``postgres`` for both store and sessions with a ``postgresql+asyncpg://``
+    ``DATABASE_URL`` (the Compose profile). The optional ``firestore`` adapters
+    remain available with the ``[gcp]`` extra.
     """
 
     def __init__(self) -> None:
