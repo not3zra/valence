@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# LEGACY: GCP provisioning for the retired deployment. The project is expired;
+# this script is kept for historical reference until archival.
+#
 # Single infrastructure-provisioning point for the Order Intake & Fulfillment
 # agent. From a fresh GCP project this creates and wires:
 #

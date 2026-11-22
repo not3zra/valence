@@ -1,7 +1,7 @@
 """The Loading List web view and the Cutoff render endpoint (issue #9).
 
 The dispatch-facing page renders live approved orders through the same
-``load_loading_list`` path as the ADK tool, behind the single demo passcode
+``load_loading_list`` path as the ADK tool, behind the configured passcode
 from the store config. The Cutoff endpoint renders the same list behind the
 configured bearer secret and is closed (503) when no secret is set.
 """
@@ -24,7 +24,7 @@ from src.web import create_app
 
 from .fakes import FakeEchoLlm
 
-PASSCODE = "valence-demo"
+PASSCODE = "test-passcode"
 PASSCODE_SALT = "test-salt"
 ORIGIN = "http://testserver"
 # Fixed well-before-cutoff stamps: the tests must not depend on the wall clock

@@ -23,24 +23,39 @@ export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
 export FIRESTORE_EMULATOR_HOST="localhost:${EMULATOR_PORT}"
 export FIRESTORE_PROJECT_ID="$PROJECT_ID"
 
-# Local-only auth defaults for the security-gated surfaces (env-provided in
-# production, so local dev doesn't share the public valence-demo default).
-export ROUNDTRIP_TOKEN="${ROUNDTRIP_TOKEN:-local-dev-roundtrip-token}"
-export VOICE_INGEST_TOKEN="${VOICE_INGEST_TOKEN:-local-dev-ingest-token}"
-export WEB_PASSCODE="${WEB_PASSCODE:-valence-demo}"
-export WEB_PASSCODE_SALT="${WEB_PASSCODE_SALT:-local-dev-salt}"
+generate_secret() {
+  python3 -c 'import secrets; print(secrets.token_hex(16))'
+}
+
+# Local-only auth values: use exported values when present, otherwise generate
+# fresh random values for this run. Never ship a demo passcode or token.
+export ROUNDTRIP_TOKEN="${ROUNDTRIP_TOKEN:-$(generate_secret)}"
+export VOICE_INGEST_TOKEN="${VOICE_INGEST_TOKEN:-$(generate_secret)}"
+export WEB_PASSCODE="${WEB_PASSCODE:-$(generate_secret)}"
+export WEB_PASSCODE_SALT="${WEB_PASSCODE_SALT:-$(generate_secret)}"
 export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"
 # Local dev uses the in-memory voucher store (no bucket provisioned).
 export VOUCHER_BUCKET="${VOUCHER_BUCKET:-}"
 
-# Gemini 3.5 runs through Vertex AI (ADC). The free-tier GOOGLE_API_KEY is
-# exhausted, so local dev uses Vertex on the shared project. Requires
-# `gcloud auth application-default login` and GCP access to valence-505412.
-# (Firestore still runs on the emulator above via FIRESTORE_EMULATOR_HOST; the
-# emulator client namespaces by GOOGLE_CLOUD_PROJECT, so seed + app agree.)
-export GOOGLE_GENAI_USE_VERTEXAI=true
-export GOOGLE_CLOUD_PROJECT=valence-505412
-export GOOGLE_CLOUD_LOCATION=asia-southeast1
+echo "==> Local dev credentials:"
+echo "    ROUNDTRIP_TOKEN=$ROUNDTRIP_TOKEN"
+echo "    VOICE_INGEST_TOKEN=$VOICE_INGEST_TOKEN"
+echo "    WEB_PASSCODE=$WEB_PASSCODE"
+
+# Model access: set GOOGLE_API_KEY, or opt into Vertex AI with
+# GOOGLE_GENAI_USE_VERTEXAI=true and a project/location. For Vertex, set
+# PROJECT_ID to the target GCP project (it also namespaces the emulator).
+if [[ "${GOOGLE_GENAI_USE_VERTEXAI:-}" == "true" ]]; then
+  : "${GOOGLE_CLOUD_LOCATION:?Set GOOGLE_CLOUD_LOCATION when using Vertex AI}"
+  if [[ "$PROJECT_ID" == "valence-local" ]]; then
+    echo "Set PROJECT_ID to your GCP project when using Vertex AI." >&2
+    exit 1
+  fi
+  echo "==> Model: Vertex AI in $GOOGLE_CLOUD_PROJECT ($GOOGLE_CLOUD_LOCATION)"
+else
+  : "${GOOGLE_API_KEY:?Set GOOGLE_API_KEY, or set GOOGLE_GENAI_USE_VERTEXAI=true for Vertex AI}"
+  echo "==> Model: Gemini via GOOGLE_API_KEY"
+fi
 
 echo "==> Starting Firestore emulator on :$EMULATOR_PORT"
 gcloud beta emulators firestore start \

@@ -21,7 +21,7 @@ from src.web import create_app
 
 from .fakes import FakeEchoLlm, approved_order_id
 
-PASSCODE = "valence-demo"
+PASSCODE = "test-passcode"
 PASSCODE_SALT = "test-salt"
 ORIGIN = "http://testserver"
 

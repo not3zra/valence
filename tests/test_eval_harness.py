@@ -379,7 +379,7 @@ def test_has_key_accepts_a_complete_vertex_config() -> None:
         "GOOGLE_API_KEY": None,
         "GEMINI_API_KEY": None,
         "GOOGLE_GENAI_USE_VERTEXAI": "true",
-        "GOOGLE_CLOUD_PROJECT": "valence-505412",
+        "GOOGLE_CLOUD_PROJECT": "test-project",
         "GOOGLE_CLOUD_LOCATION": "us-central1",
     }
     for cased in ("true", "1", "True"):
