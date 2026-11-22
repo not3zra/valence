@@ -228,6 +228,26 @@ def test_cutoff_endpoint_accepts_a_delivery_day(client):
     assert response.json()["delivery_day"] == "2026-08-14"
 
 
+def test_cutoff_endpoint_notifies_late_orders(client, store):
+    settings.cutoff_secret = "test-secret"
+    late = _approved_order("ord_late")
+    late.created_at = "2026-08-14T13:00:00+00:00"
+    late.updated_at = "2026-08-14T13:00:00+00:00"
+    store.orders.append(late)
+
+    response = client.post(
+        "/api/cutoff?day=2026-08-14",
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [e["order_id"] for e in response.json()["late"]] == ["ord_late"]
+    assert any(
+        e.event_type == "order_late" and e.order_id == "ord_late"
+        for e in store.events
+    )
+
+
 def test_cutoff_endpoint_accepts_pubsub_push_envelope(client):
     data = base64.b64encode(
         json.dumps({"secret": "test-secret"}).encode()

@@ -38,6 +38,7 @@ from .loading import (
     loading_login_page,
     render_loading_list_html,
 )
+from .loading_service import LoadingService
 from .media import (
     AUDIO_MIME_TYPES,
     MAX_MEDIA_BYTES,
@@ -219,6 +220,7 @@ def create_app(
     admin: AdminService | None = None,
     intake_service: IntakeService | None = None,
     order_service: OrderActionService | None = None,
+    loading_service: LoadingService | None = None,
 ) -> FastAPI:
     """Build the FastAPI app driven by one agent runtime.
 
@@ -291,6 +293,10 @@ def create_app(
     storage = voucher_storage or default_voucher_storage(
         bucket=settings.voucher_bucket, directory=settings.voucher_dir
     )
+
+    late_notifier = LateOrderNotifier(store, sender) if store is not None else None
+    if loading_service is None and store is not None:
+        loading_service = LoadingService(store, late_notifier)
 
     async def configured_tally_url() -> str:
         """The instance's Tally endpoint, or the legacy env URL when no Agent
@@ -366,7 +372,9 @@ def create_app(
                 OrderProcessingCore(store), store, storage, tally_push
             )
         app.include_router(
-            build_api_v1_router(auth, admin, intake_service, store, order_service)
+            build_api_v1_router(
+                auth, admin, intake_service, store, order_service, loading_service
+            )
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -580,7 +588,6 @@ def create_app(
         return Response(content="OK", media_type="text/plain")
 
     if store is not None:
-        late_notifier = LateOrderNotifier(store, sender)
         web_store = store
 
         _register_review_routes(
@@ -596,7 +603,7 @@ def create_app(
         _register_loading_routes(
             app, web_store, passcode, passcode_salt, cookie_secure
         )
-        _register_cutoff_endpoint(app, web_store)
+        _register_cutoff_endpoint(app, web_store, loading_service)
 
     return app
 
@@ -1138,8 +1145,10 @@ def _register_loading_routes(
         return RedirectResponse("/loading", status_code=303)
 
 
-def _register_cutoff_endpoint(app: FastAPI, store: OrderStore) -> None:
-    """Register the secret-gated daily Cutoff render endpoint (issue #9).
+def _register_cutoff_endpoint(
+    app: FastAPI, store: OrderStore, loading_service: LoadingService | None = None
+) -> None:
+    """Register the secret-gated daily Cutoff render endpoint (issue #9, #62).
 
     The Cloud Scheduler job fires this endpoint after the daily cutoff; it runs
     the same ``load_loading_list`` render path as the web view and the ADK tool
@@ -1198,5 +1207,7 @@ def _register_cutoff_endpoint(app: FastAPI, store: OrderStore) -> None:
         if not await _authorized(request):
             raise HTTPException(status_code=401)
         delivery_day = _parse_day(day)
+        if loading_service is not None:
+            return await loading_service.cutoff_render(delivery_day)
         loading = await load_loading_list(store, delivery_day=delivery_day)
         return loading.to_dict()

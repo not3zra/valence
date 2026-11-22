@@ -40,6 +40,7 @@ from .intake import (
     decode_attachment,
     fingerprint_of,
 )
+from .loading_service import LoadingService
 from .order_actions import (
     OrderActionService,
     order_detail,
@@ -157,6 +158,21 @@ class OrderActionResponse(BaseModel):
     order: OrderDetailResponse
 
 
+class LoadingListResponse(BaseModel):
+    delivery_day: str
+    cutoff_time: str
+    sections: list[dict[str, Any]]
+    unrouted: list[dict[str, Any]]
+    late: list[dict[str, Any]]
+
+
+class StatsResponse(BaseModel):
+    pending_escalations: int
+    approved_today: int
+    billed_today: int
+    late_orders: int
+
+
 INTAKE_ROLES = (Role.ADMIN, Role.OPERATOR)
 
 
@@ -172,12 +188,22 @@ def _unprocessable(error: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(error))
 
 
+def _delivery_day(value: str | None) -> _date | None:
+    if value is None:
+        return None
+    try:
+        return _date.fromisoformat(value)
+    except ValueError as error:
+        raise _invalid(error) from error
+
+
 def build_api_v1_router(
     auth: AuthService,
     admin_service: AdminService | None = None,
     intake_service: IntakeService | None = None,
     store: OrderStore | None = None,
     order_service: OrderActionService | None = None,
+    loading_service: LoadingService | None = None,
 ) -> APIRouter:
     """Build the authenticated ``/api/v1`` router for one Instance."""
 
@@ -556,5 +582,38 @@ def build_api_v1_router(
                 except VoucherError as error:
                     raise _unprocessable(error) from error
                 return Response(content=xml, media_type="application/xml")
+
+    if loading_service is not None:
+
+        @router.get(
+            "/loading-lists",
+            response_model=LoadingListResponse,
+            tags=["loading"],
+        )
+        async def get_loading_list(
+            request: Request, day: str | None = None
+        ) -> LoadingListResponse:
+            await identify(request)
+            return LoadingListResponse(
+                **await loading_service.render(_delivery_day(day))
+            )
+
+        @router.get("/stats", response_model=StatsResponse, tags=["stats"])
+        async def get_stats(request: Request) -> StatsResponse:
+            await identify(request)
+            return StatsResponse(**await loading_service.stats())
+
+        @router.post(
+            "/cutoff/render",
+            response_model=LoadingListResponse,
+            tags=["loading"],
+        )
+        async def render_cutoff(
+            request: Request, day: str | None = None
+        ) -> LoadingListResponse:
+            await require_admin(request)
+            return LoadingListResponse(
+                **await loading_service.cutoff_render(_delivery_day(day))
+            )
 
     return router
