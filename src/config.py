@@ -14,8 +14,9 @@ class Settings:
 
     The defaults keep the service runnable in a fresh clone without Google
     Cloud: sessions and orders stay in memory, and vouchers use the in-memory
-    store. Set ``SESSION_SERVICE=firestore`` with the optional ``[gcp]`` extra
-    to use the durable Firestore adapters.
+    store. For a durable local Instance without GCP, set ``ORDER_STORE=sqlite``,
+    ``SESSION_SERVICE=sqlite``, ``DATABASE_URL`` and ``VOUCHER_DIR``. The optional
+    ``firestore`` adapters remain available with the ``[gcp]`` extra.
     """
 
     def __init__(self) -> None:
@@ -24,6 +25,9 @@ class Settings:
         self.gemini_model: str = _env("GEMINI_MODEL", "gemini-3.5-flash")
         self.session_service: str = _env("SESSION_SERVICE", "memory")
         self.order_store: str = _env("ORDER_STORE", "")
+        self.database_url: str = _env(
+            "DATABASE_URL", "sqlite+aiosqlite:///./valence.db"
+        )
         self.firestore_root_collection: str = _env(
             "ADK_FIRESTORE_ROOT_COLLECTION", "adk-session"
         )
@@ -39,6 +43,7 @@ class Settings:
         self.web_cookie_secure: bool = _env("WEB_COOKIE_SECURE", "1") != "0"
         self.cutoff_secret: str = _env("CUTOFF_SECRET", "")
         self.voucher_bucket: str = _env("VOUCHER_BUCKET", "")
+        self.voucher_dir: str = _env("VOUCHER_DIR", "")
         self.webhook_rate_limit: int = int(
             _env("WEBHOOK_RATE_LIMIT_PER_SENDER", "30")
         )

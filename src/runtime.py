@@ -99,17 +99,22 @@ class AdkAgentRuntime:
 
 def _select_store() -> tuple[OrderStore | None, bool]:
     """Select the configured OrderStore and whether web calls need a loop proxy."""
-    kind = settings.order_store or (
-        "firestore" if settings.session_service == "firestore" else "memory"
-    )
+    kind = settings.order_store or {
+        "firestore": "firestore",
+        "sqlite": "sqlite",
+    }.get(settings.session_service, "memory")
     if kind == "memory":
         return InMemoryOrderStore(), False
+    if kind == "sqlite":
+        from .sql_store import SqlOrderStore
+
+        return SqlOrderStore(settings.database_url), False
     if kind == "firestore":
         from .store import FirestoreOrderStore
 
         return FirestoreOrderStore(), True
     raise ValueError(
-        f"Unknown ORDER_STORE {kind!r}; expected 'memory' or 'firestore'"
+        f"Unknown ORDER_STORE {kind!r}; expected 'memory', 'sqlite' or 'firestore'"
     )
 
 
@@ -133,7 +138,9 @@ def build_runtime(
     else:
         selected_store, proxy_store = store, False
     selected_voucher = (
-        default_voucher_storage(settings.voucher_bucket)
+        default_voucher_storage(
+            bucket=settings.voucher_bucket, directory=settings.voucher_dir
+        )
         if voucher_storage is _UNSET
         else voucher_storage
     )
@@ -149,9 +156,17 @@ def build_runtime(
     )
 
     def agent_session_factory() -> tuple[object, object]:
-        session = (
-            build_session_service() if session_service is None else session_service
-        )
+        if session_service is not None:
+            session = session_service
+        else:
+            from .sql_store import SqlOrderStore
+
+            shared_engine = (
+                selected_store.engine
+                if isinstance(selected_store, SqlOrderStore)
+                else None
+            )
+            session = build_session_service(engine=shared_engine)
         built_agent = (
             agent
             if agent is not None

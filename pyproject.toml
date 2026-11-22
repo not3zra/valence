@@ -8,8 +8,10 @@ version = "0.1.0"
 description = "Order Intake & Fulfillment agent — one ADK agent over WhatsApp text, voice and photo, with a graduated human-approval loop."
 requires-python = ">=3.10"
 dependencies = [
+    "aiosqlite>=0.20,<1",
     "google-adk==2.6.3",
     "google-genai>=2.12.1,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
 ]
 
 [project.optional-dependencies]
