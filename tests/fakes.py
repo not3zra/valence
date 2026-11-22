@@ -15,6 +15,8 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from src.media import MediaObject
+from src.model_provider import ModelCapabilities
+from src.whatsapp import MockWhatsAppSender
 
 
 async def approved_order_id(store) -> str:
@@ -38,6 +40,43 @@ async def approved_order_id(store) -> str:
     )
     assert decision.approved
     return decision.order_id
+
+
+class FakeRuntime:
+    """AgentRuntime double for the web seam: records turns, returns a reply.
+
+    Injected through ``create_app(runtime=...)`` so the HTTP surface can be
+    exercised without building an ADK agent, a runner, or a session service.
+    """
+
+    def __init__(
+        self,
+        *,
+        reply: str = "fake reply",
+        capabilities: ModelCapabilities | None = None,
+        store=None,
+        voucher_storage=None,
+        whatsapp_sender=None,
+    ) -> None:
+        self.reply = reply
+        self._capabilities = capabilities or ModelCapabilities()
+        self.store = store
+        self.voucher_storage = voucher_storage
+        self.whatsapp_sender = whatsapp_sender or MockWhatsAppSender()
+        self.turns: list[tuple[str, str, MediaObject | None]] = []
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return self._capabilities
+
+    def run_turn(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        self.turns.append((sender_id, message, media))
+        return self.reply
+
+    def stop(self) -> None:
+        return None
 
 
 class FakeMediaFetcher:

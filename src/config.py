@@ -23,6 +23,7 @@ class Settings:
         self.model_provider: str = _env("MODEL_PROVIDER", "gemini")
         self.gemini_model: str = _env("GEMINI_MODEL", "gemini-3.5-flash")
         self.session_service: str = _env("SESSION_SERVICE", "memory")
+        self.order_store: str = _env("ORDER_STORE", "")
         self.firestore_root_collection: str = _env(
             "ADK_FIRESTORE_ROOT_COLLECTION", "adk-session"
         )

@@ -1,13 +1,12 @@
 """Run every agent turn on one long-lived event loop.
 
 ADK's ``Runner`` drives the session service over async I/O, and its sync
-``Runner.run()`` wraps each turn in a throwaway event loop. The
-``FirestoreSessionService``'s async gRPC client binds to whichever loop first
-uses it; a web server closes a request's loop when the request ends, so the
-second turn through the same service crashes with ``RuntimeError: Event loop is
-closed``. This executor pins one persistent event loop in a dedicated thread,
-builds the ADK runner on it, and schedules every turn onto it — the durable
-session service is only ever touched from a loop that outlives the process.
+``Runner.run()`` wraps each turn in a throwaway event loop. A durable session
+service's async client binds to whichever loop first uses it; a web server
+closes a request's loop when the request ends, so the second turn through the
+same service crashes with ``RuntimeError: Event loop is closed``. This executor
+pins one persistent event loop in a dedicated thread, builds the agent, session
+service, and runner on it, and schedules every turn onto it.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import threading
 
-from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.genai import types
 
@@ -27,20 +25,16 @@ from .model_provider import ModelCapabilities, build_model_provider
 class TurnExecutor:
     """Owns the persistent event loop, the ADK runner, and every agent turn.
 
-    Constructing the runner inside the loop thread means the session service's
-    async client binds to that loop, so a turn can be scheduled from any thread
+    The zero-argument factory is called inside the loop thread, so the agent and
+    session service are built there and a turn can be scheduled from any thread
     — a sync handler's threadpool, or an async handler's request loop — and
-    still run against a live loop. ``firestore_client_factory`` is only supplied
-    when the GCP adapters are configured; the default path never constructs a
-    Google Cloud client.
+    still run against a live loop.
     """
 
     def __init__(
         self,
         agent_or_factory,
         session_service=None,
-        store=None,
-        firestore_client_factory=None,
         capabilities: ModelCapabilities | None = None,
     ) -> None:
         if session_service is not None or not callable(agent_or_factory):
@@ -48,15 +42,12 @@ class TurnExecutor:
             _agent = agent_or_factory
             _session_service = session_service
 
-            def _factory(_firestore_client):
+            def _factory():
                 return _agent, _session_service
 
             self._agent_factory = _factory
         else:
-            # Production path: agent_session_factory callable.
             self._agent_factory = agent_or_factory
-        self._store = store
-        self._firestore_client_factory = firestore_client_factory
         self._capabilities = (
             capabilities
             if capabilities is not None
@@ -74,15 +65,14 @@ class TurnExecutor:
         if self._error is not None:
             raise self._error
 
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return self._loop
+
     def _bootstrap(self) -> None:
         try:
             asyncio.set_event_loop(self._loop)
-            client = (
-                self._firestore_client_factory()
-                if self._firestore_client_factory is not None
-                else None
-            )
-            agent, session_service = self._agent_factory(client)
+            agent, session_service = self._agent_factory()
             self._runner = build_runner(agent, session_service)
         except BaseException as exc:  # pragma: no cover - defensive startup guard
             self._error = exc
