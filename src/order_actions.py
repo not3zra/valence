@@ -121,7 +121,7 @@ class OrderActionService:
         elif action == "push_to_tally":
             if self._tally_push is None:
                 raise TallyPushError("Tally push is not configured")
-            result = await self._tally_push.push(order_id)
+            result = await self._tally_push.push(order_id, by=principal.id)
             if not result.ok:
                 raise TallyPushFailed(result.error or "Tally push failed")
             updated = await self._store.get_order(order_id)

@@ -116,6 +116,12 @@ def test_push_uses_instance_url_and_records_success_event(fake_tally):
     events = _run(_events(store, "ord_push_api"))
     assert events.count("voucher_pushed") == 1
     assert "voucher_push_failed" not in events
+    pushed = [
+        event
+        for event in _run(store.list_order_events("ord_push_api"))
+        if event.event_type == "voucher_pushed"
+    ]
+    assert pushed[0].payload["by"] == _run(auth.authenticate(approver)).id
 
 
 def test_line_error_is_surfaced_and_audited_as_failure(fake_tally):
@@ -133,6 +139,23 @@ def test_line_error_is_surfaced_and_audited_as_failure(fake_tally):
     assert "Could not find Ledger" in response.json()["detail"]
     events = _run(_events(store, "ord_push_api"))
     assert events.count("voucher_push_failed") == 1
+
+
+def test_http_failure_is_surfaced_and_audited(fake_tally):
+    fake_tally.response_status = 500
+    fake_tally.response_body = b"server exploded"
+    client, store, storage, auth, approver = _run(_world())
+    _run(auth.set_integration("tally", {"url": _url(fake_tally)}))
+
+    response = client.post(
+        "/api/v1/orders/ord_push_api/actions",
+        json={"action": "push_to_tally", "confirm": True},
+        headers=_headers(approver),
+    )
+
+    assert response.status_code == 502, response.text
+    assert "HTTP 500" in response.json()["detail"]
+    assert "voucher_push_failed" in _run(_events(store, "ord_push_api"))
 
 
 def test_push_requires_confirm_an_approver_and_a_configured_url():

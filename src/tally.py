@@ -135,7 +135,7 @@ class TallyPushService:
         """The instance's configured Tally endpoint (empty when unconfigured)."""
         return (await self._tally_url()).strip()
 
-    async def push(self, order_id: str) -> TallyPushResult:
+    async def push(self, order_id: str, *, by: str = "") -> TallyPushResult:
         order = await self._store.get_order(order_id)
         if order is None:
             raise TallyPushError(f"order {order_id} not found")
@@ -150,18 +150,22 @@ class TallyPushService:
                 raise TallyPushError("Tally push URL is not configured")
             result = await asyncio.to_thread(push_voucher_to_tally, xml, url)
         except TallyPushError as error:
-            await self._audit(order, TallyPushResult(ok=False, error=str(error)))
+            await self._audit(order, TallyPushResult(ok=False, error=str(error)), by)
             raise
-        await self._audit(order, result)
+        await self._audit(order, result, by)
         return result
 
-    async def _audit(self, order, result: TallyPushResult) -> None:
+    async def _audit(self, order, result: TallyPushResult, by: str) -> None:
         await self._store.append_order_event(
             OrderEvent(
                 order_id=order.order_id or "",
                 event_type=(
                     EVENT_VOUCHER_PUSHED if result.ok else EVENT_VOUCHER_PUSH_FAILED
                 ),
-                payload={"voucher_id": order.voucher_id, **result.to_dict()},
+                payload={
+                    "voucher_id": order.voucher_id,
+                    "by": by,
+                    **result.to_dict(),
+                },
             )
         )
