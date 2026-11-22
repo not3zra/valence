@@ -39,7 +39,7 @@ class LoadingService:
         self._notifier = notifier
         self._now = now
 
-    async def render(self, delivery_day: date | None = None) -> dict:
+    async def render_loading_list(self, delivery_day: date | None = None) -> dict:
         """Render the delivery day's Loading List from live approved orders."""
         loading = await load_loading_list(self._store, delivery_day=delivery_day)
         return loading.to_dict()
@@ -54,7 +54,7 @@ class LoadingService:
             business_tz=parse_business_tz(config),
         )
 
-    async def cutoff_render(self, delivery_day: date | None = None) -> dict:
+    async def render_cutoff(self, delivery_day: date | None = None) -> dict:
         """Render the day's Loading List and raise a heads-up for each late order.
 
         The admin REST trigger and the secret-gated scheduler endpoint both call

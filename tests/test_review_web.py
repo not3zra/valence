@@ -8,6 +8,9 @@ the same Order Processing Core as WhatsApp.
 
 from __future__ import annotations
 
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
+
 import pytest
 from fastapi.testclient import TestClient
 from google.adk.sessions import InMemorySessionService
@@ -236,6 +239,28 @@ async def test_stats_returns_live_counts(client, store):
     body = response.json()
     assert body["pending_escalations"] == 1
     assert body["approved_today"] == 0
+
+
+def test_stats_late_count_uses_the_business_timezone_cutoff(client, store):
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    late_at = datetime.combine(today, time(13, 0), tzinfo=timezone.utc).isoformat()
+    store.orders.append(
+        Order(
+            order_id="ord_late_stats",
+            phone="+919812345001",
+            customer="ChemFab Industries",
+            items=[OrderItem(product="Sulfuric Acid", quantity=2000, unit="kg")],
+            status=OrderStatus.APPROVED,
+            created_at=late_at,
+            updated_at=late_at,
+        )
+    )
+    _login(client)
+
+    response = client.get("/review/stats")
+
+    assert response.status_code == 200
+    assert response.json()["late_orders"] == 1
 
 
 def test_review_stats_requires_login(client):

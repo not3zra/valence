@@ -49,7 +49,7 @@ async def test_render_groups_live_approved_orders_by_route_with_late_addon():
         ]
     )
 
-    result = await LoadingService(store).render(DELIVERY_DAY)
+    result = await LoadingService(store).render_loading_list(DELIVERY_DAY)
 
     assert {section["route_name"] for section in result["sections"]} == {
         "Bengaluru West",
@@ -91,8 +91,8 @@ async def test_cutoff_render_notifies_late_orders_only_once():
     sender = MockWhatsAppSender()
     service = LoadingService(store, LateOrderNotifier(store, sender))
 
-    first = await service.cutoff_render(DELIVERY_DAY)
-    await service.cutoff_render(DELIVERY_DAY)
+    first = await service.render_cutoff(DELIVERY_DAY)
+    await service.render_cutoff(DELIVERY_DAY)
 
     assert [entry["order_id"] for entry in first["late"]] == ["ord_late"]
     assert len(sender.sent) == 1

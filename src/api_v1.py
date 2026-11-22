@@ -595,7 +595,7 @@ def build_api_v1_router(
         ) -> LoadingListResponse:
             await identify(request)
             return LoadingListResponse(
-                **await loading_service.render(_delivery_day(day))
+                **await loading_service.render_loading_list(_delivery_day(day))
             )
 
         @router.get("/stats", response_model=StatsResponse, tags=["stats"])
@@ -613,7 +613,7 @@ def build_api_v1_router(
         ) -> LoadingListResponse:
             await require_admin(request)
             return LoadingListResponse(
-                **await loading_service.cutoff_render(_delivery_day(day))
+                **await loading_service.render_cutoff(_delivery_day(day))
             )
 
     return router

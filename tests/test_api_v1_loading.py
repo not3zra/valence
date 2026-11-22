@@ -10,12 +10,13 @@ from fastapi.testclient import TestClient
 from src.auth import AuthService, InMemoryAuthStore, Role
 from src.dispatch import LateOrderNotifier
 from src.loading_service import LoadingService
-from src.model_provider import ModelCapabilities
 from src.orders import Order, OrderItem, OrderStatus
 from src.store import InMemoryOrderStore
 from src.voucher import InMemoryVoucherStore
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
+
+from .fakes import FakeRuntime
 
 DAY = "2026-08-14"
 EARLY = "2026-08-14T10:00:00+00:00"
@@ -40,20 +41,6 @@ def _order(
         created_at=when,
         updated_at=when,
     )
-
-
-class _Runtime:
-    def __init__(self, store: InMemoryOrderStore, sender: MockWhatsAppSender) -> None:
-        self.capabilities = ModelCapabilities()
-        self.whatsapp_sender = sender
-        self.store = store
-        self.voucher_storage = InMemoryVoucherStore()
-
-    def run_turn(self, **kwargs):
-        return "fake reply"
-
-    def stop(self) -> None:
-        return None
 
 
 def _world(
@@ -86,9 +73,14 @@ def _world(
             )
         ).token,
     }
+    runtime = FakeRuntime(
+        store=store,
+        voucher_storage=InMemoryVoucherStore(),
+        whatsapp_sender=sender,
+    )
     service = LoadingService(store, LateOrderNotifier(store, sender), now=now)
     client = TestClient(
-        create_app(runtime=_Runtime(store, sender), auth=auth, loading_service=service)
+        create_app(runtime=runtime, auth=auth, loading_service=service)
     )
     return client, store, sender, tokens
 

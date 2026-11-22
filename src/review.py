@@ -50,6 +50,10 @@ def _iso_to_dt(value: str) -> datetime:
     return dt
 
 
+def _local_time(value: datetime, business_tz: tzinfo | None) -> datetime:
+    return value.astimezone(business_tz) if business_tz is not None else value
+
+
 def compute_stats(
     orders: list[Order],
     *,
@@ -70,27 +74,19 @@ def compute_stats(
     renders (issue #62).
     """
     reference = now if now is not None else _now()
-    today = (
-        reference.astimezone(business_tz).date()
-        if business_tz is not None
-        else reference.date()
-    )
+    today = _local_time(reference, business_tz).date()
     pending = approved = billed = late = 0
     for order in orders:
         if order.status is OrderStatus.PENDING_REVIEW:
             pending += 1
         elif order.status is OrderStatus.APPROVED:
-            updated = _iso_to_dt(order.updated_at)
-            if business_tz is not None:
-                updated = updated.astimezone(business_tz)
+            updated = _local_time(_iso_to_dt(order.updated_at), business_tz)
             if updated.date() == today:
                 approved += 1
                 if updated.time() > cutoff_time:
                     late += 1
         elif order.status is OrderStatus.BILLED:
-            updated = _iso_to_dt(order.updated_at)
-            if business_tz is not None:
-                updated = updated.astimezone(business_tz)
+            updated = _local_time(_iso_to_dt(order.updated_at), business_tz)
             if updated.date() == today:
                 billed += 1
     return {

@@ -15,7 +15,7 @@ import hashlib
 import hmac
 import json
 import re
-from datetime import date, time
+from datetime import date
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -36,6 +36,8 @@ from .loading import (
 from .loading import (
     load_loading_list,
     loading_login_page,
+    parse_business_tz,
+    parse_cutoff,
     render_loading_list_html,
 )
 from .loading_service import LoadingService
@@ -603,7 +605,8 @@ def create_app(
         _register_loading_routes(
             app, web_store, passcode, passcode_salt, cookie_secure
         )
-        _register_cutoff_endpoint(app, web_store, loading_service)
+        if loading_service is not None:
+            _register_cutoff_endpoint(app, loading_service)
 
     return app
 
@@ -784,13 +787,10 @@ def _register_review_routes(
         if target is None:
             return {}
         config = await target.get_config()
-        cutoff = str(config.get("cutoff_time"))
-        hour, minute = (int(part) for part in cutoff.split(":")) if cutoff else (
-            review.DEFAULT_CUTOFF_TIME.hour,
-            review.DEFAULT_CUTOFF_TIME.minute,
-        )
         return review.compute_stats(
-            await _orders(), cutoff_time=time(hour, minute)
+            await _orders(),
+            cutoff_time=parse_cutoff(config),
+            business_tz=parse_business_tz(config),
         )
 
     @app.get("/review", response_class=HTMLResponse)
@@ -1146,15 +1146,15 @@ def _register_loading_routes(
 
 
 def _register_cutoff_endpoint(
-    app: FastAPI, store: OrderStore, loading_service: LoadingService | None = None
+    app: FastAPI, loading_service: LoadingService
 ) -> None:
     """Register the secret-gated daily Cutoff render endpoint (issue #9, #62).
 
     The Cloud Scheduler job fires this endpoint after the daily cutoff; it runs
-    the same ``load_loading_list`` render path as the web view and the ADK tool
-    and returns the live Loading List for today as JSON (a convenience trigger,
-    never required for correctness — the WhatsApp heads-up for late orders is
-    sent from the intake path, not from this endpoint).
+    the same ``LoadingService`` render path as the admin REST trigger, returns
+    the live Loading List for today as JSON, and raises the dispatch heads-up
+    for late orders (idempotently — an order already notified at approval is
+    skipped). This is the scheduler gate; the admin REST trigger is the other.
 
     Auth follows the scaffold's pipeline: Cloud Scheduler publishes to the
     ``valence-cutoff`` topic, whose push subscription (push-auth service
@@ -1207,7 +1207,4 @@ def _register_cutoff_endpoint(
         if not await _authorized(request):
             raise HTTPException(status_code=401)
         delivery_day = _parse_day(day)
-        if loading_service is not None:
-            return await loading_service.cutoff_render(delivery_day)
-        loading = await load_loading_list(store, delivery_day=delivery_day)
-        return loading.to_dict()
+        return await loading_service.render_cutoff(delivery_day)
