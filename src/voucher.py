@@ -20,7 +20,11 @@ on-prem Tally in the demo.
 
 from __future__ import annotations
 
+import asyncio
+import re
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 from xml.sax.saxutils import escape
 
@@ -236,15 +240,70 @@ class InMemoryVoucherStore:
         return self.blobs.get(voucher_id)
 
 
-def default_voucher_storage(bucket: str = "") -> VoucherStore:
-    """The production Cloud Storage store, or the in-memory double.
+_VOUCHER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-    The bucket is provisioned by the scaffold (``valence-<project>-vouchers``);
-    when none is configured (a fresh clone, local dev, tests) the in-memory
-    double keeps the service runnable and the voucher still downloadable for
-    the manual Tally import path.
+
+class FilesystemVoucherStore:
+    """VoucherStore backed by a local directory, one XML file per voucher.
+
+    The GCP-free default for a self-hosted instance: ``VOUCHER_DIR`` points at
+    a persistent volume, so prepared vouchers survive restarts and the review
+    view can still download them for manual Tally import. Voucher ids are
+    system-generated, but the id is still validated before it becomes a path
+    component; a bad id is rejected rather than allowed to traverse the tree.
     """
-    return GcsVoucherStore(bucket) if bucket else InMemoryVoucherStore()
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+
+    def _path(self, voucher_id: str) -> Path:
+        if (
+            not voucher_id
+            or not _VOUCHER_ID_RE.fullmatch(voucher_id)
+            or ".." in voucher_id
+        ):
+            raise ValueError(f"unsafe voucher id: {voucher_id!r}")
+        return self.root / f"{voucher_id}.xml"
+
+    async def write(self, voucher_id: str, xml: str) -> None:
+        path = self._path(voucher_id)
+        await asyncio.to_thread(self._write_file, path, xml)
+
+    @staticmethod
+    def _write_file(path: Path, xml: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_text(xml, encoding="utf-8")
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+    async def read(self, voucher_id: str) -> str | None:
+        path = self._path(voucher_id)
+        return await asyncio.to_thread(self._read_file, path)
+
+    @staticmethod
+    def _read_file(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
+
+def default_voucher_storage(
+    bucket: str = "", directory: str = ""
+) -> VoucherStore:
+    """Select the configured VoucherStore: filesystem, Cloud Storage, or memory.
+
+    An explicitly configured bucket keeps the existing GCS behaviour. Without
+    one, ``VOUCHER_DIR`` gives a self-hosted instance a durable, GCP-free path;
+    with neither configured (a fresh clone, tests) the in-memory double keeps
+    the service runnable and the voucher downloadable for manual import.
+    """
+    if bucket:
+        return GcsVoucherStore(bucket)
+    return FilesystemVoucherStore(directory) if directory else InMemoryVoucherStore()
 
 
 def _round2(value: float) -> float:

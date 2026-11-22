@@ -166,7 +166,10 @@ def build_agent(
         tools.append(
             build_prepare_voucher_tool(
                 store,
-                voucher_storage or default_voucher_storage(settings.voucher_bucket),
+                voucher_storage
+                or default_voucher_storage(
+                    bucket=settings.voucher_bucket, directory=settings.voucher_dir
+                ),
             )
         )
         tools.append(build_loading_list_tool(store))
@@ -179,16 +182,25 @@ def build_agent(
     )
 
 
-def build_session_service():
+def build_session_service(engine=None):
     """Build the session service selected by ``SESSION_SERVICE``.
 
     The default is the in-memory service, so a fresh install runs without the
-    optional GCP extra. The durable adapter loads lazily and requires
-    ``valence-order-agent[gcp]``. The runtime calls this factory on its
-    persistent loop, so any async client it creates binds to that loop.
+    optional GCP extra. ``sqlite`` uses ADK's database session service on the
+    same SQL database as the order store, giving a GCP-free durable local run;
+    ``firestore`` loads lazily and requires ``valence-order-agent[gcp]``. The
+    runtime calls this factory on its persistent loop, so any async client it
+    creates binds to that loop. ``engine`` is the order store's engine, shared
+    with the SQL session service so both use one database connection pool.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
+    if settings.session_service == "sqlite":
+        from google.adk.sessions import DatabaseSessionService
+
+        if engine is not None:
+            return DatabaseSessionService(db_engine=engine)
+        return DatabaseSessionService(db_url=settings.database_url)
     if settings.session_service == "firestore":
         from .gcp import create_firestore_client, require_firestore
 
@@ -203,7 +215,7 @@ def build_session_service():
         )
     raise ValueError(
         f"Unknown SESSION_SERVICE {settings.session_service!r}; "
-        "expected 'memory' or 'firestore'"
+        "expected 'memory', 'sqlite' or 'firestore'"
     )
 
 

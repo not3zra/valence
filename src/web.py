@@ -538,7 +538,9 @@ def create_app(
 
     if store is not None:
         late_notifier = LateOrderNotifier(store, sender)
-        storage = voucher_storage or default_voucher_storage(settings.voucher_bucket)
+        storage = voucher_storage or default_voucher_storage(
+            bucket=settings.voucher_bucket, directory=settings.voucher_dir
+        )
         web_store = store
 
         _register_review_routes(
