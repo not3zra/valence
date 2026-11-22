@@ -12,8 +12,9 @@ exports it) plus ``META_APP_SECRET``. Run the service first via
 ``./scripts/run_local.sh`` (emulator) or point at the deployed instance.
 
 Usage:
-    META_APP_SECRET=... python scripts/smoke_whatsapp_webhook.py \\
-        --from +919812345001 --message "Namaste, 2 drums sulfuric acid chahiye"
+    META_APP_SECRET=... SMOKE_WHATSAPP_FROM=+91... \\
+        python scripts/smoke_whatsapp_webhook.py \\
+        --message "Namaste, 2 drums sulfuric acid chahiye"
 """
 
 from __future__ import annotations
@@ -35,12 +36,19 @@ WEBHOOK_URL = "/api/whatsapp/webhook"
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from", dest="sender", default="+919812345001")
+    parser.add_argument(
+        "--from",
+        dest="sender",
+        default=os.environ.get("SMOKE_WHATSAPP_FROM", ""),
+        help="E.164 sender to simulate (or set SMOKE_WHATSAPP_FROM)",
+    )
     parser.add_argument(
         "--message",
         default="Namaste, 2 drums sulfuric acid chahiye",
     )
     args = parser.parse_args()
+    if not args.sender:
+        parser.error("a sender is required via --from or SMOKE_WHATSAPP_FROM")
 
     app_secret = os.environ["META_APP_SECRET"]
     sender = MockWhatsAppSender()

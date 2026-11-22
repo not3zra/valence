@@ -48,7 +48,7 @@ from .media import (
     MediaObject,
     MetaMediaFetcher,
 )
-from .meta_whatsapp import MetaWhatsAppParser
+from .meta_whatsapp import MetaCredentials, MetaWhatsAppParser, MetaWhatsAppSender
 from .order_actions import OrderActionService
 from .orders import Order, OrderStatus
 from .ratelimit import SlidingWindowRateLimiter
@@ -216,6 +216,7 @@ def create_app(
     meta_app_secret: str | None = None,
     meta_verify_token: str | None = None,
     meta_access_token: str | None = None,
+    meta_phone_number_id: str | None = None,
     webhook_rate_limit: int | None = None,
     model_provider=None,
     auth: AuthService | None = None,
@@ -237,10 +238,13 @@ def create_app(
     by the deployment entry point (`src.main`, issue #13). ``webhook_parser``
     defaults to the Meta Cloud API adapter (``MetaWhatsAppParser``, the live
     inbound channel). ``media_fetcher`` defaults to ``MetaMediaFetcher`` (the
-    photo path resolves Meta media ids, issue #13). The Meta secrets
-    (``meta_app_secret``, ``meta_verify_token``, ``meta_access_token``) default
-    to their environment settings and fail closed when unset (no handshake or
-    signature verifies).
+    photo path resolves Meta media ids, issue #13). When ``auth`` is mounted the
+    webhook resolves all four Meta credentials from this Instance's stored
+    Integration on every request (issue #65), so two Instances never share a
+    verify token, app secret, access token or phone number. The ``meta_*``
+    arguments are the legacy process-level fallback for deployments with no
+    Agent Interface; they default to environment settings and fail closed when
+    unset (no handshake or signature verifies).
 
     ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
     ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
@@ -327,10 +331,30 @@ def create_app(
         if meta_access_token is not None
         else settings.meta_access_token
     )
-    parser = webhook_parser or MetaWhatsAppParser(
-        meta_app_secret_value, meta_verify_token_value
+    meta_phone_number_id_value = (
+        meta_phone_number_id
+        if meta_phone_number_id is not None
+        else settings.meta_phone_number_id
     )
-    fetcher = media_fetcher or MetaMediaFetcher(meta_access_token_value)
+    meta_fallback = MetaCredentials(
+        app_secret=meta_app_secret_value,
+        verify_token=meta_verify_token_value,
+        access_token=meta_access_token_value,
+        phone_number_id=meta_phone_number_id_value,
+    )
+
+    async def configured_meta_credentials() -> MetaCredentials:
+        """This Instance's Meta credentials, or the legacy env ones when no
+        Agent Interface is mounted (issue #65). Resolved per request so a
+        credential change through the admin API takes effect without a restart.
+        Secrets are never logged or returned by a route.
+        """
+        if auth is not None:
+            return MetaCredentials.from_values(
+                await auth.integration_values("meta")
+            )
+        return meta_fallback
+
     probe_token = (
         roundtrip_token
         if roundtrip_token is not None
@@ -411,7 +435,10 @@ def create_app(
         reply = runtime.run_turn(sender_id=payload.sender_id, message=payload.message)
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
-    @app.api_route("/api/whatsapp/webhook", methods=["GET", "POST"])
+    @app.get("/api/whatsapp/webhook", operation_id="whatsapp_webhook_legacy_get")
+    @app.post("/api/whatsapp/webhook", operation_id="whatsapp_webhook_legacy_post")
+    @app.get("/api/v1/webhooks/whatsapp", operation_id="whatsapp_webhook_get")
+    @app.post("/api/v1/webhooks/whatsapp", operation_id="whatsapp_webhook_post")
     async def whatsapp_webhook(request: Request) -> Response:
         """Meta Cloud API's WhatsApp webhook (the live inbound channel, #13).
 
@@ -436,8 +463,19 @@ def create_app(
         with a missing or invalid signature is rejected with 403 before it is
         parsed or committed, and an oversized body is refused with 413 before
         it is buffered.
+
+        Verify token, app secret, access token and phone number id are resolved
+        from this Instance's Meta Integration on every request (issue #65);
+        with no stored credentials nothing verifies or sends. The injected
+        ``webhook_parser`` / ``media_fetcher`` / ``whatsapp_sender`` seams are
+        test and demo overrides: when supplied they take precedence, so such a
+        deployment is responsible for its own credentials.
         """
-        challenge = parser.verification_challenge(
+        credentials = await configured_meta_credentials()
+        request_parser: WhatsAppWebhookParser = webhook_parser or MetaWhatsAppParser(
+            credentials.app_secret, credentials.verify_token
+        )
+        challenge = request_parser.verification_challenge(
             method=request.method,
             query={key: value for key, value in request.query_params.items()},
         )
@@ -454,14 +492,20 @@ def create_app(
                 return Response(status_code=413)
             chunks.append(chunk)
         raw_body = b"".join(chunks)
-        if not parser.verify_signature(
+        if not request_parser.verify_signature(
             method=request.method,
             url=str(request.url),
             headers={key: value for key, value in request.headers.items()},
             body=raw_body,
         ):
             return Response(status_code=403)
-        for message in parser.parse(method=request.method, body=raw_body):
+        request_fetcher: MediaFetcher = media_fetcher or MetaMediaFetcher(
+            credentials.access_token
+        )
+        reply_sender: WhatsAppSender = whatsapp_sender or MetaWhatsAppSender(
+            credentials.access_token, credentials.phone_number_id
+        )
+        for message in request_parser.parse(method=request.method, body=raw_body):
             if not message.body and not message.media:
                 continue
             # Per-sender quota before any media fetch or agent turn (security
@@ -474,7 +518,7 @@ def create_app(
             media_ref = message.media[0] if message.media else None
             if media_ref is not None and not capabilities.image:
                 if not message.body:
-                    sender.send(
+                    reply_sender.send(
                         message.sender,
                         "Photo orders are not supported by the configured "
                         "model provider. Please send the order as text.",
@@ -482,12 +526,12 @@ def create_app(
                     continue
                 media = None
             else:
-                media = fetcher.fetch(media_ref) if media_ref else None
+                media = request_fetcher.fetch(media_ref) if media_ref else None
             reply = runtime.run_turn(
                 sender_id=message.sender, message=message.body, media=media
             )
             if reply:
-                sender.send(message.sender, reply)
+                reply_sender.send(message.sender, reply)
         return _meta_ack()
 
     @app.post("/api/voice/ingest")
