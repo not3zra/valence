@@ -154,7 +154,11 @@ def _fail(error: AuthError) -> HTTPException:
     return HTTPException(status_code=error.status_code, detail=str(error))
 
 
-def _invalid(error: Exception) -> HTTPException:
+def _invalid(error: ValueError) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(error))
+
+
+def _unprocessable(error: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(error))
 
 
@@ -491,7 +495,7 @@ def build_api_v1_router(
                         principal,
                     )
                 except (ApprovalError, ValueError) as error:
-                    raise _invalid(error) from error
+                    raise _unprocessable(error) from error
                 return OrderDetailResponse(**result)
 
             @router.post(
@@ -513,7 +517,7 @@ def build_api_v1_router(
                         {"order_id": order_id, "action": payload.action}, principal
                     )
                 except (ApprovalError, ValueError) as error:
-                    raise _invalid(error) from error
+                    raise _unprocessable(error) from error
                 return OrderActionResponse(**result)
 
     return router
