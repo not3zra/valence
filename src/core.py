@@ -867,7 +867,7 @@ class OrderProcessingCore:
         )
         return order
 
-    async def mark_billed(self, order_id: str) -> Order:
+    async def mark_billed(self, order_id: str, *, by: str = "") -> Order:
         """Transition an approved or dispatched order to billed (issue #8).
 
         Only an order that already has a prepared voucher (``voucher_id`` set)
@@ -888,7 +888,7 @@ class OrderProcessingCore:
             OrderEvent(
                 order_id=order_id,
                 event_type=EVENT_ORDER_BILLED,
-                payload={"voucher_id": order.voucher_id},
+                payload={"voucher_id": order.voucher_id, "by": by},
             )
         )
         return order

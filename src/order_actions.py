@@ -17,8 +17,11 @@ from typing import Any
 from .auth import Principal
 from .core import OrderProcessingCore
 from .orders import Order, OrderEvent
+from .voucher import VoucherError, VoucherStore, prepare_voucher
 
-SUPPORTED_ACTIONS = frozenset({"approve", "reject", "dispatch"})
+SUPPORTED_ACTIONS = frozenset(
+    {"approve", "reject", "dispatch", "prepare_voucher", "bill"}
+)
 
 
 class UnsupportedOrderAction(ValueError):
@@ -69,9 +72,15 @@ def order_detail(order: Order, events: list[OrderEvent]) -> dict[str, Any]:
 class OrderActionService:
     """The single service layer for editing and deciding an order."""
 
-    def __init__(self, core: OrderProcessingCore, store) -> None:
+    def __init__(
+        self,
+        core: OrderProcessingCore,
+        store,
+        voucher_storage: VoucherStore | None = None,
+    ) -> None:
         self._core = core
         self._store = store
+        self._voucher_storage = voucher_storage
 
     async def edit(
         self, arguments: Mapping[str, Any], principal: Principal
@@ -92,8 +101,17 @@ class OrderActionService:
         if action not in SUPPORTED_ACTIONS:
             raise UnsupportedOrderAction(f"unsupported order action {action!r}")
 
-        if action == "dispatch":
+        if action == "prepare_voucher":
+            if self._voucher_storage is None:
+                raise VoucherError("voucher storage is not configured")
+            await prepare_voucher(self._store, self._voucher_storage, order_id)
+            updated = await self._store.get_order(order_id)
+            if updated is None:
+                raise RuntimeError(f"order {order_id} vanished after preparation")
+        elif action == "dispatch":
             updated = await self._core.mark_dispatched(order_id, by=principal.id)
+        elif action == "bill":
+            updated = await self._core.mark_billed(order_id, by=principal.id)
         else:
             await self._core.approve_order(
                 order_id,
@@ -111,3 +129,24 @@ class OrderActionService:
             "status": updated.status.value,
             "order": order_detail(updated, events),
         }
+
+    async def voucher_xml(
+        self, arguments: Mapping[str, Any], principal: Principal
+    ) -> str:
+        """Return the generated XML for an order's prepared voucher.
+
+        Authorization (approver role) is supplied by the REST router and the
+        MCP gateway; this method only guards the artifact's availability.
+        """
+        order_id = str(arguments["order_id"])
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise VoucherError(f"order {order_id} not found")
+        if not order.voucher_id:
+            raise VoucherError(f"order {order_id} has no prepared voucher")
+        if self._voucher_storage is None:
+            raise VoucherError("voucher storage is not configured")
+        xml = await self._voucher_storage.read(order.voucher_id)
+        if xml is None:
+            raise VoucherError(f"voucher {order.voucher_id} is not available")
+        return xml
