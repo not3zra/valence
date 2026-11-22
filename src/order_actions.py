@@ -88,7 +88,7 @@ class OrderActionService:
     ) -> dict[str, Any]:
         """Apply a confirmed decision and return the resulting order state."""
         order_id = str(arguments["order_id"])
-        action = str(arguments["action"])
+        action = str(arguments.get("action", ""))
         if action not in SUPPORTED_ACTIONS:
             raise UnsupportedOrderAction(f"unsupported order action {action!r}")
 

@@ -379,5 +379,11 @@ async def test_mcp_rejects_illegal_transitions_and_unimplemented_actions():
                 "confirm": True,
             },
         )
+    with pytest.raises(ValueError, match="unsupported order action"):
+        await gateway.call(
+            "order_action",
+            api_key=keys["approver"],
+            arguments={"order_id": "ord_mcp_pending", "confirm": True},
+        )
     assert await _aevents(store, "ord_mcp_approved") == []
     assert await _aevents(store, "ord_mcp_pending") == []
