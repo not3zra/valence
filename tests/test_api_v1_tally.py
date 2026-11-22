@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,50 +22,17 @@ from src.store import InMemoryOrderStore
 from src.tally import TallyPushService
 from src.voucher import InMemoryVoucherStore
 from src.web import create_app
+from tests.fake_tally import (
+    LINEERROR_XML,
+    tally_url,
+)
 
 CUSTOMER_PHONE = "+919812345001"
 APPROVER_PHONE = "+919845000001"
-SUCCESS_XML = (
-    "<ENVELOPE><BODY><RESULT><TALLYMESSAGE><VOUCHER>ok</VOUCHER>"
-    "</TALLYMESSAGE></RESULT></BODY></ENVELOPE>"
-)
-LINEERROR_XML = (
-    "<ENVELOPE><BODY><RESULT><TALLYMESSAGE>"
-    "<LINEERROR>Ledger not found</LINEERROR>"
-    "</TALLYMESSAGE></RESULT></BODY></ENVELOPE>"
-)
 
 
-class _Handler(BaseHTTPRequestHandler):
-    def do_POST(self):  # noqa: N802
-        length = int(self.headers.get("Content-Length", 0))
-        self.server.received.append(self.rfile.read(length))  # type: ignore[attr-defined]
-        self.send_response(self.server.status)  # type: ignore[attr-defined]
-        self.send_header("Content-Type", "application/xml")
-        self.end_headers()
-        self.wfile.write(self.server.body)  # type: ignore[attr-defined]
-
-    def log_message(self, *args) -> None:
-        return None
-
-
-@pytest.fixture
-def fake_tally():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    server.received = []  # type: ignore[attr-defined]
-    server.status = 200  # type: ignore[attr-defined]
-    server.body = SUCCESS_XML.encode()  # type: ignore[attr-defined]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield server
-    server.shutdown()
-    thread.join()
-    server.server_close()
-
-
-def _url(server) -> str:
-    host, port = server.server_address[:2]
-    return f"http://{host}:{port}/import"
+def _url(server):
+    return tally_url(server)
 
 
 async def _world():
@@ -147,14 +112,14 @@ def test_push_uses_instance_url_and_records_success_event(fake_tally):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["action"] == "push_to_tally"
-    assert fake_tally.received[0].decode() == storage.blobs["voucher_ord_push_api"]
+    assert fake_tally.received[0][2].decode() == storage.blobs["voucher_ord_push_api"]
     events = _run(_events(store, "ord_push_api"))
     assert events.count("voucher_pushed") == 1
     assert "voucher_push_failed" not in events
 
 
 def test_line_error_is_surfaced_and_audited_as_failure(fake_tally):
-    fake_tally.body = LINEERROR_XML.encode()
+    fake_tally.response_body = LINEERROR_XML.encode()
     client, store, storage, auth, approver = _run(_world())
     _run(auth.set_integration("tally", {"url": _url(fake_tally)}))
 
@@ -165,7 +130,7 @@ def test_line_error_is_surfaced_and_audited_as_failure(fake_tally):
     )
 
     assert response.status_code == 502, response.text
-    assert "Ledger not found" in response.json()["detail"]
+    assert "Could not find Ledger" in response.json()["detail"]
     events = _run(_events(store, "ord_push_api"))
     assert events.count("voucher_push_failed") == 1
 
@@ -195,7 +160,7 @@ def test_push_requires_confirm_an_approver_and_a_configured_url():
     )
     assert unconfigured.status_code == 422
     assert "not configured" in unconfigured.json()["detail"].lower()
-    assert "voucher_push_failed" not in _run(_events(store, "ord_push_api"))
+    assert "voucher_push_failed" in _run(_events(store, "ord_push_api"))
 
 
 async def test_mcp_push_uses_the_same_service_and_rules(fake_tally):
@@ -203,7 +168,7 @@ async def test_mcp_push_uses_the_same_service_and_rules(fake_tally):
     await auth.set_integration("tally", {"url": _url(fake_tally)})
 
     async def tally_url() -> str:
-        return (await auth.integration_values("tally")).get("url", "")
+        return await auth.integration_url("tally")
 
     service = OrderActionService(
         OrderProcessingCore(store),

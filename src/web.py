@@ -296,7 +296,7 @@ def create_app(
         """The instance's Tally endpoint, or the legacy env URL when no Agent
         Interface is mounted. Never a module constant (issue #66)."""
         if auth is not None:
-            return (await auth.integration_values("tally")).get("url", "").strip()
+            return await auth.integration_url("tally")
         return settings.tally_push_url.strip()
 
     tally_push = (
@@ -824,7 +824,14 @@ def _register_review_routes(
         events = await (store).list_order_events(order_id)
         events.sort(key=lambda e: e.created_at)
         from .config import settings as _settings
-        return review.order_page(order, events, message=message, notice=notice, tally_push_url=_settings.tally_push_url)
+        tally_url = (
+            await tally_push.configured_url()
+            if tally_push is not None
+            else _settings.tally_push_url
+        )
+        return review.order_page(
+            order, events, message=message, notice=notice, tally_push_url=tally_url
+        )
 
     @app.get("/review/orders/{order_id}/edit", response_class=HTMLResponse)
     async def review_edit_page(

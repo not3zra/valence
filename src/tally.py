@@ -43,7 +43,6 @@ class TallyPushResult:
 
     ok: bool
     status: int | None = None
-    response: str = ""
     error: str = ""
     line_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -105,7 +104,6 @@ def push_voucher_to_tally(
         return TallyPushResult(
             ok=False,
             status=exc.code,
-            response=_snippet(body),
             error=f"HTTP {exc.code}: {_snippet(body, 200)}",
             line_errors=_line_errors(body),
         )
@@ -117,11 +115,10 @@ def push_voucher_to_tally(
         return TallyPushResult(
             ok=False,
             status=status,
-            response=_snippet(body),
             error="; ".join(errors),
             line_errors=errors,
         )
-    return TallyPushResult(ok=True, status=status, response=_snippet(body))
+    return TallyPushResult(ok=True, status=status)
 
 
 class TallyPushService:
@@ -134,28 +131,37 @@ class TallyPushService:
         self._storage = storage
         self._tally_url = tally_url
 
+    async def configured_url(self) -> str:
+        """The instance's configured Tally endpoint (empty when unconfigured)."""
+        return (await self._tally_url()).strip()
+
     async def push(self, order_id: str) -> TallyPushResult:
         order = await self._store.get_order(order_id)
         if order is None:
             raise TallyPushError(f"order {order_id} not found")
-        if not order.voucher_id:
-            raise TallyPushError(f"order {order_id} has no prepared voucher")
-        xml = await self._storage.read(order.voucher_id)
-        if xml is None:
-            raise TallyPushError(f"voucher {order.voucher_id} is not available")
+        try:
+            if not order.voucher_id:
+                raise TallyPushError(f"order {order_id} has no prepared voucher")
+            xml = await self._storage.read(order.voucher_id)
+            if xml is None:
+                raise TallyPushError(f"voucher {order.voucher_id} is not available")
+            url = await self.configured_url()
+            if not url:
+                raise TallyPushError("Tally push URL is not configured")
+            result = await asyncio.to_thread(push_voucher_to_tally, xml, url)
+        except TallyPushError as error:
+            await self._audit(order, TallyPushResult(ok=False, error=str(error)))
+            raise
+        await self._audit(order, result)
+        return result
 
-        url = (await self._tally_url()).strip()
-        if not url:
-            raise TallyPushError("Tally push URL is not configured")
-
-        result = await asyncio.to_thread(push_voucher_to_tally, xml, url)
+    async def _audit(self, order, result: TallyPushResult) -> None:
         await self._store.append_order_event(
             OrderEvent(
-                order_id=order.order_id or order_id,
+                order_id=order.order_id or "",
                 event_type=(
                     EVENT_VOUCHER_PUSHED if result.ok else EVENT_VOUCHER_PUSH_FAILED
                 ),
                 payload={"voucher_id": order.voucher_id, **result.to_dict()},
             )
         )
-        return result
