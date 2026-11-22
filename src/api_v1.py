@@ -13,6 +13,7 @@ from datetime import date as _date
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .admin import AdminService, CatalogValidationError
@@ -46,6 +47,7 @@ from .order_actions import (
 )
 from .orders import OrderStatus
 from .store import OrderStore
+from .voucher import VoucherError
 
 
 class SetupRequest(BaseModel):
@@ -136,7 +138,9 @@ class OrderEditRequest(BaseModel):
 
 
 class OrderActionRequest(BaseModel):
-    action: Literal["approve", "reject", "dispatch"]
+    action: Literal[
+        "approve", "reject", "dispatch", "prepare_voucher", "bill"
+    ]
     confirm: bool = False
 
 
@@ -516,8 +520,26 @@ def build_api_v1_router(
                     result = await order_service.act(
                         {"order_id": order_id, "action": payload.action}, principal
                     )
-                except (ApprovalError, ValueError) as error:
+                except (ApprovalError, ValueError, VoucherError) as error:
                     raise _unprocessable(error) from error
                 return OrderActionResponse(**result)
+
+            @router.get(
+                "/orders/{order_id}/voucher",
+                response_class=Response,
+                tags=["orders"],
+            )
+            async def download_voucher(order_id: str, request: Request) -> Response:
+                principal = await identify(request, roles=APPROVER_ROLES)
+                order = await store.get_order(order_id)
+                if order is None:
+                    raise HTTPException(status_code=404, detail="order not found")
+                try:
+                    xml = await order_service.voucher_xml(
+                        {"order_id": order_id}, principal
+                    )
+                except VoucherError as error:
+                    raise _unprocessable(error) from error
+                return Response(content=xml, media_type="application/xml")
 
     return router

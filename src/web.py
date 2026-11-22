@@ -345,7 +345,9 @@ def create_app(
         if intake_service is None and store is not None:
             intake_service = IntakeService(runtime, store)
         if order_service is None and store is not None:
-            order_service = OrderActionService(OrderProcessingCore(store), store)
+            order_service = OrderActionService(
+                OrderProcessingCore(store), store, voucher_storage
+            )
         app.include_router(
             build_api_v1_router(auth, admin, intake_service, store, order_service)
         )

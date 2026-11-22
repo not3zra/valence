@@ -42,6 +42,7 @@ DEFAULT_POLICIES: Mapping[str, ToolPolicy] = {
     "issue_key": ToolPolicy(ADMIN_ROLES),
     "edit_order": ToolPolicy(APPROVER_ROLES),
     "order_action": ToolPolicy(APPROVER_ROLES, action="approve"),
+    "download_voucher": ToolPolicy(APPROVER_ROLES),
 }
 
 
@@ -54,7 +55,11 @@ def build_order_tool_operations(
     the exact same implementation; this gateway supplies the authorization the
     REST router supplies for its routes.
     """
-    return {"edit_order": service.edit, "order_action": service.act}
+    return {
+        "edit_order": service.edit,
+        "order_action": service.act,
+        "download_voucher": service.voucher_xml,
+    }
 
 
 class McpToolGateway:
