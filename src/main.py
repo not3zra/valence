@@ -1,4 +1,9 @@
-"""Production entry point: real Gemini agent + Firestore durable sessions."""
+"""Production entry point: real Gemini agent, configuration-selected adapters.
+
+The default configuration runs without Google Cloud (in-memory sessions, orders,
+and vouchers). ``SESSION_SERVICE=firestore`` selects the optional Firestore
+adapters from the ``[gcp]`` extra; only then is a Google Cloud client built.
+"""
 
 from __future__ import annotations
 
@@ -9,26 +14,28 @@ from .config import settings
 store = None
 
 
+def _uses_firestore() -> bool:
+    return settings.session_service == "firestore"
+
+
 def _ensure_store():
     global store
     if store is None:
         from .store import FirestoreOrderStore, InMemoryOrderStore
 
-        if settings.session_service == "memory":
-            store = InMemoryOrderStore()
-        else:
-            store = FirestoreOrderStore()
+        store = FirestoreOrderStore() if _uses_firestore() else InMemoryOrderStore()
 
 
 def create_valence_app():
     from .agent import build_agent, build_session_service
+    from .gcp import create_firestore_client
     from .meta_whatsapp import MetaWhatsAppSender
     from .web import create_app
 
     _ensure_store()
 
     def agent_session_factory(firestore_client):
-        session_service = build_session_service(firestore_client=firestore_client)
+        session_service = build_session_service(client=firestore_client)
         agent = build_agent(store=store)
         return agent, session_service
 
@@ -38,7 +45,10 @@ def create_valence_app():
 
     return create_app(
         agent=build_agent(store=store, whatsapp_sender=sender),
-        session_service=build_session_service(),
+        agent_session_factory=agent_session_factory,
+        firestore_client_factory=(
+            create_firestore_client if _uses_firestore() else None
+        ),
         store=store,
         whatsapp_sender=sender,
     )

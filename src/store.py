@@ -10,13 +10,14 @@ logic.
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol
-
-from google.cloud import firestore
+from typing import TYPE_CHECKING, Protocol
 
 from . import seed_data
 from .orders import Order, OrderEvent, OrderStatus
 from .seed_firestore import CONFIG_DOCUMENT
+
+if TYPE_CHECKING:
+    from google.cloud import firestore
 
 
 class OrderStore(Protocol):
@@ -76,13 +77,9 @@ class FirestoreOrderStore:
     @property
     def client(self) -> firestore.AsyncClient:
         if self._client is None:
-            try:
-                import google.api_core.grpc_helpers_async as _gh
-                if hasattr(_gh, "_channel_cache"):
-                    _gh._channel_cache.clear()
-            except Exception:
-                pass
-            self._client = firestore.AsyncClient()
+            from .gcp import create_firestore_client
+
+            self._client = create_firestore_client()
         return self._client
 
     async def get_config(self) -> dict:

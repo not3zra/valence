@@ -21,7 +21,6 @@ from google.genai import types
 
 from .agent import _event_text, build_runner
 from .media import MediaObject, media_to_inline_part
-from .store import FirestoreOrderStore
 
 
 class TurnExecutor:
@@ -30,10 +29,18 @@ class TurnExecutor:
     Constructing the runner inside the loop thread means the session service's
     async client binds to that loop, so a turn can be scheduled from any thread
     — a sync handler's threadpool, or an async handler's request loop — and
-    still run against a live loop.
+    still run against a live loop. ``firestore_client_factory`` is only supplied
+    when the GCP adapters are configured; the default path never constructs a
+    Google Cloud client.
     """
 
-    def __init__(self, agent_or_factory, session_service=None, store=None) -> None:
+    def __init__(
+        self,
+        agent_or_factory,
+        session_service=None,
+        store=None,
+        firestore_client_factory=None,
+    ) -> None:
         if session_service is not None or not callable(agent_or_factory):
             # Legacy path: (agent, session_service) positional args for tests.
             _agent = agent_or_factory
@@ -47,6 +54,7 @@ class TurnExecutor:
             # Production path: agent_session_factory callable.
             self._agent_factory = agent_or_factory
         self._store = store
+        self._firestore_client_factory = firestore_client_factory
         self._loop = asyncio.new_event_loop()
         self._runner: Runner | None = None
         self._error: BaseException | None = None
@@ -62,20 +70,11 @@ class TurnExecutor:
     def _bootstrap(self) -> None:
         try:
             asyncio.set_event_loop(self._loop)
-            # google.api_core caches gRPC channels by target. A channel created
-            # on the uvicorn loop gets reused, causing "attached to a different
-            # loop" errors.  Clear the cache so the new client gets a fresh
-            # channel bound to THIS executor loop.
-            try:
-                import google.api_core.grpc_helpers_async as _gh
-                if hasattr(_gh, "_channel_cache"):
-                    _gh._channel_cache.clear()
-            except Exception:
-                pass
-            from google.cloud import firestore as _firestore
-            client = _firestore.AsyncClient(database="(default)")
-            if self._store is not None and hasattr(self._store, "set_client"):
-                self._store.set_client(client)
+            client = (
+                self._firestore_client_factory()
+                if self._firestore_client_factory is not None
+                else None
+            )
             agent, session_service = self._agent_factory(client)
             self._runner = build_runner(agent, session_service)
         except BaseException as exc:  # pragma: no cover - defensive startup guard

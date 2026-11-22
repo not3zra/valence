@@ -21,10 +21,8 @@ on-prem Tally in the demo.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from xml.sax.saxutils import escape
-
-from google.cloud import storage as gcs_storage  # type: ignore[attr-defined]
 
 from .core import resolve_product
 from .loading import parse_business_tz
@@ -40,6 +38,9 @@ from .orders import (
 )
 from .seed_data import Customer, DeliveryLocation
 from .store import OrderStore
+
+if TYPE_CHECKING:
+    from google.cloud import storage as gcs_storage  # type: ignore[attr-defined]
 
 # Sentinel for a master that has not been mapped to Tally yet (ADR-0003): the
 # voucher must never reference it.
@@ -203,8 +204,10 @@ class GcsVoucherStore:
     """
 
     def __init__(self, bucket_name: str, client: gcs_storage.Client | None = None):
+        from .gcp import require_storage
+
         self._bucket_name = bucket_name
-        self._client = client or gcs_storage.Client()
+        self._client = client or require_storage().Client()
 
     async def write(self, voucher_id: str, xml: str) -> None:
         bucket = self._client.bucket(self._bucket_name)

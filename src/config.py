@@ -12,16 +12,16 @@ def _env(name: str, default: str) -> str:
 class Settings:
     """Process-level settings.
 
-    The defaults keep the service runnable in a fresh clone with nothing but a
-    Google API key: the Gemini model id resolves through ADK's LLM registry and
-    the Firestore session service points at the emulator when
-    ``FIRESTORE_EMULATOR_HOST`` is set.
+    The defaults keep the service runnable in a fresh clone without Google
+    Cloud: sessions and orders stay in memory, and vouchers use the in-memory
+    store. Set ``SESSION_SERVICE=firestore`` with the optional ``[gcp]`` extra
+    to use the durable Firestore adapters.
     """
 
     def __init__(self) -> None:
         self.app_name: str = _env("APP_NAME", "valence")
         self.gemini_model: str = _env("GEMINI_MODEL", "gemini-3.5-flash")
-        self.session_service: str = _env("SESSION_SERVICE", "firestore")
+        self.session_service: str = _env("SESSION_SERVICE", "memory")
         self.firestore_root_collection: str = _env(
             "ADK_FIRESTORE_ROOT_COLLECTION", "adk-session"
         )

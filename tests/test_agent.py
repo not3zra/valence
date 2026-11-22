@@ -65,13 +65,22 @@ def test_agent_defaults_to_configured_gemini_model():
     assert agent.model == "gemini-3.5-flash"
 
 
-def test_session_service_factory_uses_firestore_by_default():
-    with mock.patch.object(
-        agent_module.settings, "session_service", "firestore"
-    ), mock.patch.object(agent_module, "FirestoreSessionService") as firestore_service:
-        build_session_service()
-    firestore_service.assert_called_once_with(
-        root_collection=agent_module.settings.firestore_root_collection
+def test_session_service_factory_defaults_to_memory():
+    service = build_session_service()
+    assert isinstance(service, InMemorySessionService)
+
+
+def test_session_service_factory_uses_firestore_when_configured():
+    pytest.importorskip("google.cloud.firestore")
+    from google.adk.integrations.firestore.firestore_session_service import (
+        FirestoreSessionService,
+    )
+
+    with mock.patch.object(agent_module.settings, "session_service", "firestore"):
+        service = build_session_service()
+    assert isinstance(service, FirestoreSessionService)
+    assert service.root_collection == (
+        agent_module.settings.firestore_root_collection
     )
 
 

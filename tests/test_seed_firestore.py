@@ -62,6 +62,7 @@ class _Client:
 
 @pytest.fixture
 def fake_client():
+    pytest.importorskip("google.cloud.firestore")
     return _Client()
 
 

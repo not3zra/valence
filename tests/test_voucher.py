@@ -531,6 +531,8 @@ async def test_xml_escapes_master_names():
 
 
 async def test_gcs_store_uses_blob_name_and_content_type(monkeypatch):
+    pytest.importorskip("google.cloud.storage")
+
     class FakeBlob:
         def __init__(self, name):
             self.name = name

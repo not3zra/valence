@@ -176,8 +176,11 @@ python -m venv .venv
 source .venv/bin/activate   # Linux/macOS
 # .venv\Scripts\activate    # Windows
 
-pip install -e ".[dev]"
+pip install -e ".[dev,gcp]"
 ```
+
+The optional `gcp` extra installs the Firestore and Cloud Storage adapters.
+Without it, Valence still installs and runs with in-memory persistence.
 
 #### Step 2: Install the Firestore emulator
 
@@ -234,7 +237,8 @@ Navigate to `http://localhost:8080/loading` in your browser.
 
 ### Option B: Run with Memory Store (No GCP Access)
 
-If you don't have GCP project access, use the in-memory store. The agent will still work but won't persist data across restarts.
+The default install uses the in-memory store, so no GCP project or `gcp` extra
+is needed. The agent still works but won't persist data across restarts.
 
 ```bash
 # Set environment variables

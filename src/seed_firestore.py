@@ -9,10 +9,12 @@ seeded documents with the same content.
 from __future__ import annotations
 
 import asyncio
-
-from google.cloud import firestore
+from typing import TYPE_CHECKING
 
 from . import seed_data
+
+if TYPE_CHECKING:
+    from google.cloud import firestore
 
 CONFIG_DOCUMENT = "order_processing"
 
@@ -23,9 +25,13 @@ async def seed_firestore(
     """Populate every operational collection. ``wipe`` clears each first.
 
     ``client`` is injectable so tests can drive this against a fake without a
-    running emulator or a GCP project.
+    running emulator or a GCP project. Without one, the optional ``[gcp]`` extra
+    is loaded only here.
     """
-    client = client or firestore.AsyncClient()
+    if client is None:
+        from .gcp import require_firestore
+
+        client = require_firestore().AsyncClient()
     if wipe:
         for collection in seed_data.COLLECTIONS:
             await _wipe_collection(client, collection)

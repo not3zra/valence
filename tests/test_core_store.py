@@ -95,6 +95,7 @@ class _Client:
 
 @pytest.fixture
 def fake_client():
+    pytest.importorskip("google.cloud.firestore")
     client = _Client()
     for customer in seed_data.CUSTOMERS:
         client.docs[("customers", customer.id)] = {
