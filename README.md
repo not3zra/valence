@@ -258,6 +258,27 @@ echo "Review passcode: $WEB_PASSCODE"
 uvicorn src.main:app --host 0.0.0.0 --port 8080
 ```
 
+### Docker Compose with Postgres (GCP-free)
+
+The Compose profile runs the app and Postgres, applies the Alembic schema
+migration on startup, and keeps order data and voucher XML in named volumes. It
+needs no GCP credentials.
+
+```bash
+cp .env.example .env
+# set POSTGRES_PASSWORD and GOOGLE_API_KEY in .env
+# (or MODEL_PROVIDER=fake for an offline demo); for plain HTTP on localhost,
+# also set WEB_COOKIE_SECURE=0 so the review-view cookie is stored
+docker compose up --build -d
+curl localhost:8080/health   # {"status":"ok"}
+```
+
+SQLite remains the bootstrap and local-development database. Storage and
+migration conformance tests cover both SQL paths (`tests/test_postgres_compose.py`;
+set `TEST_POSTGRES_URL` to exercise Postgres). This profile still has no TLS
+reverse proxy or highly available database, so it is not presented as a
+production-ready deployment.
+
 ### Option C: Deploy to Google Cloud Run
 
 > **Legacy:** The GCP deployment path is retired; kept for reference until archival.

@@ -186,16 +186,16 @@ def build_session_service(engine=None):
     """Build the session service selected by ``SESSION_SERVICE``.
 
     The default is the in-memory service, so a fresh install runs without the
-    optional GCP extra. ``sqlite`` uses ADK's database session service on the
-    same SQL database as the order store, giving a GCP-free durable local run;
-    ``firestore`` loads lazily and requires ``valence-order-agent[gcp]``. The
+    optional GCP extra. ``sqlite`` and ``postgres`` use ADK's database session
+    service on the same SQL database as the order store; ``firestore`` loads
+    lazily and requires ``valence-order-agent[gcp]``. The
     runtime calls this factory on its persistent loop, so any async client it
     creates binds to that loop. ``engine`` is the order store's engine, shared
     with the SQL session service so both use one database connection pool.
     """
     if settings.session_service == "memory":
         return InMemorySessionService()
-    if settings.session_service == "sqlite":
+    if settings.session_service in ("sqlite", "postgres"):
         from google.adk.sessions import DatabaseSessionService
 
         if engine is not None:
@@ -215,7 +215,7 @@ def build_session_service(engine=None):
         )
     raise ValueError(
         f"Unknown SESSION_SERVICE {settings.session_service!r}; "
-        "expected 'memory', 'sqlite' or 'firestore'"
+        "expected 'memory', 'sqlite', 'postgres' or 'firestore'"
     )
 
 

@@ -102,10 +102,17 @@ def _select_store() -> tuple[OrderStore | None, bool]:
     kind = settings.order_store or {
         "firestore": "firestore",
         "sqlite": "sqlite",
+        "postgres": "postgres",
     }.get(settings.session_service, "memory")
     if kind == "memory":
         return InMemoryOrderStore(), False
-    if kind == "sqlite":
+    if kind in ("sqlite", "postgres"):
+        if kind == "postgres" and not settings.database_url.startswith(
+            "postgresql+asyncpg://"
+        ):
+            raise ValueError(
+                "ORDER_STORE=postgres requires a postgresql+asyncpg:// DATABASE_URL"
+            )
         from .sql_store import SqlOrderStore
 
         return SqlOrderStore(settings.database_url), False
@@ -114,7 +121,8 @@ def _select_store() -> tuple[OrderStore | None, bool]:
 
         return FirestoreOrderStore(), True
     raise ValueError(
-        f"Unknown ORDER_STORE {kind!r}; expected 'memory', 'sqlite' or 'firestore'"
+        f"Unknown ORDER_STORE {kind!r}; expected 'memory', 'sqlite', 'postgres' "
+        "or 'firestore'"
     )
 
 
