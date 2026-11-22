@@ -26,8 +26,34 @@ import logging
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from .whatsapp import InboundMessage
+
+
+@dataclass(frozen=True)
+class MetaCredentials:
+    """One Instance's four Meta channel credentials.
+
+    The webhook resolves these from the Instance's stored Integration (issue
+    #65). Empty fields fail closed: the parser never verifies a handshake or
+    signature, and the sender/fetcher make no network calls.
+    """
+
+    app_secret: str = field(default="", repr=False)
+    verify_token: str = field(default="", repr=False)
+    access_token: str = field(default="", repr=False)
+    phone_number_id: str = field(default="", repr=False)
+
+    @classmethod
+    def from_values(cls, values: Mapping[str, str]) -> MetaCredentials:
+        return cls(
+            app_secret=values.get("app_secret", "").strip(),
+            verify_token=values.get("verify_token", "").strip(),
+            access_token=values.get("access_token", "").strip(),
+            phone_number_id=values.get("phone_number_id", "").strip(),
+        )
 
 # Meta's Graph API version and the messages/media endpoint host.
 GRAPH_API_VERSION = "v20.0"

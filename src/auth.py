@@ -445,6 +445,20 @@ class AuthService:
         values = await self._store.get_integration(service)
         return (values or {}).get("url", "").strip()
 
+    async def integration_values(self, service: str) -> dict[str, str]:
+        """Return a copy of an Integration's stored values, or ``{}`` if absent.
+
+        Unlike :meth:`integration_url` this exposes secrets, so it is reserved
+        for trusted channel adapters that need the full credential set (the
+        Meta webhook resolves its verify token, app secret, access token and
+        phone number id through here). No REST or MCP route returns these
+        values; callers must never log them.
+        """
+        if service not in INTEGRATION_SERVICES:
+            raise ValueError(f"unknown integration service {service!r}")
+        values = await self._store.get_integration(service)
+        return dict(values) if values else {}
+
     async def integration_health(self) -> dict[str, dict[str, bool]]:
         """Report configured/healthy per Integration, never the secret values.
 
