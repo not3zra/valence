@@ -240,7 +240,8 @@ Navigate to `http://localhost:8080/loading` in your browser.
 The default install uses the in-memory store, so no GCP project or `gcp` extra
 is needed. The agent still works but won't persist data across restarts. The
 model provider is selected with `MODEL_PROVIDER` (`gemini` by default, `fake`
-for offline runs); the native Gemini path never installs or imports LiteLLM,
+for offline echo runs, `fake-toolcall` for the end-to-end harness); the native
+Gemini path never installs or imports LiteLLM,
 and a provider without image/audio capability gates photo/voice intake while
 text intake stays available.
 
@@ -458,6 +459,32 @@ uv lock --check
 docker compose up --build
 ```
 
+### Real-process end-to-end harness
+
+One command exercises the whole Instance offline — no GCP, external service, or
+secret required. It runs `valence init` and `valence setup` as CLI subprocesses,
+starts the real uvicorn application, drives it over HTTP, pushes a voucher to a
+local fake Tally, delivers a signed Meta webhook, restarts the process, and
+verifies that orders, vouchers, and Loading Lists survived:
+
+```bash
+# One command; exits non-zero on the first failed step
+uv run python scripts/e2e_harness.py
+
+# Keep logs and artifacts at a known path, or point at Postgres
+uv run python scripts/e2e_harness.py --artifacts ./e2e-artifacts
+uv run python scripts/e2e_harness.py --database-url postgresql+asyncpg://user:pass@localhost:5432/valence
+
+# Same flow as a pytest test, so any CI runner that runs the suite runs it
+uv run pytest tests/test_e2e_harness.py
+```
+
+Each step is reported as `PASS`/`FAIL`. On failure the failing step is named and
+the server log, SQLite database, voucher XML, rendered Loading List, Tally
+receipts, and a `report.json` are preserved under the artifacts directory. The
+default is a clean SQLite Instance in a fresh temp directory; `--database-url`
+switches both the order store and ADK sessions to Postgres for the same flow.
+
 ### Agent Evaluation
 
 Run the eval harness against the real Gemini model:
@@ -498,7 +525,7 @@ python scripts/eval_agent.py --category safety
 | Component | Version | Role |
 |-----------|---------|------|
 | **Google ADK** | `2.6.3` | Agent runtime, tool execution, session management |
-| **Model provider** | `MODEL_PROVIDER` | Capability-aware seam: native Gemini default, fake for tests; no LiteLLM on the default path |
+| **Model provider** | `MODEL_PROVIDER` | Capability-aware seam: native Gemini default, fake echo and fake tool-calling providers for offline tests; no LiteLLM on the default path |
 | **Gemini 3.5 Flash** | `gemini-3.5-flash` | Multimodal understanding (text + audio in one call) |
 | **Vertex AI** | Production | Model serving (not free-tier API key) |
 

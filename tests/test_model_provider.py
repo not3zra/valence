@@ -7,6 +7,7 @@ and the turn-level gate rather than any model vendor's SDK.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from subprocess import run
@@ -30,6 +31,8 @@ from src.model_provider import (
     ModelCapabilities,
     build_model_provider,
 )
+from src.orders import OrderStatus
+from src.store import InMemoryOrderStore
 
 
 class _MediaRecordingLlm(BaseLlm):
@@ -81,6 +84,31 @@ def test_fake_provider_is_selected_by_configuration():
     assert isinstance(provider.model, BaseLlm)
 
 
+def test_fake_toolcall_provider_is_selectable_by_configuration():
+    with mock.patch.object(settings, "model_provider", "fake-toolcall"):
+        provider = build_model_provider()
+    assert isinstance(provider.model, BaseLlm)
+    assert provider.model.model == "fake-toolcall"
+    assert provider.capabilities == ModelCapabilities()
+
+
+def test_fake_toolcall_provider_commits_an_order_through_the_agent():
+    store = InMemoryOrderStore()
+    with mock.patch.object(settings, "model_provider", "fake-toolcall"):
+        agent = agent_module.build_agent(store=store)
+    runner = agent_module.build_runner(agent, InMemorySessionService())
+
+    reply = agent_module.run_turn(
+        runner, sender_id="+919812345001", message="2000 kg sulfuric acid"
+    )
+
+    orders = asyncio.run(store.list_all_orders())
+    assert len(orders) == 1
+    assert orders[0].status is OrderStatus.PENDING_REVIEW
+    assert orders[0].escalation_reasons
+    assert "approval" in reply.lower()
+
+
 def test_unknown_provider_name_is_rejected_with_an_actionable_error():
     with mock.patch.object(settings, "model_provider", "unknown"):
         with pytest.raises(ValueError, match="MODEL_PROVIDER"):
@@ -90,9 +118,7 @@ def test_unknown_provider_name_is_rejected_with_an_actionable_error():
 def test_agent_runs_a_text_turn_with_an_injected_fake_provider():
     agent = agent_module.build_agent(provider=FakeModelProvider())
     runner = agent_module.build_runner(agent, InMemorySessionService())
-    reply = agent_module.run_turn(
-        runner, sender_id="+919812345001", message="hello"
-    )
+    reply = agent_module.run_turn(runner, sender_id="+919812345001", message="hello")
     assert reply == "Echo: hello"
 
 
