@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import JSON, ScalarResult, String, func, insert, select
+from sqlalchemy import JSON, ScalarResult, String, delete, func, insert, select
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -29,6 +31,8 @@ from sqlalchemy.pool import NullPool
 
 from . import seed_data
 from .auth import InstanceProfile, KeyRecord, Role
+from .config import settings
+from .intake import ClaimStatus, IdempotencyClaim
 from .orders import Order, OrderEvent, OrderStatus
 
 _CONFIG_KEY = "config"
@@ -104,6 +108,19 @@ class IntegrationCredentialRow(Base):
     service: Mapped[str] = mapped_column(String, primary_key=True)
     data: Mapped[dict[str, str]] = mapped_column(JSON)
     updated_at: Mapped[str] = mapped_column(String)
+
+
+class IdempotencyRow(Base):
+    """One scoped intake key: a claim, its stored reply, and an expiry."""
+
+    __tablename__ = "valence_idempotency"
+
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+    expires_at: Mapped[str] = mapped_column(String, index=True)
 
 
 def _seed_rows() -> list[dict[str, Any]]:
@@ -532,3 +549,107 @@ class SqlAuthStore:
                 )
             )
             return list(result.all())
+
+
+class SqlIdempotencyStore:
+    """Durable ``IdempotencyStore``: SQLite locally, Postgres in production.
+
+    The primary key on ``(scope, key)`` is the claim: the first INSERT wins and
+    later callers either replay the completed reply or wait as a pending claim.
+    It can share the runtime engine or open its own from a database URL.
+    """
+
+    def __init__(
+        self,
+        url: str | None = None,
+        *,
+        engine: AsyncEngine | None = None,
+        ttl_s: float | None = None,
+    ) -> None:
+        if engine is None:
+            if not url:
+                raise ValueError(
+                    "SqlIdempotencyStore needs a database URL or an engine"
+                )
+            engine = create_async_engine(url, poolclass=NullPool)
+        self._engine = engine
+        self._sessions = async_sessionmaker(engine, expire_on_commit=False)
+        self._ttl_s = settings.idempotency_ttl_s if ttl_s is None else ttl_s
+        self._ready = False
+        self._lock = asyncio.Lock()
+
+    @property
+    def engine(self) -> AsyncEngine:
+        return self._engine
+
+    async def init_schema(self) -> None:
+        async with self._lock:
+            if self._ready:
+                return
+            async with self._engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            self._ready = True
+
+    async def try_claim(
+        self, scope: str, key: str, fingerprint: str
+    ) -> IdempotencyClaim:
+        await self.init_schema()
+        now = datetime.now(UTC)
+        try:
+            async with self._sessions() as session, session.begin():
+                session.add(
+                    IdempotencyRow(
+                        scope=scope,
+                        key=key,
+                        fingerprint=fingerprint,
+                        result=None,
+                        created_at=now.isoformat(),
+                        expires_at=(now + timedelta(seconds=self._ttl_s)).isoformat(),
+                    )
+                )
+            return IdempotencyClaim(ClaimStatus.CLAIMED)
+        except IntegrityError:
+            pass
+        row = await self._row(scope, key)
+        if row is None:
+            return IdempotencyClaim(ClaimStatus.PENDING)
+        if row.expires_at <= now.isoformat():
+            await self.cleanup_expired()
+            return IdempotencyClaim(ClaimStatus.PENDING)
+        if row.result is not None:
+            return IdempotencyClaim(
+                ClaimStatus.COMPLETE, row.fingerprint, dict(row.result)
+            )
+        return IdempotencyClaim(ClaimStatus.PENDING)
+
+    async def _row(self, scope: str, key: str) -> IdempotencyRow | None:
+        async with self._sessions() as session:
+            return await session.get(IdempotencyRow, (scope, key))
+
+    async def complete(
+        self, scope: str, key: str, fingerprint: str, result: dict[str, Any]
+    ) -> None:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(IdempotencyRow, (scope, key))
+            if row is not None and row.fingerprint == fingerprint:
+                row.result = dict(result)
+
+    async def release(self, scope: str, key: str) -> None:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(IdempotencyRow, (scope, key))
+            if row is not None and row.result is None:
+                await session.delete(row)
+
+    async def cleanup_expired(self) -> int:
+        await self.init_schema()
+        now = datetime.now(UTC).isoformat()
+        async with self._sessions() as session, session.begin():
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    delete(IdempotencyRow).where(IdempotencyRow.expires_at <= now)
+                ),
+            )
+            return result.rowcount or 0

@@ -50,6 +50,7 @@ class Settings:
             _env("WEBHOOK_RATE_LIMIT_PER_SENDER", "30")
         )
         self.agent_turn_timeout_s: float = float(_env("AGENT_TURN_TIMEOUT_S", "120"))
+        self.idempotency_ttl_s: float = float(_env("IDEMPOTENCY_TTL_S", "86400"))
         self.agent_max_concurrent_turns: int = int(
             _env("AGENT_MAX_CONCURRENT_TURNS", "8")
         )
