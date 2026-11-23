@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.5"
+
+jobs:
+  lint-types-tests:
+    name: Lint, types and tests (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Typecheck
+        run: uv run mypy src
+      - name: Unit and integration tests (SQLite)
+        run: uv run pytest
+      - name: End-to-end harness (SQLite)
+        env:
+          MODEL_PROVIDER: fake-toolcall
+        run: uv run python scripts/e2e_harness.py --artifacts artifacts/e2e-sqlite
+      - name: Upload E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-sqlite
+          path: artifacts/e2e-sqlite
+
+  postgres-e2e:
+    name: Postgres conformance and end-to-end
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: valence
+          POSTGRES_PASSWORD: valence
+          POSTGRES_DB: valence_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U valence -d valence_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_POSTGRES_URL: postgresql+asyncpg://valence:valence@127.0.0.1:5432/valence_test
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: End-to-end harness (Postgres)
+        env:
+          MODEL_PROVIDER: fake-toolcall
+        run: >-
+          uv run python scripts/e2e_harness.py
+          --database-url "$TEST_POSTGRES_URL"
+          --artifacts artifacts/e2e-postgres
+      - name: Postgres conformance tests
+        run: uv run pytest -m postgres
+      - name: Upload E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-postgres
+          path: artifacts/e2e-postgres
+
+  dependency-audit:
+    name: Dependency audit (high/critical)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - name: Export locked dependencies
+        run: >-
+          uv export --frozen --format requirements-txt --no-emit-project
+          -o requirements-audit.txt
+      - name: Audit for high and critical advisories
+        run: >-
+          uvx --from pip-audit-extra==2.0.0 pip-audit-extra
+          --disable-pip --severity HIGH --fail-level HIGH
+          < requirements-audit.txt

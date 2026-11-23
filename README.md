@@ -489,6 +489,37 @@ receipts, and a `report.json` are preserved under the artifacts directory. The
 default is a clean SQLite Instance in a fresh temp directory; `--database-url`
 switches both the order store and ADK sessions to Postgres for the same flow.
 
+### Continuous Integration
+
+The workflow in `.github/workflows/ci.yml` runs on every pull request and on
+pushes to `main`. It installs from the committed `uv.lock` on Python 3.12 and
+runs the same lint, typecheck, and test commands as local development, so a
+green local run is a green CI run:
+
+- **Lint, types and tests (SQLite)** — `ruff check`, `mypy src`, and the full
+  `pytest` suite, followed by the end-to-end harness against a clean SQLite
+  Instance.
+- **Postgres conformance and end-to-end** — a Postgres service container, the
+  end-to-end harness with `--database-url` pointing at the disposable database,
+  then `pytest -m postgres` against `TEST_POSTGRES_URL`. The harness runs first
+  on a pristine database; the conformance fixture recreates that database before
+  each marked test so no test inherits another's orders.
+- **Dependency audit** — exports the locked dependency set with
+  `uv export --frozen` and runs `pip-audit-extra --fail-level HIGH` (version
+  pinned in the workflow), failing the build on known high or critical
+  advisories. Plain `pip-audit` has no severity threshold, so the audit uses
+  this wrapper to gate only on high and critical findings.
+
+CI needs no credentials: the harness runs with `MODEL_PROVIDER=fake-toolcall`,
+empty Meta credentials, and a local fake Tally, and the workflow references no
+GitHub secrets. E2E artifacts are uploaded on failure for diagnosis.
+
+Recommended branch protection for `main`: require the three CI checks above to
+pass, require at least one approving review, dismiss stale approvals on new
+commits, require branches to be up to date before merging, and block force
+pushes and branch deletion. This keeps `main` deployable while the final
+integration PR to `main` remains a deliberate human decision.
+
 ### Agent Evaluation
 
 Run the eval harness against the real Gemini model:
