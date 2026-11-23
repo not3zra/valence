@@ -12,11 +12,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import date as _date
 from typing import Any
 
 from .auth import Principal
 from .core import OrderProcessingCore
-from .orders import Order, OrderEvent
+from .orders import Order, OrderEvent, OrderStatus
 from .tally import TallyPushError, TallyPushFailed, TallyPushService
 from .voucher import VoucherError, VoucherStore, prepare_voucher
 
@@ -34,6 +35,36 @@ SUPPORTED_ACTIONS = frozenset(
 
 class UnsupportedOrderAction(ValueError):
     """An action the Agent Interface does not implement."""
+
+
+def select_orders(
+    orders: list[Order],
+    *,
+    status: str | None = None,
+    customer: str | None = None,
+    phone: str | None = None,
+    date: str | None = None,
+) -> list[Order]:
+    """Apply the Agent Interface's order-list filters to a set of orders."""
+    wanted_status = OrderStatus(status) if status is not None else None
+    wanted_day = _date.fromisoformat(date) if date is not None else None
+    selected = list(orders)
+    if wanted_status is not None:
+        selected = [order for order in selected if order.status is wanted_status]
+    if phone is not None:
+        selected = [order for order in selected if order.phone == phone]
+    if customer is not None:
+        needle = customer.casefold()
+        selected = [
+            order
+            for order in selected
+            if needle in (order.customer or "").casefold()
+        ]
+    if wanted_day is not None:
+        day = wanted_day.isoformat()
+        selected = [order for order in selected if order.created_at[:10] == day]
+    selected.sort(key=lambda order: order.created_at, reverse=True)
+    return selected
 
 
 def order_summary(order: Order) -> dict[str, Any]:
@@ -91,6 +122,26 @@ class OrderActionService:
         self._store = store
         self._voucher_storage = voucher_storage
         self._tally_push = tally_push
+
+    async def list_orders(self, arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Project the filtered order set for an authorized reader."""
+        orders = select_orders(
+            await self._store.list_all_orders(),
+            status=arguments.get("status"),
+            customer=arguments.get("customer"),
+            phone=arguments.get("phone"),
+            date=arguments.get("date"),
+        )
+        return [order_summary(order) for order in orders]
+
+    async def get_order(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """Project one order and its event timeline for an authorized reader."""
+        order_id = str(arguments["order_id"])
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise ValueError(f"order {order_id} not found")
+        events = await self._store.list_order_events(order_id)
+        return order_detail(order, events)
 
     async def edit(
         self, arguments: Mapping[str, Any], principal: Principal

@@ -47,14 +47,14 @@ async def test_revocation_and_integration_credentials_persist(tmp_path):
 
 
 def test_production_auth_reuses_the_runtime_engine(tmp_path):
-    from src.main import _auth_store
+    from src.composition import auth_store
 
     class _Runtime:
         def __init__(self, store):
             self.store = store
 
     orders = SqlOrderStore(_url(tmp_path))
-    assert _auth_store(_Runtime(orders)).engine is orders.engine
+    assert auth_store(_Runtime(orders)).engine is orders.engine
 
 
 def test_sql_adapter_satisfies_the_same_port_as_the_double():

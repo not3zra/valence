@@ -50,6 +50,20 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--integrations", default=None, help="JSON file of Integration credentials"
     )
+    mcp = commands.add_parser(
+        "mcp", help="run the MCP server over stdio or streamable HTTP"
+    )
+    mcp.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="MCP transport (default: stdio)",
+    )
+    mcp.add_argument("--host", default="127.0.0.1", help="streamable HTTP host")
+    mcp.add_argument("--port", type=int, default=8000, help="streamable HTTP port")
+    mcp.add_argument(
+        "--api-key", default=None, help="API key for stdio (default: VALENCE_API_KEY)"
+    )
     return parser
 
 
@@ -114,6 +128,17 @@ def _setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mcp(args: argparse.Namespace) -> int:
+    from .mcp_app import create_mcp_server
+    from .mcp_server import run_mcp_server
+
+    server = create_mcp_server(api_key=args.api_key or settings.valence_api_key)
+    run_mcp_server(
+        server, transport=args.transport, host=args.host, port=args.port
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point; returns a process exit code."""
     args = _parser().parse_args(argv)
@@ -121,6 +146,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_init(args))
     if args.command == "setup":
         return _setup(args)
+    if args.command == "mcp":
+        return _mcp(args)
     raise SystemExit(f"unknown command {args.command!r}")
 
 

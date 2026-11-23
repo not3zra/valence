@@ -57,6 +57,7 @@ class Role(str, Enum):
 
 
 ADMIN_ROLES = (Role.ADMIN,)
+INTAKE_ROLES = (Role.ADMIN, Role.OPERATOR)
 APPROVER_ROLES = (Role.APPROVER,)
 READ_ROLES = (Role.ADMIN, Role.OPERATOR, Role.APPROVER, Role.VIEWER)
 

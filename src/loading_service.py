@@ -20,6 +20,13 @@ from .review import compute_stats
 from .store import OrderStore
 
 
+def parse_delivery_day(value: str | None) -> date | None:
+    """Parse a delivery-day query argument shared by REST and MCP."""
+    if value is None:
+        return None
+    return date.fromisoformat(value)
+
+
 class LateOrderSink(Protocol):
     """The dispatch heads-up seam used by the cutoff render."""
 

@@ -14,12 +14,13 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .admin import AdminService, CatalogValidationError
 from .auth import (
     ADMIN_ROLES,
     APPROVER_ROLES,
+    INTAKE_ROLES,
     READ_ROLES,
     AuthError,
     AuthService,
@@ -30,6 +31,7 @@ from .auth import (
     bearer_token,
 )
 from .core import ApprovalError
+from .instance_service import instance_view
 from .intake import (
     E164_PATTERN,
     CapabilityError,
@@ -38,15 +40,18 @@ from .intake import (
     InvalidMedia,
     MediaTooLarge,
     decode_attachment,
-    fingerprint_of,
+    intake_fingerprint,
+    validate_idempotency_key,
+    validate_intake_message,
+    validate_intake_sender,
 )
-from .loading_service import LoadingService
+from .loading_service import LoadingService, parse_delivery_day
 from .order_actions import (
     OrderActionService,
     order_detail,
     order_summary,
+    select_orders,
 )
-from .orders import OrderStatus
 from .store import OrderStore
 from .tally import TallyPushError, TallyPushFailed
 from .voucher import VoucherError
@@ -77,6 +82,16 @@ class IntakeRequest(BaseModel):
         description="Verified customer phone (E.164) used as the session identity",
     )
     message: str = Field(min_length=1, description="Natural-language order text")
+
+    @field_validator("sender_id")
+    @classmethod
+    def _whole_e164(cls, value: str) -> str:
+        return validate_intake_sender(value)
+
+    @field_validator("message")
+    @classmethod
+    def _nonblank(cls, value: str) -> str:
+        return validate_intake_message(value)
 
 
 class VoiceIntakeRequest(BaseModel):
@@ -173,9 +188,6 @@ class StatsResponse(BaseModel):
     late_orders: int
 
 
-INTAKE_ROLES = (Role.ADMIN, Role.OPERATOR)
-
-
 def _fail(error: AuthError) -> HTTPException:
     return HTTPException(status_code=error.status_code, detail=str(error))
 
@@ -189,10 +201,8 @@ def _unprocessable(error: Exception) -> HTTPException:
 
 
 def _delivery_day(value: str | None) -> _date | None:
-    if value is None:
-        return None
     try:
-        return _date.fromisoformat(value)
+        return parse_delivery_day(value)
     except ValueError as error:
         raise _invalid(error) from error
 
@@ -244,15 +254,7 @@ def build_api_v1_router(
     @router.get("/instance")
     async def instance(request: Request) -> dict[str, object]:
         principal = await identify(request)
-        profile = await auth.get_instance()
-        return {
-            "business_name": profile.business_name if profile else "",
-            "timezone": profile.timezone if profile else "UTC",
-            "role": principal.role.value,
-            "principal": principal.id,
-            "config": await admin_service.get_config() if admin_service else {},
-            "integrations": await auth.integration_health(),
-        }
+        return await instance_view(auth, admin_service, principal)
 
     @router.patch("/instance")
     async def update_instance(
@@ -359,14 +361,11 @@ def build_api_v1_router(
             raise _fail(error) from error
 
     def _idempotency(request: Request, payload: BaseModel) -> tuple[str | None, str]:
-        key = request.headers.get("idempotency-key")
-        if key is not None:
-            key = key.strip()
-            if not key or len(key) > 255:
-                raise HTTPException(
-                    status_code=422, detail="invalid Idempotency-Key header"
-                )
-        return key, fingerprint_of(request.url.path, payload.model_dump())
+        try:
+            key = validate_idempotency_key(request.headers.get("idempotency-key"))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return key, intake_fingerprint(payload.model_dump(), request.url.path)
 
     if intake_service is not None:
 
@@ -470,34 +469,16 @@ def build_api_v1_router(
             date: str | None = None,
         ) -> list[OrderSummaryResponse]:
             await identify(request)
-            wanted_status: OrderStatus | None = None
-            if status is not None:
-                try:
-                    wanted_status = OrderStatus(status)
-                except ValueError as error:
-                    raise _invalid(error) from error
-            wanted_day = None
-            if date is not None:
-                try:
-                    wanted_day = _date.fromisoformat(date)
-                except ValueError as error:
-                    raise _invalid(error) from error
-            orders = await store.list_all_orders()
-            if wanted_status is not None:
-                orders = [order for order in orders if order.status is wanted_status]
-            if phone is not None:
-                orders = [order for order in orders if order.phone == phone]
-            if customer is not None:
-                needle = customer.casefold()
-                orders = [
-                    order
-                    for order in orders
-                    if needle in (order.customer or "").casefold()
-                ]
-            if wanted_day is not None:
-                day = wanted_day.isoformat()
-                orders = [order for order in orders if order.created_at[:10] == day]
-            orders.sort(key=lambda order: order.created_at, reverse=True)
+            try:
+                orders = select_orders(
+                    await store.list_all_orders(),
+                    status=status,
+                    customer=customer,
+                    phone=phone,
+                    date=date,
+                )
+            except ValueError as error:
+                raise _invalid(error) from error
             return [OrderSummaryResponse(**order_summary(order)) for order in orders]
 
         @router.get(

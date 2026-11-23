@@ -17,6 +17,7 @@ from .auth import (
     ADMIN_ROLES,
     APPROVER_ROLES,
     CONFIRMED_ACTIONS,
+    INTAKE_ROLES,
     READ_ROLES,
     AuthService,
     ForbiddenError,
@@ -37,12 +38,22 @@ class ToolPolicy:
     action: str | None = None
 
 
-DEFAULT_POLICIES: Mapping[str, ToolPolicy] = {
+MCP_TOOL_POLICIES: Mapping[str, ToolPolicy] = {
     "get_instance": ToolPolicy(READ_ROLES),
-    "issue_key": ToolPolicy(ADMIN_ROLES),
-    "edit_order": ToolPolicy(APPROVER_ROLES),
+    "intake": ToolPolicy(INTAKE_ROLES),
+    "list_orders": ToolPolicy(READ_ROLES),
+    "get_order": ToolPolicy(READ_ROLES),
     "order_action": ToolPolicy(APPROVER_ROLES, action="approve"),
     "download_voucher": ToolPolicy(APPROVER_ROLES),
+    "list_loading_lists": ToolPolicy(READ_ROLES),
+    "get_stats": ToolPolicy(READ_ROLES),
+    "list_catalog": ToolPolicy(READ_ROLES),
+}
+
+DEFAULT_POLICIES: Mapping[str, ToolPolicy] = {
+    **MCP_TOOL_POLICIES,
+    "issue_key": ToolPolicy(ADMIN_ROLES),
+    "edit_order": ToolPolicy(APPROVER_ROLES),
 }
 
 
