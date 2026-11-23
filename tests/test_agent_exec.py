@@ -164,7 +164,7 @@ async def test_cancelling_async_run_turn_cancels_the_agent_turn(monkeypatch):
     monkeypatch.setattr("src.agent_exec.build_runner", lambda agent, service: hanging)
     executor = TurnExecutor(lambda: (object(), object()))
     try:
-        with pytest.raises(TimeoutError):
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
             await asyncio.wait_for(
                 executor.run_turn_async(sender_id="+9000000001", message="hi"),
                 timeout=0.05,
