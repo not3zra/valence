@@ -470,9 +470,10 @@ def build_api_v1_router(
                 model=model,
             )
             key, fingerprint = _idempotency(request, payload)
-            sender_id = str(getattr(payload, "caller" if audio else "sender_id"))
-            data = str(getattr(payload, "audio_base64" if audio else "image_base64"))
-            mime_type = str(payload.mime_type)
+            fields = payload.model_dump()
+            sender_id = str(fields["caller" if audio else "sender_id"])
+            data = str(fields["audio_base64" if audio else "image_base64"])
+            mime_type = str(fields["mime_type"])
             try:
                 media = decode_attachment(data, mime_type, audio=audio)
             except MediaTooLarge as error:
@@ -492,7 +493,7 @@ def build_api_v1_router(
                     result = await intake_service.intake_photo(
                         sender_id=sender_id,
                         media=media,
-                        message=str(getattr(payload, "message", "")),
+                        message=str(fields.get("message", "")),
                         principal_id=principal.id,
                         idempotency_key=key,
                         fingerprint=fingerprint,
