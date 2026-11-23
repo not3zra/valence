@@ -10,11 +10,11 @@ and WhatsApp decisions in sync through the same Order Processing Core.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone, tzinfo
+from datetime import UTC, datetime, time, tzinfo
 from html import escape
 
 from .orders import Order, OrderEvent, OrderItem, OrderStatus
-from .ui import DESIGN_TOKENS, COMPONENT_CSS, page_shell, login_page_shell
+from .ui import login_page_shell, page_shell
 
 PASSCODE_COOKIE = "valence_review"
 
@@ -40,13 +40,13 @@ STATUS_LABELS: dict[str, str] = {
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso_to_dt(value: str) -> datetime:
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -267,7 +267,8 @@ def order_page(
         for item in order.items
     )
     timeline = "".join(
-        f"<tr><td style='white-space:nowrap;width:150px;color:var(--color-text-secondary)'>"
+        f"<tr><td style='white-space:nowrap;width:150px;"
+        "color:var(--color-text-secondary)'>"
         f"{_escaped(event.created_at)}</td>"
         f"<td style='white-space:nowrap;width:200px;font-weight:600'>"
         f"{_escaped(event.event_type)}</td>"
@@ -303,7 +304,8 @@ def order_page(
         f"<div class='card'><dl class='fields'>"
         f"<dt>Phone</dt><dd>{escape(order.phone)}</dd>"
         f"<dt>Customer</dt><dd>{escape(order.customer or '\u2014')}</dd>"
-        f"<dt>Delivery location</dt><dd>{escape(order.delivery_location or '\u2014')}</dd>"
+        f"<dt>Delivery location</dt>"
+        f"<dd>{escape(order.delivery_location or '\u2014')}</dd>"
         f"<dt>Source channel</dt><dd>{escape(order.source_channel)}</dd>"
         f"<dt>Source language</dt><dd>{escape(order.source_language)}</dd>"
         f"<dt>Confidence</dt><dd>{order.confidence:g}</dd>"

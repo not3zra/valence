@@ -11,23 +11,23 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def iso_to_dt(value: str) -> datetime:
     """Parse an ISO timestamp, treating a naive value as UTC."""
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
-class OrderStatus(str, Enum):
+class OrderStatus(StrEnum):
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
     DISPATCHED = "dispatched"
@@ -35,7 +35,7 @@ class OrderStatus(str, Enum):
     REJECTED = "rejected"
 
 
-class EscalationReason(str, Enum):
+class EscalationReason(StrEnum):
     MISSING_FIELD = "missing_field"
     UNKNOWN_CUSTOMER = "unknown_customer"
     UNVERIFIED_NUMBER = "unverified_number"

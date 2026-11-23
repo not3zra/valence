@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from google.adk.tools import FunctionTool, ToolContext
 
 from . import voucher as voucher_mod
@@ -42,14 +44,14 @@ def _read_pending(state) -> dict | None:
 
 
 def _hours_since(start_iso: str, end_iso: str) -> float:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     start = datetime.fromisoformat(start_iso)
     if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
+        start = start.replace(tzinfo=UTC)
     end = datetime.fromisoformat(end_iso)
     if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
+        end = end.replace(tzinfo=UTC)
     return (end - start).total_seconds() / 3600
 
 

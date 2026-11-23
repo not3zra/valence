@@ -258,7 +258,7 @@ class LoopProxiedStore:
         self._store = store
         self._loop = loop
 
-    def _proxy(self, coro):  # type: ignore[no-untyped-def]
+    def _proxy(self, coro):
         f = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return asyncio.wrap_future(f)
 

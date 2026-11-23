@@ -17,7 +17,7 @@ import difflib
 import math
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import seed_data
 from .loading import is_late_for, parse_business_tz, parse_cutoff
@@ -289,7 +289,7 @@ class OrderProcessingCore:
             )
         products = await self._store.get_products()
         if now is None:
-            now_dt = datetime.now(timezone.utc)
+            now_dt = datetime.now(UTC)
         else:
             now_dt = iso_to_dt(now)
         intake_time = now_dt.isoformat()

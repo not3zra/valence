@@ -50,7 +50,8 @@ DESIGN_TOKENS = """
   --color-purple-text: #6b21a8;
 
   /* Typography */
-  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto,
+               'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
@@ -106,7 +107,8 @@ a { color: var(--color-accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ---- Layout ---- */
-.wrap { max-width: 960px; margin: 0 auto; padding: var(--space-6) var(--space-5) var(--space-16); }
+.wrap { max-width: 960px; margin: 0 auto;
+        padding: var(--space-6) var(--space-5) var(--space-16); }
 header {
   background: var(--color-text);
   color: #f8fafc;
@@ -193,7 +195,8 @@ h2:first-child { margin-top: 0; }
 }
 
 /* ---- Badges ---- */
-.badges { margin-top: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.badges { margin-top: var(--space-2); display: flex; flex-wrap: wrap;
+          gap: var(--space-1); }
 .badge {
   display: inline-flex;
   align-items: center;
@@ -208,7 +211,8 @@ h2:first-child { margin-top: 0; }
 .badge.g { background: var(--color-success-bg); color: var(--color-success-text); }
 .badge.n { background: var(--color-info-bg); color: var(--color-info-text); }
 .badge.d { background: var(--color-purple-bg); color: var(--color-purple-text); }
-.badge.warning { background: var(--color-warning-bg); color: var(--color-warning-text); }
+.badge.warning { background: var(--color-warning-bg);
+                 color: var(--color-warning-text); }
 
 /* ---- Buttons ---- */
 .btn, button {
@@ -453,7 +457,8 @@ def page_shell(title: str, body: str, *, nav_links: str = "", active: str = "") 
         "<a href='/' class='brand'>Valence</a>"
         f"<nav>{nav}</nav>"
         "<form method='post' action='/review/logout'>"
-        "<button class='btn-ghost' type='submit' style='color:#94a3b8;border-color:transparent'>"
+        "<button class='btn-ghost' type='submit' "
+        "style='color:#94a3b8;border-color:transparent'>"
         "Log out</button></form>"
         "</header>"
         f"<div class='wrap'>{body}</div>"

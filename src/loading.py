@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 from .orders import Order, OrderItem, OrderStatus, iso_to_dt
 from .seed_data import DeliveryLocation, Route
 from .store import OrderStore
-from .ui import DESIGN_TOKENS, COMPONENT_CSS, login_page_shell
+from .ui import COMPONENT_CSS, DESIGN_TOKENS, login_page_shell
 
 DEFAULT_CUTOFF_TIME: time = time(17, 30)
 
@@ -314,7 +314,8 @@ def render_loading_list_html(loading_list: LoadingList) -> str:
         "<!doctype html><html lang='en'><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>Loading List {_escaped(loading_list.delivery_day)} \u2014 Valence</title>"
+        f"<title>Loading List {_escaped(loading_list.delivery_day)} "
+        f"\u2014 Valence</title>"
         f"<style>{DESIGN_TOKENS}{COMPONENT_CSS}</style>"
         "</head><body>"
         "<header>"

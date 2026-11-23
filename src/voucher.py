@@ -44,7 +44,7 @@ from .seed_data import Customer, DeliveryLocation
 from .store import OrderStore
 
 if TYPE_CHECKING:
-    from google.cloud import storage as gcs_storage  # type: ignore[attr-defined]
+    from google.cloud import storage as gcs_storage
 
 # Sentinel for a master that has not been mapped to Tally yet (ADR-0003): the
 # voucher must never reference it.

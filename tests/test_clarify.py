@@ -13,7 +13,7 @@ to escalation when the turn cap is exceeded or the timeout elapses.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -266,7 +266,7 @@ async def test_tool_timeout_promotes_pending_partial_to_escalation():
     await tool.func(tool_context=ctx, **_partial_args())
     # Age the held partial past the 24h timeout, then a fresh message arrives.
     ctx.state[CLARIFY_STATE_KEY]["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(hours=48)
+        datetime.now(UTC) - timedelta(hours=48)
     ).isoformat()
 
     result = await tool.func(
@@ -488,7 +488,7 @@ async def test_tool_timeout_promotes_the_accumulated_merged_order():
     )
     # The customer stops replying; the two-turn accumulated partial ages out.
     ctx.state[CLARIFY_STATE_KEY]["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(hours=48)
+        datetime.now(UTC) - timedelta(hours=48)
     ).isoformat()
 
     result = await tool.func(

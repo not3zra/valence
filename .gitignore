@@ -35,7 +35,6 @@ build/
 /AGENTS.md
 /THREAT_MODEL.md
 /ralph/
-/uv.lock
 
 # Teammate handoff docs (contain live secrets/tokens, never committed)
 /handoff/

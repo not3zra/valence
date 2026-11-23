@@ -33,7 +33,7 @@ def require_firestore() -> Any:
 def require_storage() -> Any:
     """Import ``google.cloud.storage`` or explain how to install the extra."""
     try:
-        from google.cloud import storage  # type: ignore[attr-defined]
+        from google.cloud import storage
     except ImportError as exc:
         raise GcpExtraRequired(_GCP_EXTRA_HINT) from exc
     return storage
