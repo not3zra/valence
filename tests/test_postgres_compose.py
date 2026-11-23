@@ -45,6 +45,7 @@ APPLICATION_TABLES = {
     "valence_instance",
     "valence_api_keys",
     "valence_integration_credentials",
+    "valence_idempotency",
 }
 requires_postgres = pytest.mark.skipif(
     not POSTGRES_URL, reason="set TEST_POSTGRES_URL to run Postgres conformance"

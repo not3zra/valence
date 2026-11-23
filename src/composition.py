@@ -13,10 +13,10 @@ from .admin import AdminService
 from .auth import ApproverPhones, AuthService
 from .config import settings
 from .core import OrderProcessingCore
-from .intake import IntakeService
+from .intake import InMemoryIdempotencyStore, IntakeService
 from .loading_service import LoadingService
 from .order_actions import OrderActionService
-from .sql_store import SqlAuthStore, SqlOrderStore
+from .sql_store import SqlAuthStore, SqlIdempotencyStore, SqlOrderStore
 from .voucher import VoucherStore
 
 
@@ -56,6 +56,14 @@ def build_auth(runtime) -> AuthService:
     )
 
 
+def idempotency_store(runtime) -> InMemoryIdempotencyStore | SqlIdempotencyStore:
+    """Durability follows the order store: SQL for SQL, memory for fake mode."""
+    store = runtime.store
+    if isinstance(store, SqlOrderStore):
+        return SqlIdempotencyStore(engine=store.engine)
+    return InMemoryIdempotencyStore()
+
+
 def build_agent_services(
     runtime,
     storage: VoucherStore,
@@ -70,7 +78,12 @@ def build_agent_services(
         return AgentServices(None, None, None, None)
     return AgentServices(
         admin=AdminService(store),
-        intake=IntakeService(runtime, store, turn_timeout_s=turn_timeout_s),
+        intake=IntakeService(
+            runtime,
+            store,
+            idempotency=idempotency_store(runtime),
+            turn_timeout_s=turn_timeout_s,
+        ),
         orders=OrderActionService(
             OrderProcessingCore(store), store, storage, tally_push
         ),

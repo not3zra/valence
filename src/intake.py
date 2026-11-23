@@ -21,7 +21,9 @@ import base64
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any, Protocol
 
 from .config import settings
@@ -37,6 +39,9 @@ from .orders import (
 from .store import OrderStore
 
 E164_PATTERN = r"^\+[1-9]\d{1,14}$"
+
+# A worker that loses a cross-process claim waits this long between polls.
+IDEMPOTENCY_POLL_INTERVAL_S = 0.05
 
 IMAGE_MIME_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -95,32 +100,92 @@ class IntakeResult:
         return asdict(self)
 
 
+class ClaimStatus(Enum):
+    """The outcome of trying to own an idempotency key."""
+
+    CLAIMED = "claimed"
+    PENDING = "pending"
+    COMPLETE = "complete"
+
+
+@dataclass(frozen=True)
+class IdempotencyClaim:
+    """A claim on ``(scope, key)``; a completed claim carries the stored reply."""
+
+    status: ClaimStatus
+    fingerprint: str = ""
+    result: dict[str, Any] | None = None
+
+
+@dataclass
+class _IdempotencyEntry:
+    fingerprint: str
+    result: dict[str, Any] | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    expires_at: str = ""
+
+
 class IdempotencyStore(Protocol):
-    """Cache one response per key, together with a request fingerprint."""
+    """Atomically claim, complete, and expire one response per scoped key."""
 
-    async def get(self, key: str) -> tuple[str, dict[str, Any]] | None: ...
+    async def try_claim(
+        self, scope: str, key: str, fingerprint: str
+    ) -> IdempotencyClaim: ...
 
-    async def set(
-        self, key: str, fingerprint: str, result: dict[str, Any]
+    async def complete(
+        self, scope: str, key: str, fingerprint: str, result: dict[str, Any]
     ) -> None: ...
+
+    async def cleanup_expired(self) -> int: ...
 
 
 class InMemoryIdempotencyStore:
-    """Single-instance adapter; exact for one process, cleared on restart."""
+    """Single-process adapter for tests and fake mode, cleared on restart."""
 
-    def __init__(self) -> None:
-        self._entries: dict[str, tuple[str, dict[str, Any]]] = {}
+    def __init__(self, *, ttl_s: float | None = None) -> None:
+        self._ttl_s = settings.idempotency_ttl_s if ttl_s is None else ttl_s
+        self._entries: dict[tuple[str, str], _IdempotencyEntry] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, key: str) -> tuple[str, dict[str, Any]] | None:
-        async with self._lock:
-            return self._entries.get(key)
+    def _expiry(self) -> str:
+        return (datetime.now(UTC) + timedelta(seconds=self._ttl_s)).isoformat()
 
-    async def set(
-        self, key: str, fingerprint: str, result: dict[str, Any]
+    async def try_claim(
+        self, scope: str, key: str, fingerprint: str
+    ) -> IdempotencyClaim:
+        async with self._lock:
+            identity = (scope, key)
+            now = datetime.now(UTC).isoformat()
+            entry = self._entries.get(identity)
+            if entry is not None and entry.expires_at <= now:
+                del self._entries[identity]
+                entry = None
+            if entry is None:
+                self._entries[identity] = _IdempotencyEntry(
+                    fingerprint=fingerprint, expires_at=self._expiry()
+                )
+                return IdempotencyClaim(ClaimStatus.CLAIMED)
+            if entry.result is not None:
+                return IdempotencyClaim(
+                    ClaimStatus.COMPLETE, entry.fingerprint, dict(entry.result)
+                )
+            return IdempotencyClaim(ClaimStatus.PENDING)
+
+    async def complete(
+        self, scope: str, key: str, fingerprint: str, result: dict[str, Any]
     ) -> None:
         async with self._lock:
-            self._entries[key] = (fingerprint, result)
+            entry = self._entries.get((scope, key))
+            if entry is not None and entry.fingerprint == fingerprint:
+                entry.result = dict(result)
+
+    async def cleanup_expired(self) -> int:
+        async with self._lock:
+            now = datetime.now(UTC).isoformat()
+            expired = [k for k, e in self._entries.items() if e.expires_at <= now]
+            for identity in expired:
+                del self._entries[identity]
+            return len(expired)
 
 
 def decode_attachment(data: str, mime_type: str, *, audio: bool) -> MediaObject:
@@ -287,20 +352,29 @@ class IntakeService:
     ) -> IntakeResult:
         if not idempotency_key:
             return await self._execute(sender_id, message, media)
-        key = f"{principal_id}:{surface}:{idempotency_key}"
-        lock = await self._lock_for(self._locks, key)
+        scope = f"{principal_id}:{surface}"
+        identity = f"{scope}:{idempotency_key}"
+        lock = await self._lock_for(self._locks, identity)
         async with lock:
-            cached = await self._idempotency.get(key)
-            if cached is not None:
-                stored_fingerprint, stored_result = cached
-                if stored_fingerprint != fingerprint:
-                    raise IdempotencyConflict(
-                        "idempotency key was reused with a different payload"
+            while True:
+                claim = await self._idempotency.try_claim(
+                    scope, idempotency_key, fingerprint
+                )
+                if claim.status is ClaimStatus.COMPLETE:
+                    if claim.fingerprint != fingerprint:
+                        raise IdempotencyConflict(
+                            "idempotency key was reused with a different payload"
+                        )
+                    return IntakeResult(
+                        **{**(claim.result or {}), "idempotent": True}
                     )
-                return IntakeResult(**{**stored_result, "idempotent": True})
-            result = await self._execute(sender_id, message, media)
-            await self._idempotency.set(key, fingerprint, result.to_dict())
-            return result
+                if claim.status is ClaimStatus.CLAIMED:
+                    result = await self._execute(sender_id, message, media)
+                    await self._idempotency.complete(
+                        scope, idempotency_key, fingerprint, result.to_dict()
+                    )
+                    return result
+                await asyncio.sleep(IDEMPOTENCY_POLL_INTERVAL_S)
 
     async def _execute(
         self, sender_id: str, message: str, media: MediaObject | None
