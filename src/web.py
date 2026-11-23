@@ -411,7 +411,11 @@ def create_app(
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
     if auth is not None:
         shared = build_agent_services(
-            runtime, storage, tally_push, notifier=late_notifier
+            runtime,
+            storage,
+            tally_push,
+            notifier=late_notifier,
+            turn_timeout_s=turn_timeout_s,
         )
         admin = admin or shared.admin
         intake_service = intake_service or shared.intake

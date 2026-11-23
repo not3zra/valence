@@ -173,3 +173,41 @@ async def test_cancelling_async_run_turn_cancels_the_agent_turn(monkeypatch):
         assert hanging.cancelled
     finally:
         executor.stop()
+
+
+async def test_concurrent_turns_are_globally_bounded(monkeypatch):
+    class _CountingRunner:
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak = 0
+            self.release = asyncio.Event()
+
+        async def run_async(self, **kwargs):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await self.release.wait()
+            finally:
+                self.active -= 1
+            return
+            yield None
+
+    runner = _CountingRunner()
+    monkeypatch.setattr("src.agent_exec.build_runner", lambda agent, service: runner)
+    executor = TurnExecutor(lambda: (object(), object()), max_concurrent_turns=1)
+    tasks = [
+        asyncio.create_task(
+            executor.run_turn_async(sender_id=str(index), message="hi")
+        )
+        for index in range(3)
+    ]
+    try:
+        await asyncio.sleep(0.05)
+        assert runner.peak == 1
+        assert runner.active == 1
+    finally:
+        runner.release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        executor.stop()

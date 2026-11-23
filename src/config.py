@@ -50,6 +50,9 @@ class Settings:
             _env("WEBHOOK_RATE_LIMIT_PER_SENDER", "30")
         )
         self.agent_turn_timeout_s: float = float(_env("AGENT_TURN_TIMEOUT_S", "120"))
+        self.agent_max_concurrent_turns: int = int(
+            _env("AGENT_MAX_CONCURRENT_TURNS", "8")
+        )
         self.tally_push_url: str = _env("TALLY_PUSH_URL", "")
         self.service_url: str = _env("SERVICE_URL", "")
         self.valence_api_key: str = _env("VALENCE_API_KEY", "")
