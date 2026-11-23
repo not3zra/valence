@@ -74,6 +74,24 @@ class _CommittingRunner:
         return "reply"
 
 
+class _FailingRunner:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities()
+
+    def run_turn(self, *, sender_id, message, media=None) -> str:
+        return "reply"
+
+    async def run_turn_async(self, *, sender_id, message, media=None) -> str:
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("turn failed")
+        return "reply"
+
+
 class _SqlRuntime(FakeRuntime):
     def __init__(self, store, numbers) -> None:
         super().__init__(store=store)
@@ -120,8 +138,29 @@ async def test_two_intake_services_sharing_an_idempotency_store_create_one_order
     assert await _order_count(orders) == 1
 
 
+async def test_a_failed_turn_releases_the_key_for_a_different_payload():
+    orders = InMemoryOrderStore()
+    service = IntakeService(_FailingRunner(failures=1), orders)
+    kwargs = {
+        "sender_id": "+919812345001",
+        "message": "first message",
+        "principal_id": "principal-1",
+        "idempotency_key": "failed-retry",
+        "fingerprint": "fp-1",
+    }
+
+    with pytest.raises(RuntimeError, match="turn failed"):
+        await service.intake_text(**kwargs)
+
+    replay = await service.intake_text(
+        **{**kwargs, "message": "different message", "fingerprint": "fp-2"}
+    )
+
+    assert replay.idempotent is False
+
+
 def test_sql_adapter_satisfies_the_same_port_as_the_double():
-    port_methods = ("try_claim", "complete", "cleanup_expired")
+    port_methods = ("try_claim", "complete", "release", "cleanup_expired")
     assert all(hasattr(SqlIdempotencyStore, name) for name in port_methods)
     assert all(hasattr(InMemoryIdempotencyStore, name) for name in port_methods)
 
@@ -173,6 +212,19 @@ async def test_reusing_a_key_with_a_different_payload_reports_the_stored_fingerp
     assert claim.status is ClaimStatus.COMPLETE
     assert claim.fingerprint == "fp-original"
     assert claim.result == {"reply": "one"}
+
+
+async def test_releasing_a_pending_claim_allows_a_fresh_claim(store_url):
+    store = SqlIdempotencyStore(store_url)
+    await store.init_schema()
+    key = f"key-{uuid.uuid4().hex}"
+    await store.try_claim("principal:text", key, "fp-1")
+    await store.release("principal:text", key)
+
+    claim = await store.try_claim("principal:text", key, "fp-2")
+
+    assert claim.status is ClaimStatus.CLAIMED
+    assert claim.fingerprint == ""
 
 
 async def test_cleanup_expired_removes_only_expired_records(tmp_path):

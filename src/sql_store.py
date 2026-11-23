@@ -635,6 +635,13 @@ class SqlIdempotencyStore:
             if row is not None and row.fingerprint == fingerprint:
                 row.result = dict(result)
 
+    async def release(self, scope: str, key: str) -> None:
+        await self.init_schema()
+        async with self._sessions() as session, session.begin():
+            row = await session.get(IdempotencyRow, (scope, key))
+            if row is not None and row.result is None:
+                await session.delete(row)
+
     async def cleanup_expired(self) -> int:
         await self.init_schema()
         now = datetime.now(UTC).isoformat()

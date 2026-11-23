@@ -136,6 +136,8 @@ class IdempotencyStore(Protocol):
         self, scope: str, key: str, fingerprint: str, result: dict[str, Any]
     ) -> None: ...
 
+    async def release(self, scope: str, key: str) -> None: ...
+
     async def cleanup_expired(self) -> int: ...
 
 
@@ -178,6 +180,13 @@ class InMemoryIdempotencyStore:
             entry = self._entries.get((scope, key))
             if entry is not None and entry.fingerprint == fingerprint:
                 entry.result = dict(result)
+
+    async def release(self, scope: str, key: str) -> None:
+        async with self._lock:
+            identity = (scope, key)
+            entry = self._entries.get(identity)
+            if entry is not None and entry.result is None:
+                del self._entries[identity]
 
     async def cleanup_expired(self) -> int:
         async with self._lock:
@@ -369,7 +378,11 @@ class IntakeService:
                         **{**(claim.result or {}), "idempotent": True}
                     )
                 if claim.status is ClaimStatus.CLAIMED:
-                    result = await self._execute(sender_id, message, media)
+                    try:
+                        result = await self._execute(sender_id, message, media)
+                    except BaseException:
+                        await self._idempotency.release(scope, idempotency_key)
+                        raise
                     await self._idempotency.complete(
                         scope, idempotency_key, fingerprint, result.to_dict()
                     )
