@@ -134,3 +134,80 @@ def test_turn_executor_continues_durable_session(echo_agent):
         assert len(sessions.sessions) == 1
     finally:
         executor.stop()
+
+
+async def test_async_run_turn_returns_the_reply(echo_agent):
+    executor = TurnExecutor(echo_agent, InMemorySessionService())
+    try:
+        assert await executor.run_turn_async(sender_id="+9000000001", message="hi") == (
+            "Echo: hi"
+        )
+    finally:
+        executor.stop()
+
+
+async def test_cancelling_async_run_turn_cancels_the_agent_turn(monkeypatch):
+    class _HangingRunner:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def run_async(self, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            return
+            yield None
+
+    hanging = _HangingRunner()
+    monkeypatch.setattr("src.agent_exec.build_runner", lambda agent, service: hanging)
+    executor = TurnExecutor(lambda: (object(), object()))
+    try:
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await asyncio.wait_for(
+                executor.run_turn_async(sender_id="+9000000001", message="hi"),
+                timeout=0.05,
+            )
+        await asyncio.sleep(0.05)
+        assert hanging.cancelled
+    finally:
+        executor.stop()
+
+
+async def test_concurrent_turns_are_globally_bounded(monkeypatch):
+    class _CountingRunner:
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak = 0
+            self.release = asyncio.Event()
+
+        async def run_async(self, **kwargs):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await self.release.wait()
+            finally:
+                self.active -= 1
+            return
+            yield None
+
+    runner = _CountingRunner()
+    monkeypatch.setattr("src.agent_exec.build_runner", lambda agent, service: runner)
+    executor = TurnExecutor(lambda: (object(), object()), max_concurrent_turns=1)
+    tasks = [
+        asyncio.create_task(
+            executor.run_turn_async(sender_id=str(index), message="hi")
+        )
+        for index in range(3)
+    ]
+    try:
+        await asyncio.sleep(0.05)
+        assert runner.peak == 1
+        assert runner.active == 1
+    finally:
+        runner.release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        executor.stop()

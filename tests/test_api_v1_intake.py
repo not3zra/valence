@@ -54,6 +54,11 @@ class CommittingRuntime(FakeRuntime):
         self.committed.append(decision)
         return "fake reply"
 
+    async def run_turn_async(self, *, sender_id, message, media=None) -> str:
+        return await asyncio.to_thread(
+            self.run_turn, sender_id=sender_id, message=message, media=media
+        )
+
 
 def _client(
     *,

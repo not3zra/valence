@@ -24,6 +24,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+from .config import settings
 from .media import AUDIO_MIME_TYPES, MAX_MEDIA_BYTES, MediaObject
 from .model_provider import ModelCapabilities
 from .orders import (
@@ -72,6 +73,10 @@ class TurnRunner(Protocol):
     def capabilities(self) -> ModelCapabilities: ...
 
     def run_turn(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str: ...
+
+    async def run_turn_async(
         self, *, sender_id: str, message: str, media: MediaObject | None = None
     ) -> str: ...
 
@@ -188,9 +193,13 @@ class IntakeService:
         store: OrderStore,
         *,
         idempotency: IdempotencyStore | None = None,
+        turn_timeout_s: float | None = None,
     ) -> None:
         self._runner = runner
         self._store = store
+        self._turn_timeout_s = (
+            settings.agent_turn_timeout_s if turn_timeout_s is None else turn_timeout_s
+        )
         self._capabilities: ModelCapabilities = runner.capabilities
         self._idempotency = idempotency or InMemoryIdempotencyStore()
         self._locks: dict[str, asyncio.Lock] = {}
@@ -302,11 +311,11 @@ class IntakeService:
         async with await self._lock_for(self._sender_locks, sender_id):
             before = {order.order_id for order in await self._store.list_all_orders()}
             started_at = utcnow()
-            reply = await asyncio.to_thread(
-                self._runner.run_turn,
-                sender_id=sender_id,
-                message=message,
-                media=media,
+            reply = await asyncio.wait_for(
+                self._runner.run_turn_async(
+                    sender_id=sender_id, message=message, media=media
+                ),
+                timeout=self._turn_timeout_s,
             )
             decision = await self._decision(sender_id, before, started_at)
             return IntakeResult(

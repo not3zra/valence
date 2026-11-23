@@ -44,6 +44,9 @@ class _Runtime:
     def run_turn(self, **kwargs) -> str:
         return "fake reply"
 
+    async def run_turn_async(self, **kwargs) -> str:
+        return await asyncio.to_thread(self.run_turn, **kwargs)
+
     def stop(self) -> None:
         return None
 

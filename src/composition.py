@@ -61,6 +61,7 @@ def build_agent_services(
     tally_push,
     *,
     notifier=None,
+    turn_timeout_s: float | None = None,
 ) -> AgentServices:
     """Build the shared service layer from the selected adapters."""
     store = runtime.store
@@ -68,7 +69,7 @@ def build_agent_services(
         return AgentServices(None, None, None, None)
     return AgentServices(
         admin=AdminService(store),
-        intake=IntakeService(runtime, store),
+        intake=IntakeService(runtime, store, turn_timeout_s=turn_timeout_s),
         orders=OrderActionService(
             OrderProcessingCore(store), store, storage, tally_push
         ),

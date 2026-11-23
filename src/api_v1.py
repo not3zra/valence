@@ -403,6 +403,10 @@ def build_api_v1_router(
                 )
             except IdempotencyConflict as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
+            except (TimeoutError, asyncio.TimeoutError) as error:
+                raise HTTPException(
+                    status_code=504, detail="agent turn timed out"
+                ) from error
             return IntakeResponse(**result.to_dict())
 
         async def _media_intake(
@@ -445,6 +449,10 @@ def build_api_v1_router(
                 raise HTTPException(status_code=503, detail=str(error)) from error
             except IdempotencyConflict as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
+            except (TimeoutError, asyncio.TimeoutError) as error:
+                raise HTTPException(
+                    status_code=504, detail="agent turn timed out"
+                ) from error
             return IntakeResponse(**result.to_dict())
 
         @router.post("/intake/voice", response_model=IntakeResponse, tags=["intake"])

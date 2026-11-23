@@ -18,6 +18,7 @@ from google.adk.runners import Runner
 from google.genai import types
 
 from .agent import _event_text, build_runner
+from .config import settings
 from .media import MediaObject, media_to_inline_part
 from .model_provider import ModelCapabilities, build_model_provider
 
@@ -36,6 +37,7 @@ class TurnExecutor:
         agent_or_factory,
         session_service=None,
         capabilities: ModelCapabilities | None = None,
+        max_concurrent_turns: int | None = None,
     ) -> None:
         if session_service is not None or not callable(agent_or_factory):
             # Legacy path: (agent, session_service) positional args for tests.
@@ -54,6 +56,9 @@ class TurnExecutor:
             else build_model_provider().capabilities
         )
         self._loop = asyncio.new_event_loop()
+        self._semaphore = asyncio.Semaphore(
+            max(1, max_concurrent_turns or settings.agent_max_concurrent_turns)
+        )
         self._runner: Runner | None = None
         self._error: BaseException | None = None
         self._ready = threading.Event()
@@ -84,21 +89,22 @@ class TurnExecutor:
     async def _run_turn_async(
         self, *, sender_id: str, message: str, media: MediaObject | None
     ) -> str:
-        runner = self._runner
-        assert runner is not None
-        parts = [types.Part(text=message)]
-        if media is not None and self._capabilities.accepts(media):
-            parts.append(media_to_inline_part(media))
-        content = types.Content(role="user", parts=parts)
-        reply = ""
-        async for event in runner.run_async(
-            user_id=sender_id,
-            session_id=sender_id,
-            new_message=content,
-        ):
-            if event.is_final_response():
-                reply = _event_text(event)
-        return reply
+        async with self._semaphore:
+            runner = self._runner
+            assert runner is not None
+            parts = [types.Part(text=message)]
+            if media is not None and self._capabilities.accepts(media):
+                parts.append(media_to_inline_part(media))
+            content = types.Content(role="user", parts=parts)
+            reply = ""
+            async for event in runner.run_async(
+                user_id=sender_id,
+                session_id=sender_id,
+                new_message=content,
+            ):
+                if event.is_final_response():
+                    reply = _event_text(event)
+            return reply
 
     def run_turn(
         self, *, sender_id: str, message: str, media: MediaObject | None = None
@@ -115,6 +121,22 @@ class TurnExecutor:
             self._loop,
         )
         return future.result()
+
+    async def run_turn_async(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        """Run one turn without blocking the caller's event loop.
+
+        The coroutine still runs on the persistent executor loop (same durable
+        session semantics as :meth:`run_turn`), but awaiting the wrapped future
+        lets callers apply a real deadline: cancelling the await cancels the
+        turn on the executor loop too.
+        """
+        future = asyncio.run_coroutine_threadsafe(
+            self._run_turn_async(sender_id=sender_id, message=message, media=media),
+            self._loop,
+        )
+        return await asyncio.wrap_future(future)
 
     def stop(self) -> None:
         """Stop the loop and join the thread (test teardown; the process exit

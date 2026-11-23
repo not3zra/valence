@@ -7,6 +7,7 @@ network call.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 
 from google.adk.models import BaseLlm
@@ -74,6 +75,13 @@ class FakeRuntime:
     ) -> str:
         self.turns.append((sender_id, message, media))
         return self.reply
+
+    async def run_turn_async(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        return await asyncio.to_thread(
+            self.run_turn, sender_id=sender_id, message=message, media=media
+        )
 
     def stop(self) -> None:
         return None

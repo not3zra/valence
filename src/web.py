@@ -10,6 +10,7 @@ ingestion endpoint (issue #35). The approver-facing review web view is ticket
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -219,6 +220,7 @@ def create_app(
     meta_access_token: str | None = None,
     meta_phone_number_id: str | None = None,
     webhook_rate_limit: int | None = None,
+    agent_turn_timeout_s: float | None = None,
     model_provider=None,
     auth: AuthService | None = None,
     admin: AdminService | None = None,
@@ -272,7 +274,9 @@ def create_app(
 
     ``webhook_rate_limit`` caps agent turns per WhatsApp sender per minute on
     the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
-    and is enforced by an in-memory per-instance limiter.
+    and is enforced by an in-memory per-instance limiter. ``agent_turn_timeout_s``
+    bounds every turn driven through this app (security #76); it defaults to
+    ``AGENT_TURN_TIMEOUT_S`` and cancels the turn when the deadline expires.
 
     ``model_provider`` selects the model and its capabilities; it defaults to
     the configured provider. Capabilities gate the two media intake paths:
@@ -297,6 +301,22 @@ def create_app(
     sender = runtime.whatsapp_sender
     store = runtime.store
     voucher_storage = runtime.voucher_storage
+    turn_timeout_s = (
+        settings.agent_turn_timeout_s
+        if agent_turn_timeout_s is None
+        else agent_turn_timeout_s
+    )
+
+    async def _run_turn(
+        sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        return await asyncio.wait_for(
+            runtime.run_turn_async(
+                sender_id=sender_id, message=message, media=media
+            ),
+            timeout=turn_timeout_s,
+        )
+
     storage = voucher_storage or default_voucher_storage(
         bucket=settings.voucher_bucket, directory=settings.voucher_dir
     )
@@ -391,7 +411,11 @@ def create_app(
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
     if auth is not None:
         shared = build_agent_services(
-            runtime, storage, tally_push, notifier=late_notifier
+            runtime,
+            storage,
+            tally_push,
+            notifier=late_notifier,
+            turn_timeout_s=turn_timeout_s,
         )
         admin = admin or shared.admin
         intake_service = intake_service or shared.intake
@@ -421,7 +445,9 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/api/roundtrip", response_model=RoundTripResponse)
-    def roundtrip(request: Request, payload: RoundTripRequest) -> RoundTripResponse:
+    async def roundtrip(
+        request: Request, payload: RoundTripRequest
+    ) -> RoundTripResponse:
         # Debug probe (issue #4): the caller supplies the sender id, so the
         # probe is gated by a dedicated bearer token that must be configured —
         # otherwise an unauthenticated caller could drive the agent under an
@@ -438,7 +464,14 @@ def create_app(
             raise HTTPException(
                 status_code=401, detail="invalid bearer token"
             )
-        reply = runtime.run_turn(sender_id=payload.sender_id, message=payload.message)
+        try:
+            reply = await _run_turn(
+                sender_id=payload.sender_id, message=payload.message
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            raise HTTPException(
+                status_code=504, detail="agent turn timed out"
+            ) from None
         return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
 
     @app.get("/api/whatsapp/webhook", operation_id="whatsapp_webhook_legacy_get")
@@ -533,9 +566,16 @@ def create_app(
                 media = None
             else:
                 media = request_fetcher.fetch(media_ref) if media_ref else None
-            reply = runtime.run_turn(
-                sender_id=message.sender, message=message.body, media=media
-            )
+            try:
+                reply = await _run_turn(
+                    sender_id=message.sender, message=message.body, media=media
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                print(
+                    f"[whatsapp_webhook] turn timed out sender={message.sender}",
+                    flush=True,
+                )
+                return _meta_ack()
             if reply:
                 reply_sender.send(message.sender, reply)
         return _meta_ack()
@@ -606,11 +646,16 @@ def create_app(
         mime = payload.get("mime_type", "audio/wav")
         if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
             return Response(status_code=400)
-        reply = runtime.run_turn(
-            sender_id=caller,
-            message=VOICE_NUDGE,
-            media=MediaObject(data=audio, mime_type=mime),
-        )
+        try:
+            reply = await _run_turn(
+                sender_id=caller,
+                message=VOICE_NUDGE,
+                media=MediaObject(data=audio, mime_type=mime),
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            raise HTTPException(
+                status_code=504, detail="agent turn timed out"
+            ) from None
         print(
             f"[voice_ingest] caller={caller} audio_bytes={len(audio)} "
             f"reply={reply[:200] if reply else '(empty)'}",

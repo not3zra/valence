@@ -44,6 +44,10 @@ class AgentRuntime(Protocol):
         self, *, sender_id: str, message: str, media: MediaObject | None = None
     ) -> str: ...
 
+    async def run_turn_async(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str: ...
+
     def stop(self) -> None: ...
 
 
@@ -90,6 +94,13 @@ class AdkAgentRuntime:
         self, *, sender_id: str, message: str, media: MediaObject | None = None
     ) -> str:
         return self._executor.run_turn(
+            sender_id=sender_id, message=message, media=media
+        )
+
+    async def run_turn_async(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        return await self._executor.run_turn_async(
             sender_id=sender_id, message=message, media=media
         )
 

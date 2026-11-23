@@ -63,6 +63,9 @@ async def _world():
         def run_turn(self, **kwargs):
             return "fake reply"
 
+        async def run_turn_async(self, **kwargs):
+            return await asyncio.to_thread(self.run_turn, **kwargs)
+
         def stop(self):
             return None
 
