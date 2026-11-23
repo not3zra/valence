@@ -26,6 +26,7 @@ from . import review
 from .admin import AdminService
 from .api_v1 import build_api_v1_router
 from .auth import AuthService
+from .composition import build_agent_services
 from .config import settings
 from .core import ApprovalError, ConfigurationError, OrderProcessingCore
 from .dispatch import LateOrderNotifier
@@ -301,7 +302,7 @@ def create_app(
     )
 
     late_notifier = LateOrderNotifier(store, sender) if store is not None else None
-    if loading_service is None and store is not None:
+    if auth is None and loading_service is None and store is not None:
         loading_service = LoadingService(store, late_notifier)
 
     async def configured_tally_url() -> str:
@@ -389,14 +390,13 @@ def create_app(
 
     app = FastAPI(title="Valence — Order Intake & Fulfillment")
     if auth is not None:
-        if admin is None and store is not None:
-            admin = AdminService(store)
-        if intake_service is None and store is not None:
-            intake_service = IntakeService(runtime, store)
-        if order_service is None and store is not None:
-            order_service = OrderActionService(
-                OrderProcessingCore(store), store, storage, tally_push
-            )
+        shared = build_agent_services(
+            runtime, storage, tally_push, notifier=late_notifier
+        )
+        admin = admin or shared.admin
+        intake_service = intake_service or shared.intake
+        order_service = order_service or shared.orders
+        loading_service = loading_service or shared.loading
         app.include_router(
             build_api_v1_router(
                 auth, admin, intake_service, store, order_service, loading_service

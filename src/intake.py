@@ -20,6 +20,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -355,3 +356,39 @@ def fingerprint_of(*parts: object) -> str:
     """Stable hash of a request payload, used to detect key reuse."""
     encoded = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def valid_e164(value: str) -> bool:
+    """True only for a whole-string E.164 number."""
+    return re.fullmatch(E164_PATTERN, value) is not None
+
+
+def validate_intake_sender(sender_id: str) -> str:
+    """Validate the customer phone both REST and MCP accept for a text order."""
+    if not valid_e164(sender_id):
+        raise ValueError("sender_id must be an E.164 phone number")
+    return sender_id
+
+
+def validate_intake_message(message: str) -> str:
+    """Validate the customer text both REST and MCP accept for a text order."""
+    if not message.strip():
+        raise ValueError("message is required")
+    return message
+
+
+def validate_idempotency_key(key: str | None) -> str | None:
+    """Validate a caller-supplied idempotency key for both transports."""
+    if key is None:
+        return None
+    key = key.strip()
+    if not key or len(key) > 255:
+        raise ValueError("invalid Idempotency-Key header")
+    return key
+
+
+def intake_fingerprint(
+    payload: dict[str, Any], path: str = "/api/v1/intake"
+) -> str:
+    """Fingerprint an intake payload; callers pass their route path."""
+    return fingerprint_of(path, payload)
