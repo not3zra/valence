@@ -134,3 +134,42 @@ def test_turn_executor_continues_durable_session(echo_agent):
         assert len(sessions.sessions) == 1
     finally:
         executor.stop()
+
+
+async def test_async_run_turn_returns_the_reply(echo_agent):
+    executor = TurnExecutor(echo_agent, InMemorySessionService())
+    try:
+        assert await executor.run_turn_async(sender_id="+9000000001", message="hi") == (
+            "Echo: hi"
+        )
+    finally:
+        executor.stop()
+
+
+async def test_cancelling_async_run_turn_cancels_the_agent_turn(monkeypatch):
+    class _HangingRunner:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def run_async(self, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            return
+            yield None
+
+    hanging = _HangingRunner()
+    monkeypatch.setattr("src.agent_exec.build_runner", lambda agent, service: hanging)
+    executor = TurnExecutor(lambda: (object(), object()))
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                executor.run_turn_async(sender_id="+9000000001", message="hi"),
+                timeout=0.05,
+            )
+        await asyncio.sleep(0.05)
+        assert hanging.cancelled
+    finally:
+        executor.stop()

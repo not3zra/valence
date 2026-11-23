@@ -98,6 +98,11 @@ class _Runner:
         self.turns.append((sender_id, message))
         return "ack"
 
+    async def run_turn_async(self, *, sender_id, message, media=None) -> str:
+        return await asyncio.to_thread(
+            self.run_turn, sender_id=sender_id, message=message, media=media
+        )
+
 
 class _Orders:
     def __init__(self):

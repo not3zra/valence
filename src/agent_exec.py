@@ -116,6 +116,22 @@ class TurnExecutor:
         )
         return future.result()
 
+    async def run_turn_async(
+        self, *, sender_id: str, message: str, media: MediaObject | None = None
+    ) -> str:
+        """Run one turn without blocking the caller's event loop.
+
+        The coroutine still runs on the persistent executor loop (same durable
+        session semantics as :meth:`run_turn`), but awaiting the wrapped future
+        lets callers apply a real deadline: cancelling the await cancels the
+        turn on the executor loop too.
+        """
+        future = asyncio.run_coroutine_threadsafe(
+            self._run_turn_async(sender_id=sender_id, message=message, media=media),
+            self._loop,
+        )
+        return await asyncio.wrap_future(future)
+
     def stop(self) -> None:
         """Stop the loop and join the thread (test teardown; the process exit
         handles this for the deployed app)."""
