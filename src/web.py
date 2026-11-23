@@ -75,6 +75,11 @@ MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 # 5 MiB audio cap (MAX_MEDIA_BYTES) plus the JSON envelope.
 MAX_VOICE_INGEST_BODY_BYTES = 8 * 1024 * 1024
 
+# The outbound send probe accepts only a small JSON object (a phone number and
+# a short text), so anything larger is not a legitimate request. Bounded after
+# authentication, like the other token-gated routes.
+MAX_ADMIN_SEND_MESSAGE_BODY_BYTES = 64 * 1024
+
 
 def _meta_ack() -> Response:
     """A plain 200 acknowledgment for Meta's webhook.
@@ -617,19 +622,28 @@ def create_app(
         """Send a WhatsApp message to any number (admin only, for testing)."""
         expected = f"Bearer {ingest_token}"
         if not ingest_token:
-            return Response(status_code=503, detail="not configured")
+            raise HTTPException(status_code=503, detail="not configured")
         if not hmac.compare_digest(
             request.headers.get("Authorization", ""), expected
         ):
-            return Response(status_code=401)
+            raise HTTPException(status_code=401)
+        size = 0
+        chunks: list[bytes] = []
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_ADMIN_SEND_MESSAGE_BODY_BYTES:
+                return Response(status_code=413)
+            chunks.append(chunk)
         try:
-            payload = json.loads(await request.body())
+            payload = json.loads(b"".join(chunks))
         except (ValueError, TypeError):
-            return Response(status_code=400)
+            raise HTTPException(status_code=400) from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400)
         to = payload.get("to")
         text = payload.get("text")
         if not to or not text:
-            return Response(status_code=400, detail="missing 'to' or 'text'")
+            raise HTTPException(status_code=400, detail="missing 'to' or 'text'")
         sender.send(to, text)
         return Response(content="OK", media_type="text/plain")
 
