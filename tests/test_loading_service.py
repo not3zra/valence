@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from src.dispatch import LateOrderNotifier
 from src.loading_service import LoadingService
@@ -72,7 +72,7 @@ async def test_stats_count_live_orders_with_a_business_timezone_cutoff():
         ]
     )
     service = LoadingService(
-        store, now=datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+        store, now=datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
     )
 
     result = await service.stats()

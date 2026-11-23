@@ -6,7 +6,7 @@
 
 **A single AI agent that turns orders arriving over WhatsApp or recorded phone calls — in any language — into structured orders with automated approval, dispatch lists, and Tally billing.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Google ADK](https://img.shields.io/badge/Google_ADK-2.6.3-4285F4.svg)](https://cloud.google.com/agent-engine)
 [![Gemini](https://img.shields.io/badge/Gemini-3.5_Flash-FF6D00.svg)](https://ai.google.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
@@ -153,7 +153,7 @@ These instructions let you run the full project locally or deploy it to Google C
 
 | Requirement | Version | Install |
 |-------------|---------|---------|
-| **Python** | 3.10+ | [python.org](https://www.python.org/downloads/) |
+| **Python** | 3.12+ | [python.org](https://www.python.org/downloads/) |
 | **gcloud CLI** | Latest | [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install) |
 | **Firestore emulator** | — | `gcloud components install cloud-firestore-emulator` |
 | **Git** | — | [git-scm.com](https://git-scm.com/) |
@@ -407,20 +407,33 @@ source .env.provision
 
 This provisions: Cloud Run, Firestore, Cloud Storage, Pub/Sub, Cloud Scheduler, IAM, and Secret Manager.
 
-### Run Tests
+### Developer Commands
+
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are the supported baseline.
+`uv sync` installs exactly the pinned dependency set from the committed
+`uv.lock`; the same lockfile is used by the Docker image.
 
 ```bash
-# Full test suite (393 tests)
-pytest
+# Install all dependencies from the lockfile (including dev and optional extras)
+uv sync --all-extras
 
-# Core logic tests only
-pytest tests/test_core.py
+# Full test suite
+uv run pytest
 
-# Linting
-ruff check .
+# Single test file
+uv run pytest tests/test_core.py
 
-# Type checking
-mypy src
+# Lint (ruff)
+uv run ruff check .
+
+# Typecheck (mypy)
+uv run mypy src
+
+# Confirm the lockfile matches pyproject.toml
+uv lock --check
+
+# Build and run the Docker Compose profile (app + Postgres)
+docker compose up --build
 ```
 
 ### Agent Evaluation
@@ -472,7 +485,7 @@ python scripts/eval_agent.py --category safety
 | Component | Technology |
 |-----------|------------|
 | **Web Framework** | FastAPI (async) |
-| **Language** | Python 3.10+ |
+| **Language** | Python 3.12+ |
 | **Session Persistence** | ADK `FirestoreSessionService` |
 | **WhatsApp Integration** | Meta Cloud API (Graph API v20.0) |
 | **GST/Tally** | Custom voucher XML builder |
@@ -584,7 +597,7 @@ Voice orders with missing fields escalate to human review immediately — no cla
 
 1. Create a feature branch from `main`
 2. Make changes with tests
-3. Run `pytest && ruff check . && mypy src`
+3. Run `uv run pytest && uv run ruff check . && uv run mypy src`
 4. Open a PR — CI builds and deploys a preview revision
 
 ---

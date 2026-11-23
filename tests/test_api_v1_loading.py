@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -133,7 +133,7 @@ def test_stats_requires_authentication():
 
 def test_stats_reports_pending_approved_billed_and_live_late_counts():
     client, _, _, tokens = _world(
-        now=datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+        now=datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
     )
 
     response = client.get("/api/v1/stats", headers=_headers("viewer", tokens))

@@ -9,7 +9,7 @@ with a different first item, the order commits normally.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -62,7 +62,7 @@ async def test_repeat_within_window_returns_duplicate_and_skips_new_order(core, 
 
 
 async def test_repeat_outside_window_commits_a_fresh_order():
-    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
     store = InMemoryOrderStore()
     core = OrderProcessingCore(store)
     first = await core.process(
@@ -148,7 +148,7 @@ async def test_match_is_case_and_whitespace_insensitive_on_product(core):
 
 
 async def test_dedup_window_is_read_from_config_not_hardcoded():
-    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
     store = InMemoryOrderStore(config={**seed_data.CONFIG, "dedup_window_minutes": 5})
     core = OrderProcessingCore(store)
     first = await core.process(_order(), now=base.isoformat())
@@ -171,7 +171,7 @@ async def test_missing_dedup_config_fails_loudly():
 
 
 async def test_repeat_at_exact_window_boundary_is_not_a_duplicate():
-    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
     store = InMemoryOrderStore()
     core = OrderProcessingCore(store)
     first = await core.process(_order(), now=base.isoformat())

@@ -15,8 +15,8 @@ import hmac
 import secrets
 from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol
 
 TOKEN_PREFIX = "vk_"
@@ -47,7 +47,7 @@ CONFIRMED_ACTIONS = frozenset(
 ApproverPhones = Callable[[], Awaitable[Iterable[str]]]
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """Server-side roles from ADR-0007."""
 
     ADMIN = "admin"
@@ -253,7 +253,7 @@ class InMemoryAuthStore:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _digest(token: str, salt: str) -> str:

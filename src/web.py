@@ -114,12 +114,14 @@ INDEX_HTML = """<!doctype html>
     *, *::before, *::after { box-sizing: border-box; }
     body { font-family: var(--font-sans); margin: 0; background: var(--color-bg);
            color: var(--color-text); -webkit-font-smoothing: antialiased; }
-    .hero { max-width: 640px; margin: 0 auto; padding: 80px 24px 60px; text-align: center; }
+    .hero { max-width: 640px; margin: 0 auto; padding: 80px 24px 60px;
+            text-align: center; }
     .hero h1 { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em;
                margin: 0 0 12px; color: var(--color-text); }
     .hero h1 span { color: var(--color-accent); }
     .hero p { font-size: 1.05rem; color: var(--color-text-secondary);
-              line-height: 1.7; margin: 0 0 40px; max-width: 480px; margin-left: auto; margin-right: auto; }
+              line-height: 1.7; margin: 0 0 40px; max-width: 480px;
+              margin-left: auto; margin-right: auto; }
     .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
              gap: 16px; max-width: 640px; margin: 0 auto; }
     .card { background: var(--color-surface); border: 1px solid var(--color-border);
@@ -134,7 +136,8 @@ INDEX_HTML = """<!doctype html>
     .card .tag { display: inline-block; font-size: 0.6875rem; font-weight: 600;
                  text-transform: uppercase; letter-spacing: 0.05em;
                  color: var(--color-accent); margin-bottom: 8px; }
-    .footer { text-align: center; padding: 40px 24px; color: var(--color-text-secondary);
+    .footer { text-align: center; padding: 40px 24px;
+              color: var(--color-text-secondary);
               font-size: 0.8125rem; }
     .footer code { font-family: ui-monospace, SFMono-Regular, monospace;
                    background: #f1f5f9; padding: 2px 6px; border-radius: 4px;
@@ -151,22 +154,26 @@ INDEX_HTML = """<!doctype html>
       <a class="card" href="/review">
         <div class="tag">Operations</div>
         <h3>Review Queue</h3>
-        <p>Escalation queue, order detail, approve/reject, edit, and Tally voucher generation.</p>
+        <p>Escalation queue, order detail, approve/reject, edit,
+        and Tally voucher generation.</p>
       </a>
       <a class="card" href="/loading">
         <div class="tag">Dispatch</div>
         <h3>Loading List</h3>
-        <p>Printable delivery-day dispatch list with route grouping and late add-ons.</p>
+        <p>Printable delivery-day dispatch list with route grouping
+        and late add-ons.</p>
       </a>
       <a class="card" href="/health">
         <div class="tag">System</div>
         <h3>Health Check</h3>
-        <p>Liveness probe for Cloud Run. Returns <code>{"{"}"status": "ok"{"}"}</code>.</p>
+        <p>Liveness probe for Cloud Run. Returns
+        <code>{"{"}"status": "ok"{"}"}</code>.</p>
       </a>
     </div>
   </div>
   <div class="footer">
-    <p>API: <code>POST /api/roundtrip</code> &middot; <code>POST /api/voice/ingest</code></p>
+    <p>API: <code>POST /api/roundtrip</code> &middot;
+    <code>POST /api/voice/ingest</code></p>
   </div>
 </body>
 </html>
@@ -468,7 +475,7 @@ def create_app(
             reply = await _run_turn(
                 sender_id=payload.sender_id, message=payload.message
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             raise HTTPException(
                 status_code=504, detail="agent turn timed out"
             ) from None
@@ -570,7 +577,7 @@ def create_app(
                 reply = await _run_turn(
                     sender_id=message.sender, message=message.body, media=media
                 )
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 print(
                     f"[whatsapp_webhook] turn timed out sender={message.sender}",
                     flush=True,
@@ -652,7 +659,7 @@ def create_app(
                 message=VOICE_NUDGE,
                 media=MediaObject(data=audio, mime_type=mime),
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             raise HTTPException(
                 status_code=504, detail="agent turn timed out"
             ) from None

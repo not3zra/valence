@@ -8,7 +8,7 @@ the same Order Processing Core as WhatsApp.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -243,7 +243,7 @@ async def test_stats_returns_live_counts(client, store):
 
 def test_stats_late_count_uses_the_business_timezone_cutoff(client, store):
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-    late_at = datetime.combine(today, time(13, 0), tzinfo=timezone.utc).isoformat()
+    late_at = datetime.combine(today, time(13, 0), tzinfo=UTC).isoformat()
     store.orders.append(
         Order(
             order_id="ord_late_stats",

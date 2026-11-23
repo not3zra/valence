@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from datetime import datetime
-from datetime import timezone as dt_timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import JSON, ScalarResult, String, func, insert, select
@@ -427,7 +426,7 @@ class SqlAuthStore:
                     id=_INSTANCE_ID,
                     business_name=business_name,
                     timezone=timezone,
-                    created_at=datetime.now(dt_timezone.utc).isoformat(),
+                    created_at=datetime.now(UTC).isoformat(),
                 )
                 session.add(row)
             return _instance_profile(row)
@@ -451,7 +450,7 @@ class SqlAuthStore:
                     id=_INSTANCE_ID,
                     business_name=business_name,
                     timezone=timezone,
-                    created_at=datetime.now(dt_timezone.utc).isoformat(),
+                    created_at=datetime.now(UTC).isoformat(),
                 )
             else:
                 row.business_name = business_name
@@ -514,7 +513,7 @@ class SqlAuthStore:
                 IntegrationCredentialRow(
                     service=service,
                     data=dict(values),
-                    updated_at=datetime.now(dt_timezone.utc).isoformat(),
+                    updated_at=datetime.now(UTC).isoformat(),
                 )
             )
 

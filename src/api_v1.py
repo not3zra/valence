@@ -12,7 +12,7 @@ import asyncio
 import json
 from collections.abc import Collection
 from datetime import date as _date
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -219,12 +219,9 @@ def _unprocessable(error: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(error))
 
 
-_ModelT = TypeVar("_ModelT", bound=BaseModel)
-
-
-async def _read_bounded_json(
-    request: Request, *, cap: int, model: type[_ModelT]
-) -> _ModelT:
+async def _read_bounded_json[T: BaseModel](
+    request: Request, *, cap: int, model: type[T]
+) -> T:
     """Stream a request body under ``cap`` bytes, then validate it as ``model``.
 
     FastAPI's implicit Pydantic body parsing buffers the whole request before a
@@ -451,7 +448,7 @@ def build_api_v1_router(
                 )
             except IdempotencyConflict as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
-            except (TimeoutError, asyncio.TimeoutError) as error:
+            except TimeoutError as error:
                 raise HTTPException(
                     status_code=504, detail="agent turn timed out"
                 ) from error
@@ -502,7 +499,7 @@ def build_api_v1_router(
                 raise HTTPException(status_code=503, detail=str(error)) from error
             except IdempotencyConflict as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
-            except (TimeoutError, asyncio.TimeoutError) as error:
+            except TimeoutError as error:
                 raise HTTPException(
                     status_code=504, detail="agent turn timed out"
                 ) from error
