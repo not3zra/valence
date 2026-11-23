@@ -312,6 +312,27 @@ provider credentials. The same operations are available as
 status, never secret values. Config is read on every order, so a change takes
 effect without a restart.
 
+### Operations CLI
+
+Two read-only commands operate the same database and adapters the service uses:
+
+```bash
+valence doctor --database-url sqlite+aiosqlite:///./valence.db
+valence doctor --json                         # machine-readable results
+valence cutoff --day 2026-08-14               # JSON on stdout
+valence cutoff --start 2026-08-14 --end 2026-08-16 --output lists.json
+```
+
+`valence doctor` checks the Python version, configuration, database
+connectivity and Alembic migrations, model provider, voucher store, Tally push
+configuration, and the MCP server. It exits non-zero if any check fails and
+never prints a secret value — credentials are reported only as set or missing.
+`valence cutoff` renders the live Loading List for a day or an inclusive window
+through the same `LoadingService` as the v1 API (`--day` / `--date`, or
+`--start` with `--end`); `--output` writes the JSON to a file instead of stdout.
+Both accept `--database-url` (default `DATABASE_URL`) and work with SQLite and
+Postgres. Run `valence doctor --help` or `valence cutoff --help` for all options.
+
 ### Docker Compose with Postgres (GCP-free)
 
 The Compose profile runs the app and Postgres, applies the Alembic schema
