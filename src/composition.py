@@ -1,7 +1,8 @@
-"""Shared composition helpers for the REST app and the standalone MCP server.
+"""Shared composition helpers for the REST app and the MCP transports.
 
-One Instance resolves its adapters and services the same way whichever transport
-is in front of it, so swapping an adapter stays a one-module change.
+One Instance resolves its adapters and services the same way whether a caller
+arrives over REST, the hosted ``/mcp`` mount, or the standalone MCP CLI, so
+swapping an adapter stays a one-module change.
 """
 
 from __future__ import annotations

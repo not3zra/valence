@@ -37,7 +37,14 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:8080/health')
+        - |
+          import urllib.error
+          import urllib.request
+          urllib.request.urlopen('http://localhost:8080/health', timeout=3)
+          try:
+              urllib.request.urlopen('http://localhost:8080/mcp', timeout=3)
+          except urllib.error.HTTPError as error:
+              assert 400 <= error.code < 500 and error.code != 404, error.code
       interval: 10s
       timeout: 5s
       retries: 6

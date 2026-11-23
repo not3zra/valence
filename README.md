@@ -284,10 +284,12 @@ the MCP gateway share this authorization layer, so neither can bypass roles or
 
 External agents (Claude Code, Codex, opencode, or any MCP client) operate an
 Instance through nine tools — instance discovery, intake, order list/detail,
-order actions, voucher download, Loading Lists, stats and catalogue. Connect a
-local client over stdio with `valence mcp --transport stdio` and
-`VALENCE_API_KEY`, or a hosted Instance over streamable HTTP at
-`$VALENCE_URL/mcp` with a Bearer key. The reusable Skill at
+order actions, voucher download, Loading Lists, stats and catalogue. A hosted
+Instance serves streamable HTTP MCP at `$VALENCE_URL/mcp` on the same app and
+port as REST and the web UI; no separate MCP process or port is needed. Every
+call carries `Authorization: Bearer <VALENCE_API_KEY>` and is authorized by the
+same roles as REST. Local clients can instead use stdio with
+`valence mcp --transport stdio` and `VALENCE_API_KEY`. The reusable Skill at
 `skills/valence/SKILL.md` documents the workflow and its safety rules; install
 snippets for each client are in `skills/valence/INSTALL.md`. Approval and billing
 always require explicit human confirmation, intake is untrusted, orders are
@@ -339,7 +341,9 @@ Postgres. Run `valence doctor --help` or `valence cutoff --help` for all options
 
 The Compose profile runs the app and Postgres, applies the Alembic schema
 migration on startup, and keeps order data and voucher XML in named volumes. It
-needs no GCP credentials.
+needs no GCP credentials. The app exposes one port (`8080` by default): REST,
+the web UI, and the MCP endpoint at `/mcp` share it, and the container
+healthcheck probes both `/health` and `/mcp`.
 
 ```bash
 cp .env.example .env

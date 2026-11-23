@@ -16,12 +16,15 @@ import hashlib
 import hmac
 import json
 import re
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
+from starlette.routing import Route
 
 from . import review
 from .admin import AdminService
@@ -43,6 +46,7 @@ from .loading import (
     render_loading_list_html,
 )
 from .loading_service import LoadingService
+from .mcp_server import build_mcp_server_for_services, mcp_lifespan, mounted_mcp_app
 from .media import (
     AUDIO_MIME_TYPES,
     MAX_MEDIA_BYTES,
@@ -290,10 +294,12 @@ def create_app(
     a provider without image support never fetches a WhatsApp photo, and voice
     ingest is closed (503) without audio support. Text intake is always open.
     ``auth``, when supplied, mounts the ``/api/v1`` bootstrap, key, instance,
-    and Integration routes; it is the same service the MCP gateway uses, so both
-    enforce one set of roles and confirmation rules. ``admin`` owns catalogue
-    and runtime config; when omitted it is built from the runtime's store so
-    the admin API serves the same data the agent reads.
+    and Integration routes and the streamable HTTP MCP endpoint at ``/mcp`` on
+    this same app; the MCP gateway uses the same service instances and the same
+    roles and confirmation rules as REST. Every MCP call must carry its own
+    Bearer key — no process-level key authenticates an HTTP caller. ``admin``
+    owns catalogue and runtime config; when omitted it is built from the
+    runtime's store so the admin API serves the same data the agent reads.
     """
     if runtime is None:
         runtime = build_runtime(
@@ -415,7 +421,8 @@ def create_app(
         window_seconds=60.0, max_events=rate_limit
     )
 
-    app = FastAPI(title="Valence — Order Intake & Fulfillment")
+    mcp_asgi = None
+    v1_router = None
     if auth is not None:
         shared = build_agent_services(
             runtime,
@@ -428,17 +435,41 @@ def create_app(
         intake_service = intake_service or shared.intake
         order_service = order_service or shared.orders
         loading_service = loading_service or shared.loading
-        app.include_router(
-            build_api_v1_router(
+        mcp_asgi = mounted_mcp_app(
+            build_mcp_server_for_services(
                 auth,
-                admin,
-                intake_service,
-                store,
-                order_service,
-                loading_service,
-                whatsapp_sender=sender,
+                replace(
+                    shared,
+                    admin=admin,
+                    intake=intake_service,
+                    orders=order_service,
+                    loading=loading_service,
+                ),
             )
         )
+        v1_router = build_api_v1_router(
+            auth,
+            admin,
+            intake_service,
+            store,
+            order_service,
+            loading_service,
+            whatsapp_sender=sender,
+        )
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        if mcp_asgi is None:
+            yield
+            return
+        async with mcp_lifespan(mcp_asgi):
+            yield
+
+    app = FastAPI(title="Valence — Order Intake & Fulfillment", lifespan=lifespan)
+    if mcp_asgi is not None:
+        app.router.routes.append(Route("/mcp", mcp_asgi, include_in_schema=False))
+    if v1_router is not None:
+        app.include_router(v1_router)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

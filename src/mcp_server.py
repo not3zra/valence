@@ -12,17 +12,20 @@ differently depending on how a client connected.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.lowlevel.server import Server as LowLevelServer
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 
 from .admin import AdminService
 from .auth import AuthError, AuthService, bearer_token
+from .composition import AgentServices
 from .core import ApprovalError
 from .instance_service import instance_view
 from .intake import (
@@ -251,6 +254,50 @@ def build_mcp_server(
         return await call("list_catalog", {"kind": kind}, ctx)
 
     return server
+
+
+def build_mcp_server_for_services(
+    auth: AuthService, services: AgentServices, *, api_key: str = ""
+) -> MCPServer:
+    """Build one MCP server over the services the REST app already uses.
+
+    The hosted app passes no process key: every HTTP call must carry its own
+    Bearer key. The stdio CLI passes the configured key for its single caller.
+    """
+    operations = build_mcp_operations(
+        auth=auth,
+        admin=services.admin,
+        intake=services.intake,
+        orders=services.orders,
+        loading=services.loading,
+    )
+    return build_mcp_server(McpToolGateway(auth, operations), api_key=api_key)
+
+
+def mounted_mcp_app(server: MCPServer) -> Starlette:
+    """Build the streamable HTTP app for the main app's ``/mcp`` route.
+
+    The caller's Bearer key is the authorization gate for every tool, as it is
+    for REST; host allowlisting is left to the Instance's reverse proxy rather
+    than rejecting legitimate deployment domains here.
+    """
+    return streamable_http_app(
+        server,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
+    )
+
+
+@asynccontextmanager
+async def mcp_lifespan(app: Starlette) -> AsyncIterator[None]:
+    """Run the MCP session manager while the main app is alive.
+
+    Starlette does not propagate a mounted app's lifespan to its parent, so the
+    main app enters it explicitly instead.
+    """
+    async with app.router.lifespan_context(app):
+        yield
 
 
 async def serve_mcp_streams(server: MCPServer, read_stream, write_stream) -> None:
