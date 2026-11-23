@@ -76,16 +76,21 @@ def build_agent_services(
     store = runtime.store
     if store is None:
         return AgentServices(None, None, None, None)
+    idempotency = idempotency_store(runtime)
     return AgentServices(
         admin=AdminService(store),
         intake=IntakeService(
             runtime,
             store,
-            idempotency=idempotency_store(runtime),
+            idempotency=idempotency,
             turn_timeout_s=turn_timeout_s,
         ),
         orders=OrderActionService(
-            OrderProcessingCore(store), store, storage, tally_push
+            OrderProcessingCore(store),
+            store,
+            storage,
+            tally_push,
+            idempotency=idempotency,
         ),
         loading=LoadingService(store, notifier),
     )
