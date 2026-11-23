@@ -21,6 +21,7 @@ import base64
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -197,6 +198,56 @@ class InMemoryIdempotencyStore:
             return len(expired)
 
 
+class IdempotentExecutor:
+    """Run one operation once per scoped key, then replay its stored result.
+
+    One executor owns the key locks for a service, so concurrent callers in the
+    same process queue on the key; the store's atomic claim serializes workers
+    in different processes. Callers supply the operation and its fingerprint —
+    this class only decides whether it runs, waits, or replays.
+    """
+
+    def __init__(self, store: IdempotencyStore) -> None:
+        self._store = store
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._guard = asyncio.Lock()
+
+    async def _lock_for(self, identity: str) -> asyncio.Lock:
+        async with self._guard:
+            return self._locks.setdefault(identity, asyncio.Lock())
+
+    async def run(
+        self,
+        *,
+        scope: str,
+        key: str | None,
+        fingerprint: str,
+        execute: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> tuple[dict[str, Any], bool]:
+        """Return the operation's result and whether it was a replay."""
+        if not key:
+            return await execute(), False
+        lock = await self._lock_for(f"{scope}:{key}")
+        async with lock:
+            while True:
+                claim = await self._store.try_claim(scope, key, fingerprint)
+                if claim.status is ClaimStatus.COMPLETE:
+                    if claim.fingerprint != fingerprint:
+                        raise IdempotencyConflict(
+                            "idempotency key was reused with a different payload"
+                        )
+                    return dict(claim.result or {}), True
+                if claim.status is ClaimStatus.CLAIMED:
+                    try:
+                        result = await execute()
+                    except BaseException:
+                        await self._store.release(scope, key)
+                        raise
+                    await self._store.complete(scope, key, fingerprint, result)
+                    return result, False
+                await asyncio.sleep(IDEMPOTENCY_POLL_INTERVAL_S)
+
+
 def decode_attachment(data: str, mime_type: str, *, audio: bool) -> MediaObject:
     """Decode and validate a base64 attachment into a provider-neutral object."""
     # Bound the encoded size before decoding: a multi-gigabyte base64 body must
@@ -275,16 +326,15 @@ class IntakeService:
             settings.agent_turn_timeout_s if turn_timeout_s is None else turn_timeout_s
         )
         self._capabilities: ModelCapabilities = runner.capabilities
-        self._idempotency = idempotency or InMemoryIdempotencyStore()
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._idempotent = IdempotentExecutor(
+            idempotency or InMemoryIdempotencyStore()
+        )
         self._sender_locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
 
-    async def _lock_for(
-        self, registry: dict[str, asyncio.Lock], key: str
-    ) -> asyncio.Lock:
+    async def _sender_lock(self, sender_id: str) -> asyncio.Lock:
         async with self._locks_guard:
-            return registry.setdefault(key, asyncio.Lock())
+            return self._sender_locks.setdefault(sender_id, asyncio.Lock())
 
     async def intake_text(
         self,
@@ -359,35 +409,17 @@ class IntakeService:
         idempotency_key: str | None,
         fingerprint: str,
     ) -> IntakeResult:
-        if not idempotency_key:
-            return await self._execute(sender_id, message, media)
-        scope = f"{principal_id}:{surface}"
-        identity = f"{scope}:{idempotency_key}"
-        lock = await self._lock_for(self._locks, identity)
-        async with lock:
-            while True:
-                claim = await self._idempotency.try_claim(
-                    scope, idempotency_key, fingerprint
-                )
-                if claim.status is ClaimStatus.COMPLETE:
-                    if claim.fingerprint != fingerprint:
-                        raise IdempotencyConflict(
-                            "idempotency key was reused with a different payload"
-                        )
-                    return IntakeResult(
-                        **{**(claim.result or {}), "idempotent": True}
-                    )
-                if claim.status is ClaimStatus.CLAIMED:
-                    try:
-                        result = await self._execute(sender_id, message, media)
-                    except BaseException:
-                        await self._idempotency.release(scope, idempotency_key)
-                        raise
-                    await self._idempotency.complete(
-                        scope, idempotency_key, fingerprint, result.to_dict()
-                    )
-                    return result
-                await asyncio.sleep(IDEMPOTENCY_POLL_INTERVAL_S)
+        async def execute() -> dict[str, Any]:
+            result = await self._execute(sender_id, message, media)
+            return result.to_dict()
+
+        stored, replay = await self._idempotent.run(
+            scope=f"{principal_id}:{surface}",
+            key=idempotency_key,
+            fingerprint=fingerprint,
+            execute=execute,
+        )
+        return IntakeResult(**{**stored, "idempotent": replay})
 
     async def _execute(
         self, sender_id: str, message: str, media: MediaObject | None
@@ -395,7 +427,7 @@ class IntakeService:
         # One sender's turns are serialized: the decision is derived from a
         # store diff, so two overlapping turns for one phone must not each
         # claim the order the other committed.
-        async with await self._lock_for(self._sender_locks, sender_id):
+        async with await self._sender_lock(sender_id):
             before = {order.order_id for order in await self._store.list_all_orders()}
             started_at = utcnow()
             reply = await asyncio.wait_for(

@@ -58,10 +58,14 @@ print, log, or commit a key.
 | `get_stats` | Live pending, approved, billed and late counts | `viewer` |
 | `list_catalog` | Read customers, products, routes or delivery locations | `viewer` |
 
-`intake` takes `sender_id`, `message` and an optional `idempotency_key`; reuse
-the same key when retrying the same message. Every `order_action` takes
-`order_id`, `action` and `confirm`. The nine tool names and their arguments are
-mirrored exactly in `examples.json`, which is executable against the MCP server.
+`intake` takes `sender_id`, `message` and an optional `idempotency_key` (the
+same key in REST is the `Idempotency-Key` header). Every `order_action` takes
+`order_id`, `action` and `confirm`, plus an optional `idempotency_key`. Reuse an
+action's key when retrying the same decision: the original result is returned
+with `idempotent: true`, so a retry never prepares a second voucher or pushes
+to Tally twice. REST action responses carry the same `idempotent` flag. The nine
+tool names and their arguments are mirrored exactly in `examples.json`, which
+is executable against the MCP server.
 
 ## Workflows
 

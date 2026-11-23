@@ -72,7 +72,18 @@
           "arguments": {
             "order_id": "ord_1",
             "action": "approve",
-            "confirm": true
+            "confirm": true,
+            "idempotency_key": "example-approval-1"
+          },
+          "expect": {"action": "approve", "status": "approved", "confirm": true}
+        },
+        {
+          "tool": "order_action",
+          "arguments": {
+            "order_id": "ord_1",
+            "action": "approve",
+            "confirm": true,
+            "idempotency_key": "example-approval-1"
           },
           "expect": {"action": "approve", "status": "approved", "confirm": true}
         }

@@ -17,6 +17,13 @@ from typing import Any
 
 from .auth import Principal
 from .core import OrderProcessingCore
+from .intake import (
+    IdempotencyStore,
+    IdempotentExecutor,
+    InMemoryIdempotencyStore,
+    fingerprint_of,
+    validate_idempotency_key,
+)
 from .orders import Order, OrderEvent, OrderStatus
 from .tally import TallyPushError, TallyPushFailed, TallyPushService
 from .voucher import VoucherError, VoucherStore, prepare_voucher
@@ -35,6 +42,21 @@ SUPPORTED_ACTIONS = frozenset(
 
 class UnsupportedOrderAction(ValueError):
     """An action the Agent Interface does not implement."""
+
+
+def order_action_fingerprint(arguments: Mapping[str, Any]) -> str:
+    """Fingerprint the action identity, ignoring transport-only fields.
+
+    REST and MCP describe the same action with slightly different argument
+    sets, so only the order and the action define the operation being retried.
+    The key and the caller's identity are carried separately — in the key and
+    the idempotency scope respectively.
+    """
+    return fingerprint_of(
+        "order_action",
+        str(arguments.get("order_id", "")),
+        str(arguments.get("action", "")),
+    )
 
 
 def select_orders(
@@ -117,11 +139,15 @@ class OrderActionService:
         store,
         voucher_storage: VoucherStore | None = None,
         tally_push: TallyPushService | None = None,
+        idempotency: IdempotencyStore | None = None,
     ) -> None:
         self._core = core
         self._store = store
         self._voucher_storage = voucher_storage
         self._tally_push = tally_push
+        self._idempotent = IdempotentExecutor(
+            idempotency or InMemoryIdempotencyStore()
+        )
 
     async def list_orders(self, arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Project the filtered order set for an authorized reader."""
@@ -154,6 +180,22 @@ class OrderActionService:
         return order_detail(order, events)
 
     async def act(
+        self, arguments: Mapping[str, Any], principal: Principal
+    ) -> dict[str, Any]:
+        """Apply a confirmed decision exactly once per idempotency key.
+
+        A replay returns the stored result with ``idempotent`` set, so neither
+        transport can create a second voucher or Tally submission on retry.
+        """
+        result, replay = await self._idempotent.run(
+            scope=f"{principal.id}:order_action",
+            key=validate_idempotency_key(arguments.get("idempotency_key")),
+            fingerprint=order_action_fingerprint(arguments),
+            execute=lambda: self._act_once(arguments, principal),
+        )
+        return {**result, "idempotent": replay}
+
+    async def _act_once(
         self, arguments: Mapping[str, Any], principal: Principal
     ) -> dict[str, Any]:
         """Apply a confirmed decision and return the resulting order state."""

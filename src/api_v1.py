@@ -193,6 +193,7 @@ class OrderActionResponse(BaseModel):
     action: str
     status: str
     order: OrderDetailResponse
+    idempotent: bool = False
 
 
 class LoadingListResponse(BaseModel):
@@ -439,12 +440,16 @@ def build_api_v1_router(
         except AuthError as error:
             raise _fail(error) from error
 
-    def _idempotency(request: Request, payload: BaseModel) -> tuple[str | None, str]:
+    def _idempotency_key(request: Request) -> str | None:
         try:
-            key = validate_idempotency_key(request.headers.get("idempotency-key"))
+            return validate_idempotency_key(request.headers.get("idempotency-key"))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        return key, intake_fingerprint(payload.model_dump(), request.url.path)
+
+    def _idempotency(request: Request, payload: BaseModel) -> tuple[str | None, str]:
+        return _idempotency_key(request), intake_fingerprint(
+            payload.model_dump(), request.url.path
+        )
 
     if intake_service is not None:
 
@@ -643,6 +648,16 @@ def build_api_v1_router(
                 "/orders/{order_id}/actions",
                 response_model=OrderActionResponse,
                 tags=["orders"],
+                openapi_extra={
+                    "parameters": [
+                        {
+                            "name": "Idempotency-Key",
+                            "in": "header",
+                            "required": False,
+                            "schema": {"type": "string", "maxLength": 255},
+                        }
+                    ]
+                },
             )
             async def act_on_order(
                 order_id: str, payload: OrderActionRequest, request: Request
@@ -653,10 +668,18 @@ def build_api_v1_router(
                     action=payload.action,
                     confirm=payload.confirm,
                 )
+                key = _idempotency_key(request)
                 try:
                     result = await order_service.act(
-                        {"order_id": order_id, "action": payload.action}, principal
+                        {
+                            "order_id": order_id,
+                            "action": payload.action,
+                            "idempotency_key": key,
+                        },
+                        principal,
                     )
+                except IdempotencyConflict as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
                 except TallyPushFailed as error:
                     raise HTTPException(
                         status_code=502, detail=str(error)

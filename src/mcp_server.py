@@ -219,16 +219,22 @@ def build_mcp_server(
 
     @server.tool(
         name="order_action",
-        description="Decide an order; privileged actions require confirm: true",
+        description=(
+            "Decide an order; privileged actions require confirm: true. "
+            "An idempotency key makes a retry safe."
+        ),
     )
     async def order_action(
-        order_id: str, action: str, confirm: bool = False, ctx: Context | None = None
+        order_id: str,
+        action: str,
+        confirm: bool = False,
+        idempotency_key: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
-        return await call(
-            "order_action",
-            {"order_id": order_id, "action": action, "confirm": confirm},
-            ctx,
-        )
+        arguments = {"order_id": order_id, "action": action, "confirm": confirm}
+        if idempotency_key is not None:
+            arguments["idempotency_key"] = idempotency_key
+        return await call("order_action", arguments, ctx)
 
     @server.tool(name="download_voucher", description="Read a prepared voucher's XML")
     async def download_voucher(order_id: str, ctx: Context | None = None) -> str:
