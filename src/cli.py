@@ -205,7 +205,7 @@ def _mcp(args: argparse.Namespace) -> int:
 def _validate_cutoff_selectors(
     args: argparse.Namespace,
 ) -> tuple[date | None, date | None, date | None]:
-    """Resolve and validate the day/window selectors shared with the v1 API."""
+    """Resolve and validate the day/window selectors used by the Agent Interface."""
     if args.day is not None and (args.start is not None or args.end is not None):
         raise SystemExit("supply either day or window, not both")
     if (args.start is None) != (args.end is None):
