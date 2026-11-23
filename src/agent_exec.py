@@ -57,7 +57,7 @@ class TurnExecutor:
         )
         self._loop = asyncio.new_event_loop()
         self._semaphore = asyncio.Semaphore(
-            max_concurrent_turns or settings.agent_max_concurrent_turns
+            max(1, max_concurrent_turns or settings.agent_max_concurrent_turns)
         )
         self._runner: Runner | None = None
         self._error: BaseException | None = None

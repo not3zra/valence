@@ -468,7 +468,7 @@ def create_app(
             reply = await _run_turn(
                 sender_id=payload.sender_id, message=payload.message
             )
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             raise HTTPException(
                 status_code=504, detail="agent turn timed out"
             ) from None
@@ -570,7 +570,7 @@ def create_app(
                 reply = await _run_turn(
                     sender_id=message.sender, message=message.body, media=media
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 print(
                     f"[whatsapp_webhook] turn timed out sender={message.sender}",
                     flush=True,
@@ -652,7 +652,7 @@ def create_app(
                 message=VOICE_NUDGE,
                 media=MediaObject(data=audio, mime_type=mime),
             )
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             raise HTTPException(
                 status_code=504, detail="agent turn timed out"
             ) from None
