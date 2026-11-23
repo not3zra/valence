@@ -75,11 +75,6 @@ MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 # 5 MiB audio cap (MAX_MEDIA_BYTES) plus the JSON envelope.
 MAX_VOICE_INGEST_BODY_BYTES = 8 * 1024 * 1024
 
-# The outbound send probe accepts only a small JSON object (a phone number and
-# a short text), so anything larger is not a legitimate request. Bounded after
-# authentication, like the other token-gated routes.
-MAX_ADMIN_SEND_MESSAGE_BODY_BYTES = 64 * 1024
-
 
 def _meta_ack() -> Response:
     """A plain 200 acknowledgment for Meta's webhook.
@@ -404,7 +399,13 @@ def create_app(
         loading_service = loading_service or shared.loading
         app.include_router(
             build_api_v1_router(
-                auth, admin, intake_service, store, order_service, loading_service
+                auth,
+                admin,
+                intake_service,
+                store,
+                order_service,
+                loading_service,
+                whatsapp_sender=sender,
             )
         )
 
@@ -615,36 +616,6 @@ def create_app(
             f"reply={reply[:200] if reply else '(empty)'}",
             flush=True,
         )
-        return Response(content="OK", media_type="text/plain")
-
-    @app.post("/api/admin/send-message")
-    async def admin_send_message(request: Request) -> Response:
-        """Send a WhatsApp message to any number (admin only, for testing)."""
-        expected = f"Bearer {ingest_token}"
-        if not ingest_token:
-            raise HTTPException(status_code=503, detail="not configured")
-        if not hmac.compare_digest(
-            request.headers.get("Authorization", ""), expected
-        ):
-            raise HTTPException(status_code=401)
-        size = 0
-        chunks: list[bytes] = []
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > MAX_ADMIN_SEND_MESSAGE_BODY_BYTES:
-                return Response(status_code=413)
-            chunks.append(chunk)
-        try:
-            payload = json.loads(b"".join(chunks))
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400) from None
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400)
-        to = payload.get("to")
-        text = payload.get("text")
-        if not to or not text:
-            raise HTTPException(status_code=400, detail="missing 'to' or 'text'")
-        sender.send(to, text)
         return Response(content="OK", media_type="text/plain")
 
     if store is not None:
