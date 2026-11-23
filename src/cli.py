@@ -3,9 +3,10 @@
 ``valence init`` creates the schema, the Instance profile, and the first admin
 key from an empty database. It is idempotent: an existing admin key is never
 overwritten or duplicated, so it cannot compete with the developer boot (T04).
-Everything after the first key belongs to the admin API. ``valence doctor``
-runs local pre-flight checks and ``valence cutoff`` renders Loading Lists from
-the configured database (issue #97); both are read-only and redact secrets.
+Everything that writes after the first key belongs to the admin API.
+``valence doctor`` runs local pre-flight checks and ``valence cutoff`` renders
+Loading Lists from the configured database (issue #97); both are read-only and
+redact secrets.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any
 from .api_v1 import MAX_LOADING_LIST_WINDOW_DAYS
 from .auth import AuthService
 from .config import settings
-from .doctor import SUPPORTED_SCHEMES, as_json, format_checks, run_doctor
+from .doctor import as_json, format_checks, require_database_url, run_doctor
 from .loading_service import LoadingService, parse_delivery_day
 from .setup import (
     HttpSetupClient,
@@ -77,8 +78,8 @@ def _parser() -> argparse.ArgumentParser:
         description=(
             "Render the live Loading List for one delivery day (--day) or for every "
             "day in an inclusive window (--start/--end), using the same service as "
-            "the v1 API. Output is JSON on stdout unless --output is given. The "
-            "render is read-only: no late-order heads-ups are sent."
+            "the Agent Interface. Output is JSON on stdout unless --output is "
+            "given. The render is read-only: no late-order heads-ups are sent."
         ),
     )
     cutoff.add_argument(
@@ -119,7 +120,8 @@ def _parser() -> argparse.ArgumentParser:
         description=(
             "Run local, read-only pre-flight checks against the configured "
             "Instance: Python, configuration, database connectivity and "
-            "migrations, model provider, voucher store, Tally and MCP. No "
+            "migrations, model provider, voucher store, Meta/WhatsApp, Tally and "
+            "MCP. No "
             "provider is contacted and no secret value is printed."
         ),
     )
@@ -136,11 +138,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _init(args: argparse.Namespace) -> int:
     url = args.database_url or settings.database_url
-    if not url.startswith(SUPPORTED_SCHEMES):
-        raise SystemExit(
-            f"unsupported DATABASE_URL {url!r}; use sqlite+aiosqlite:// or "
-            "postgresql+asyncpg://"
-        )
+    require_database_url(url)
     orders = SqlOrderStore(url)
     auth = AuthService(SqlAuthStore(engine=orders.engine))
     try:
@@ -228,11 +226,7 @@ def _validate_cutoff_selectors(
 
 async def _cutoff(args: argparse.Namespace) -> int:
     url = args.database_url or settings.database_url
-    if not url.startswith(SUPPORTED_SCHEMES):
-        raise SystemExit(
-            f"unsupported DATABASE_URL {url!r}; use sqlite+aiosqlite:// or "
-            "postgresql+asyncpg://"
-        )
+    require_database_url(url)
     day, start, end = _validate_cutoff_selectors(args)
     store = SqlOrderStore(url)
     try:
@@ -249,7 +243,12 @@ async def _cutoff(args: argparse.Namespace) -> int:
         await store.engine.dispose()
     rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.output:
-        Path(args.output).write_text(rendered, encoding="utf-8")
+        try:
+            Path(args.output).write_text(rendered, encoding="utf-8")
+        except OSError as error:
+            raise SystemExit(
+                f"cannot write output file: {error.strerror or 'invalid path'}"
+            ) from None
     else:
         print(rendered, end="")
     return 0

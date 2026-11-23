@@ -1,4 +1,4 @@
-"""``valence cutoff`` renders the same Loading List the v1 API serves (issue #97)."""
+"""``valence cutoff`` renders the Loading List the Agent Interface serves (#97)."""
 
 from __future__ import annotations
 
@@ -131,9 +131,31 @@ def test_cutoff_reports_clear_validation_errors(tmp_path, args, message):
         main(["cutoff", "--database-url", url, *args])
 
 
-def test_cutoff_rejects_an_unsupported_database_url(tmp_path):
+def test_cutoff_rejects_an_unsupported_database_url_without_echoing_it(capsys):
+    url = "postgresql+psycopg://valence:hunter2-cutoff-secret@db.local/valence"
+
     with pytest.raises(SystemExit, match="unsupported DATABASE_URL"):
-        main(["cutoff", "--database-url", "firestore://demo", "--day", DAY])
+        main(["cutoff", "--database-url", url, "--day", DAY])
+
+    assert "hunter2-cutoff-secret" not in capsys.readouterr().out
+
+
+def test_cutoff_reports_an_unwritable_output_path(tmp_path, capsys):
+    url = _sqlite_url(tmp_path)
+    _seed(url, DAY)
+
+    with pytest.raises(SystemExit, match="cannot write output file"):
+        main(
+            [
+                "cutoff",
+                "--database-url",
+                url,
+                "--day",
+                DAY,
+                "--output",
+                str(tmp_path / "missing" / "list.json"),
+            ]
+        )
 
 
 def test_cutoff_help_documents_date_window_and_output(tmp_path, capsys):

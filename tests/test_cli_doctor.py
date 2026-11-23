@@ -27,6 +27,7 @@ CHECK_NAMES = {
     "model provider",
     "voucher store",
     "tally",
+    "whatsapp",
     "mcp",
 }
 
@@ -52,6 +53,15 @@ def _configure_tally(url: str) -> None:
         store = SqlOrderStore(url)
         auth = AuthService(SqlAuthStore(engine=store.engine))
         await auth.set_integration("tally", {"url": "http://tally.local/import"})
+        await auth.set_integration(
+            "meta",
+            {
+                "access_token": "fake-meta-token",
+                "app_secret": "fake-app-secret",
+                "phone_number_id": "fake-phone-id",
+                "verify_token": "fake-verify-token",
+            },
+        )
         await auth.set_integration("gemini", {"api_key": "fake-provider-key"})
         await store.engine.dispose()
 
@@ -154,6 +164,19 @@ def test_doctor_never_prints_secret_values(healthy, capsys):
     assert "***" in output or "redacted" in output.lower()
 
 
+def test_doctor_reports_an_unsupported_url_without_a_traceback(capsys):
+    url = "postgresql+psycopg://valence:hunter2-doctor-secret@db.local/valence"
+
+    code = main(["doctor", "--database-url", url])
+
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "FAIL configuration" in output
+    assert "FAIL database" in output
+    assert "hunter2-doctor-secret" not in output
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_doctor_help_documents_database_and_json_options(capsys):
     with pytest.raises(SystemExit) as error:
         main(["doctor", "--help"])
@@ -180,6 +203,7 @@ def test_doctor_connects_and_checks_migrations_on_both_sql_backends(
         mock.patch.object(settings, "model_provider", "fake"),
         mock.patch.object(settings, "voucher_dir", str(tmp_path)),
         mock.patch.object(settings, "tally_push_url", "http://tally.local/import"),
+        mock.patch.dict(os.environ, {"META_ACCESS_TOKEN": "fake-meta-token"}),
     ):
         code = main(["doctor", "--database-url", url])
 

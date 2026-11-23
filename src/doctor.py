@@ -53,6 +53,20 @@ def redact_database_url(url: str) -> str:
         return "<redacted>"
 
 
+def is_supported_database_url(url: str) -> bool:
+    """True when a URL uses one of the two supported async SQL drivers."""
+    return url.startswith(SUPPORTED_SCHEMES)
+
+
+def require_database_url(url: str) -> None:
+    """Reject an unsupported URL without echoing its credentials."""
+    if not is_supported_database_url(url):
+        raise SystemExit(
+            "unsupported DATABASE_URL; use sqlite+aiosqlite:// or "
+            "postgresql+asyncpg://"
+        )
+
+
 def format_checks(checks: list[CheckResult]) -> str:
     """Render check results as human-readable PASS/FAIL lines."""
     return "".join(
@@ -79,8 +93,10 @@ def _check_python() -> CheckResult:
 
 def _check_configuration(url: str) -> CheckResult:
     problems: list[str] = []
-    if not url.startswith(SUPPORTED_SCHEMES):
-        problems.append("DATABASE_URL must use sqlite+aiosqlite:// or postgresql+asyncpg://")
+    if not is_supported_database_url(url):
+        problems.append(
+            "DATABASE_URL must use sqlite+aiosqlite:// or postgresql+asyncpg://"
+        )
     for name in ("order_store", "session_service"):
         value = getattr(settings, name)
         if value and value not in _STORE_KINDS:
@@ -106,7 +122,11 @@ def _check_configuration(url: str) -> CheckResult:
     return CheckResult("configuration", True, detail)
 
 
-async def _check_database(engine: AsyncEngine, url: str) -> CheckResult:
+async def _check_database(engine: AsyncEngine | None, url: str) -> CheckResult:
+    if engine is None:
+        return CheckResult(
+            "database", False, "DATABASE_URL uses an unsupported driver"
+        )
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
@@ -136,7 +156,11 @@ async def _current_heads(engine: AsyncEngine) -> tuple[str, ...]:
         )
 
 
-async def _check_migrations(engine: AsyncEngine) -> CheckResult:
+async def _check_migrations(engine: AsyncEngine | None) -> CheckResult:
+    if engine is None:
+        return CheckResult(
+            "migrations", False, "database unavailable; migrations not checked"
+        )
     try:
         expected = _expected_heads()
         current = await _current_heads(engine)
@@ -156,13 +180,17 @@ async def _check_migrations(engine: AsyncEngine) -> CheckResult:
     )
 
 
-async def _has_model_credentials(auth: AuthService, env: Mapping[str, str]) -> bool:
+async def _has_model_credentials(
+    auth: AuthService | None, env: Mapping[str, str]
+) -> bool:
     if any(env.get(name, "").strip() for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY")):
         return True
     if env.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true" and env.get(
         "GOOGLE_CLOUD_LOCATION", ""
     ).strip():
         return True
+    if auth is None:
+        return False
     try:
         values = await auth.integration_values("gemini")
     except Exception:
@@ -171,7 +199,7 @@ async def _has_model_credentials(auth: AuthService, env: Mapping[str, str]) -> b
 
 
 async def _check_model_provider(
-    auth: AuthService, env: Mapping[str, str]
+    auth: AuthService | None, env: Mapping[str, str]
 ) -> CheckResult:
     try:
         provider = build_model_provider()
@@ -225,12 +253,16 @@ def _check_voucher_store() -> CheckResult:
     return CheckResult("voucher store", True, "backend=in-memory (not durable)")
 
 
-async def _check_tally(auth: AuthService) -> CheckResult:
+async def _check_tally(auth: AuthService | None) -> CheckResult:
+    if auth is None:
+        return CheckResult(
+            "tally", False, "database unavailable; Tally config not checked"
+        )
     try:
         health = await auth.integration_health()
         tally_url = (await auth.integration_url("tally")).strip()
-    except Exception as error:
-        return CheckResult("tally", False, f"{type(error).__name__}: unreadable config")
+    except Exception:
+        return CheckResult("tally", False, "could not read Tally configuration")
     legacy_url = settings.tally_push_url.strip()
     if (
         health.get("tally", {}).get("healthy")
@@ -246,6 +278,22 @@ async def _check_tally(auth: AuthService) -> CheckResult:
         )
         return CheckResult("tally", True, f"push URL configured via {source}")
     return CheckResult("tally", False, "no Tally push URL configured")
+
+
+async def _check_whatsapp(
+    auth: AuthService | None, env: Mapping[str, str]
+) -> CheckResult:
+    """Check the Meta Integration used by the WhatsApp Source Channel."""
+    if auth is not None:
+        try:
+            health = await auth.integration_health()
+        except Exception:
+            health = {}
+        if health.get("meta", {}).get("healthy"):
+            return CheckResult("whatsapp", True, "Meta Integration configured")
+    if env.get("META_ACCESS_TOKEN", "").strip():
+        return CheckResult("whatsapp", True, "Meta access token set in environment")
+    return CheckResult("whatsapp", False, "no Meta credentials configured")
 
 
 def _check_mcp() -> CheckResult:
@@ -271,8 +319,12 @@ async def run_doctor(
     """Run every check against the configured Instance, in dependency order."""
     url = url or settings.database_url
     env = os.environ if env is None else env
-    engine = create_async_engine(url, poolclass=NullPool)
-    auth = AuthService(SqlAuthStore(engine=engine))
+    engine: AsyncEngine | None = (
+        create_async_engine(url, poolclass=NullPool)
+        if is_supported_database_url(url)
+        else None
+    )
+    auth = AuthService(SqlAuthStore(engine=engine)) if engine is not None else None
     try:
         return [
             _check_python(),
@@ -282,10 +334,12 @@ async def run_doctor(
             await _check_model_provider(auth, env),
             _check_voucher_store(),
             await _check_tally(auth),
+            await _check_whatsapp(auth, env),
             _check_mcp(),
         ]
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 __all__ = [
@@ -293,6 +347,8 @@ __all__ = [
     "CheckResult",
     "as_json",
     "format_checks",
+    "is_supported_database_url",
     "redact_database_url",
+    "require_database_url",
     "run_doctor",
 ]

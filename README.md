@@ -324,11 +324,12 @@ valence cutoff --start 2026-08-14 --end 2026-08-16 --output lists.json
 ```
 
 `valence doctor` checks the Python version, configuration, database
-connectivity and Alembic migrations, model provider, voucher store, Tally push
-configuration, and the MCP server. It exits non-zero if any check fails and
+connectivity and Alembic migrations, model provider, voucher store, Meta/
+WhatsApp, Tally push configuration, and the MCP server. It exits non-zero if any
+check fails and
 never prints a secret value — credentials are reported only as set or missing.
 `valence cutoff` renders the live Loading List for a day or an inclusive window
-through the same `LoadingService` as the v1 API (`--day` / `--date`, or
+through the same `LoadingService` as the Agent Interface (`--day` / `--date`, or
 `--start` with `--end`); `--output` writes the JSON to a file instead of stdout.
 Both accept `--database-url` (default `DATABASE_URL`) and work with SQLite and
 Postgres. Run `valence doctor --help` or `valence cutoff --help` for all options.
