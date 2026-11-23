@@ -1,8 +1,8 @@
-"""The token-gated outbound send probe (security findings #75 and #74).
+"""The admin-authenticated outbound send endpoint (security finding #74).
 
-The legacy probe is being retired in favour of the admin-authenticated v1
-endpoint; while it exists its request body must be bounded like the other
-token-gated ingest routes, and its error responses must be real HTTP errors.
+Outbound WhatsApp is a privileged action: it requires a server-side admin key,
+not the shared voice-ingest bearer. The legacy probe is gone; this module pins
+the v1 contract, its body cap (carried over from #75), and its error shapes.
 """
 
 from __future__ import annotations
@@ -11,51 +11,137 @@ from fastapi.testclient import TestClient
 from google.adk.sessions import InMemorySessionService
 
 from src.agent import build_agent
-from src.web import MAX_ADMIN_SEND_MESSAGE_BODY_BYTES, create_app
+from src.api_v1 import MAX_ADMIN_SEND_MESSAGE_BODY_BYTES
+from src.auth import AuthService, InMemoryAuthStore, Role
+from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 
 from .fakes import FakeEchoLlm
 
-SEND_URL = "/api/admin/send-message"
-TOKEN = "ingest-token"
+SEND_URL = "/api/v1/admin/send-message"
+SETUP_URL = "/api/v1/setup"
+SETUP_TOKEN = "setup-secret"
+INGEST_TOKEN = "ingest-token"
 
 
-def _client(*, sender=None, token=TOKEN) -> TestClient:
+def _client(*, sender=None) -> TestClient:
     app = create_app(
         agent=build_agent(model=FakeEchoLlm()),
         session_service=InMemorySessionService(),
+        auth=AuthService(InMemoryAuthStore(), setup_token=SETUP_TOKEN),
         whatsapp_sender=sender or MockWhatsAppSender(),
-        voice_ingest_token=token,
+        voice_ingest_token=INGEST_TOKEN,
     )
     return TestClient(app)
 
 
-def _auth(token: str = TOKEN) -> dict[str, str]:
+def _admin(client: TestClient) -> dict[str, str]:
+    response = client.post(
+        SETUP_URL, json={"setup_token": SETUP_TOKEN, "business_name": "Acme"}
+    )
+    assert response.status_code == 201
+    return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
+def _key_headers(
+    client: TestClient, admin: dict[str, str], role: Role
+) -> dict[str, str]:
+    created = client.post(
+        "/api/v1/keys",
+        json={"name": role.value, "role": role.value},
+        headers=admin,
+    )
+    assert created.status_code == 201
+    return {"Authorization": f"Bearer {created.json()['token']}"}
+
+
+def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_send_message_delivers_for_valid_token():
+def test_admin_key_can_send_a_message():
     sender = MockWhatsAppSender()
-    response = _client(sender=sender).post(
+    client = _client(sender=sender)
+    response = client.post(
         SEND_URL,
         json={"to": "+919812345001", "text": "hello"},
-        headers=_auth(),
+        headers=_admin(client),
     )
     assert response.status_code == 200
     assert sender.sent == [("+919812345001", "hello")]
 
 
-def test_send_message_rejects_oversized_body_with_valid_token():
-    response = _client().post(
+def test_voice_ingest_bearer_is_rejected():
+    client = _client()
+    _admin(client)
+    response = client.post(
+        SEND_URL,
+        json={"to": "+919812345001", "text": "hello"},
+        headers=_auth(INGEST_TOKEN),
+    )
+    assert response.status_code == 401
+
+
+def test_non_admin_roles_are_forbidden():
+    client = _client()
+    admin = _admin(client)
+    for role in (Role.OPERATOR, Role.VIEWER):
+        response = client.post(
+            SEND_URL,
+            json={"to": "+919812345001", "text": "hello"},
+            headers=_key_headers(client, admin, role),
+        )
+        assert response.status_code == 403
+
+
+def test_revoked_admin_key_is_rejected():
+    client = _client()
+    admin_headers = _admin(client)
+    created = client.post(
+        "/api/v1/keys",
+        json={"name": "second-admin", "role": Role.ADMIN.value},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    second = created.json()
+    second_headers = {"Authorization": f"Bearer {second['token']}"}
+    assert (
+        client.post(
+            SEND_URL,
+            json={"to": "+919812345001", "text": "hello"},
+            headers=second_headers,
+        ).status_code
+        == 200
+    )
+    deleted = client.delete(
+        f"/api/v1/keys/{second['key_id']}", headers=admin_headers
+    )
+    assert deleted.status_code == 204
+    assert (
+        client.post(
+            SEND_URL,
+            json={"to": "+919812345001", "text": "hello"},
+            headers=second_headers,
+        ).status_code
+        == 401
+    )
+
+
+def test_oversized_body_is_rejected_after_auth():
+    client = _client()
+    admin = _admin(client)
+    response = client.post(
         SEND_URL,
         content=b"x" * (MAX_ADMIN_SEND_MESSAGE_BODY_BYTES + 1),
-        headers={"content-type": "application/json", **_auth()},
+        headers={"content-type": "application/json", **admin},
     )
     assert response.status_code == 413
 
 
-def test_send_message_checks_token_before_reading_the_body():
-    response = _client().post(
+def test_oversized_body_with_bad_token_is_401():
+    client = _client()
+    _admin(client)
+    response = client.post(
         SEND_URL,
         content=b"x" * (MAX_ADMIN_SEND_MESSAGE_BODY_BYTES + 1),
         headers={"content-type": "application/json", **_auth("nope")},
@@ -63,47 +149,41 @@ def test_send_message_checks_token_before_reading_the_body():
     assert response.status_code == 401
 
 
-def test_send_message_accepts_a_body_at_the_cap():
-    text = "x" * 200
-    payload = f'{{"to":"+919812345001","text":"{text}"}}'.encode()
-    assert len(payload) < MAX_ADMIN_SEND_MESSAGE_BODY_BYTES
-    response = _client().post(
-        SEND_URL,
-        content=payload,
-        headers={"content-type": "application/json", **_auth()},
-    )
-    assert response.status_code == 200
-
-
-def test_send_message_returns_400_for_missing_fields():
-    response = _client().post(
-        SEND_URL, json={"to": "+919812345001"}, headers=_auth()
-    )
-    assert response.status_code == 400
-    assert response.json()["detail"] == "missing 'to' or 'text'"
-
-
-def test_send_message_returns_503_when_not_configured(monkeypatch):
-    from src.config import settings
-
-    monkeypatch.delenv("VOICE_INGEST_TOKEN", raising=False)
-    monkeypatch.setattr(settings, "voice_ingest_token", "")
-    response = _client(token=None).post(
-        SEND_URL,
-        json={"to": "+919812345001", "text": "hello"},
-        headers=_auth(),
-    )
-    assert response.status_code == 503
-    assert response.json()["detail"] == "not configured"
-
-
-def test_send_message_rejects_malformed_and_non_object_json():
+def test_legacy_route_is_gone():
     client = _client()
+    _admin(client)
+    assert client.post(
+        "/api/admin/send-message",
+        json={"to": "+919812345001", "text": "hello"},
+        headers=_auth(INGEST_TOKEN),
+    ).status_code == 404
+
+
+def test_invalid_recipient_and_missing_fields_are_422():
+    client = _client()
+    admin = _admin(client)
+    invalid = client.post(
+        SEND_URL, json={"to": "not-a-phone", "text": "hello"}, headers=admin
+    )
+    assert invalid.status_code == 422
+    missing = client.post(
+        SEND_URL, json={"to": "+919812345001"}, headers=admin
+    )
+    assert missing.status_code == 422
+
+
+def test_malformed_and_non_object_json_are_400():
+    client = _client()
+    admin = _admin(client)
     malformed = client.post(
-        SEND_URL, content=b"{", headers={"content-type": "application/json", **_auth()}
+        SEND_URL,
+        content=b"{",
+        headers={"content-type": "application/json", **admin},
     )
     assert malformed.status_code == 400
     non_object = client.post(
-        SEND_URL, content=b"[]", headers={"content-type": "application/json", **_auth()}
+        SEND_URL,
+        content=b"[]",
+        headers={"content-type": "application/json", **admin},
     )
     assert non_object.status_code == 400

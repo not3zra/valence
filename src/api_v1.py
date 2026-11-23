@@ -8,6 +8,8 @@ principal more power than the other.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Collection
 from datetime import date as _date
 from typing import Any, Literal
@@ -55,6 +57,11 @@ from .order_actions import (
 from .store import OrderStore
 from .tally import TallyPushError, TallyPushFailed
 from .voucher import VoucherError
+from .whatsapp import WhatsAppSender
+
+# An outbound send is a phone number plus a short text. A small fixed cap keeps
+# a privileged caller from buffering an arbitrary body in the web worker.
+MAX_ADMIN_SEND_MESSAGE_BODY_BYTES = 64 * 1024
 
 
 class SetupRequest(BaseModel):
@@ -105,6 +112,16 @@ class PhotoIntakeRequest(BaseModel):
     image_base64: str = Field(min_length=1)
     mime_type: str = "image/jpeg"
     message: str = ""
+
+
+class AdminSendMessageRequest(BaseModel):
+    to: str = Field(pattern=E164_PATTERN, description="Recipient phone (E.164)")
+    text: str = Field(min_length=1, description="Message body")
+
+    @field_validator("to")
+    @classmethod
+    def _whole_e164(cls, value: str) -> str:
+        return validate_intake_sender(value)
 
 
 class IntakeResponse(BaseModel):
@@ -214,6 +231,7 @@ def build_api_v1_router(
     store: OrderStore | None = None,
     order_service: OrderActionService | None = None,
     loading_service: LoadingService | None = None,
+    whatsapp_sender: WhatsAppSender | None = None,
 ) -> APIRouter:
     """Build the authenticated ``/api/v1`` router for one Instance."""
 
@@ -596,5 +614,31 @@ def build_api_v1_router(
             return LoadingListResponse(
                 **await loading_service.render_cutoff(_delivery_day(day))
             )
+
+    @router.post("/admin/send-message", tags=["admin"])
+    async def admin_send_message(request: Request) -> dict[str, bool]:
+        """Send one outbound WhatsApp message as the authenticated Business."""
+        await require_admin(request)
+        if whatsapp_sender is None:
+            raise HTTPException(status_code=503, detail="messaging is not configured")
+        size = 0
+        chunks: list[bytes] = []
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_ADMIN_SEND_MESSAGE_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="request body too large")
+            chunks.append(chunk)
+        try:
+            payload = json.loads(b"".join(chunks))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="expected a JSON object")
+        try:
+            message = AdminSendMessageRequest.model_validate(payload)
+        except ValueError as error:
+            raise _invalid(error) from error
+        await asyncio.to_thread(whatsapp_sender.send, message.to, message.text)
+        return {"sent": True}
 
     return router
