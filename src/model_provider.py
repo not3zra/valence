@@ -22,6 +22,8 @@ from google.genai import types
 from .config import settings
 from .media import MediaObject
 
+_APPROVAL_REPLY = "Your order is under approval."
+
 
 @dataclass(frozen=True)
 class ModelCapabilities:
@@ -98,6 +100,75 @@ class FakeEchoLlm(BaseLlm):
         )
 
 
+class FakeToolCallingLlm(BaseLlm):
+    """Commits a deterministic order through the real ``process_order`` tool.
+
+    Unlike :class:`FakeEchoLlm`, this model drives the full ADK tool path, so an
+    offline process can ingest, approve, and mark a real order billed. The confidence
+    is below the seeded minimum, leaving the order in ``pending_review`` for the
+    Agent Interface's confirmed approve action. Turn-aware like the test fakes:
+    a tool result newer than the inbound text gets a final reply instead of a
+    second commit.
+    """
+
+    model: str = "fake-toolcall"
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+        return ["fake-toolcall.*"]
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        contents = llm_request.contents or []
+        last_inbound = -1
+        last_result = -1
+        for index, content in enumerate(contents):
+            has_result = any(part.function_response for part in content.parts or [])
+            if content.role == "user" and has_result:
+                last_result = index
+            elif content.role == "user":
+                last_inbound = index
+        if last_result > last_inbound:
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text=_APPROVAL_REPLY)],
+                )
+            )
+            return
+
+        call = types.FunctionCall(
+            name="process_order",
+            args={
+                "items": [{"product": "sulfuric acid", "quantity": 2000, "unit": "kg"}],
+                "confidence": 0.5,
+                "delivery_location": "Peenya Industrial Area",
+            },
+        )
+        yield LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(function_call=call)])
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name="process_order", response={"ok": "committed"}
+                        )
+                    )
+                ],
+            )
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=_APPROVAL_REPLY)],
+            )
+        )
+
+
 class FakeModelProvider:
     """Provider double for tests; capabilities can be narrowed per case."""
 
@@ -120,9 +191,23 @@ class FakeModelProvider:
         return self._capabilities
 
 
+class FakeToolCallProvider(FakeModelProvider):
+    """Offline provider that commits orders instead of echoing the inbound text."""
+
+    def __init__(
+        self,
+        model: BaseLlm | None = None,
+        capabilities: ModelCapabilities | None = None,
+    ) -> None:
+        super().__init__(
+            model if model is not None else FakeToolCallingLlm(), capabilities
+        )
+
+
 _PROVIDERS: dict[str, type[GeminiModelProvider] | type[FakeModelProvider]] = {
     "gemini": GeminiModelProvider,
     "fake": FakeModelProvider,
+    "fake-toolcall": FakeToolCallProvider,
 }
 
 
