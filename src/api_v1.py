@@ -12,7 +12,7 @@ import asyncio
 import json
 from collections.abc import Collection
 from datetime import date as _date
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -62,6 +62,8 @@ from .whatsapp import WhatsAppSender
 # An outbound send is a phone number plus a short text. A small fixed cap keeps
 # a privileged caller from buffering an arbitrary body in the web worker.
 MAX_ADMIN_SEND_MESSAGE_BODY_BYTES = 64 * 1024
+MAX_TEXT_INTAKE_BODY_BYTES = 64 * 1024
+MAX_MEDIA_INTAKE_BODY_BYTES = 8 * 1024 * 1024
 
 
 class SetupRequest(BaseModel):
@@ -215,6 +217,37 @@ def _invalid(error: ValueError) -> HTTPException:
 
 def _unprocessable(error: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(error))
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+async def _read_bounded_json(
+    request: Request, *, cap: int, model: type[_ModelT]
+) -> _ModelT:
+    """Stream a request body under ``cap`` bytes, then validate it as ``model``.
+
+    FastAPI's implicit Pydantic body parsing buffers the whole request before a
+    field validator can reject it, so security-relevant routes read the stream
+    explicitly and bound it first (issues #75 and #90).
+    """
+    size = 0
+    chunks: list[bytes] = []
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise HTTPException(status_code=413, detail="request body too large")
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="invalid JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="expected a JSON object")
+    try:
+        return model.model_validate(payload)
+    except ValueError as error:
+        raise _invalid(error) from error
 
 
 def _delivery_day(value: str | None) -> _date | None:
@@ -387,11 +420,26 @@ def build_api_v1_router(
 
     if intake_service is not None:
 
-        @router.post("/intake", response_model=IntakeResponse, tags=["intake"])
-        async def intake_order(
-            payload: IntakeRequest, request: Request
-        ) -> IntakeResponse:
+        @router.post(
+            "/intake",
+            response_model=IntakeResponse,
+            tags=["intake"],
+            openapi_extra={
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": IntakeRequest.model_json_schema()
+                        }
+                    },
+                }
+            },
+        )
+        async def intake_order(request: Request) -> IntakeResponse:
             principal = await identify(request, roles=INTAKE_ROLES)
+            payload = await _read_bounded_json(
+                request, cap=MAX_TEXT_INTAKE_BODY_BYTES, model=IntakeRequest
+            )
             key, fingerprint = _idempotency(request, payload)
             try:
                 result = await intake_service.intake_text(
@@ -412,15 +460,19 @@ def build_api_v1_router(
         async def _media_intake(
             *,
             request: Request,
-            payload: BaseModel,
-            sender_id: str,
-            data: str,
-            mime_type: str,
+            model: type[BaseModel],
             audio: bool,
-            message: str = "",
         ) -> IntakeResponse:
             principal = await identify(request, roles=INTAKE_ROLES)
+            payload = await _read_bounded_json(
+                request,
+                cap=MAX_MEDIA_INTAKE_BODY_BYTES,
+                model=model,
+            )
             key, fingerprint = _idempotency(request, payload)
+            sender_id = str(getattr(payload, "caller" if audio else "sender_id"))
+            data = str(getattr(payload, "audio_base64" if audio else "image_base64"))
+            mime_type = str(payload.mime_type)
             try:
                 media = decode_attachment(data, mime_type, audio=audio)
             except MediaTooLarge as error:
@@ -440,7 +492,7 @@ def build_api_v1_router(
                     result = await intake_service.intake_photo(
                         sender_id=sender_id,
                         media=media,
-                        message=message,
+                        message=str(getattr(payload, "message", "")),
                         principal_id=principal.id,
                         idempotency_key=key,
                         fingerprint=fingerprint,
@@ -455,31 +507,48 @@ def build_api_v1_router(
                 ) from error
             return IntakeResponse(**result.to_dict())
 
-        @router.post("/intake/voice", response_model=IntakeResponse, tags=["intake"])
-        async def intake_voice(
-            payload: VoiceIntakeRequest, request: Request
-        ) -> IntakeResponse:
+        @router.post(
+            "/intake/voice",
+            response_model=IntakeResponse,
+            tags=["intake"],
+            openapi_extra={
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": VoiceIntakeRequest.model_json_schema()
+                        }
+                    },
+                }
+            },
+        )
+        async def intake_voice(request: Request) -> IntakeResponse:
             return await _media_intake(
                 request=request,
-                payload=payload,
-                sender_id=payload.caller,
-                data=payload.audio_base64,
-                mime_type=payload.mime_type,
+                model=VoiceIntakeRequest,
                 audio=True,
             )
 
-        @router.post("/intake/photo", response_model=IntakeResponse, tags=["intake"])
-        async def intake_photo(
-            payload: PhotoIntakeRequest, request: Request
-        ) -> IntakeResponse:
+        @router.post(
+            "/intake/photo",
+            response_model=IntakeResponse,
+            tags=["intake"],
+            openapi_extra={
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": PhotoIntakeRequest.model_json_schema()
+                        }
+                    },
+                }
+            },
+        )
+        async def intake_photo(request: Request) -> IntakeResponse:
             return await _media_intake(
                 request=request,
-                payload=payload,
-                sender_id=payload.sender_id,
-                data=payload.image_base64,
-                mime_type=payload.mime_type,
+                model=PhotoIntakeRequest,
                 audio=False,
-                message=payload.message,
             )
 
     if store is not None:
@@ -629,23 +698,11 @@ def build_api_v1_router(
         await require_admin(request)
         if whatsapp_sender is None:
             raise HTTPException(status_code=503, detail="messaging is not configured")
-        size = 0
-        chunks: list[bytes] = []
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > MAX_ADMIN_SEND_MESSAGE_BODY_BYTES:
-                raise HTTPException(status_code=413, detail="request body too large")
-            chunks.append(chunk)
-        try:
-            payload = json.loads(b"".join(chunks))
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="invalid JSON") from None
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="expected a JSON object")
-        try:
-            message = AdminSendMessageRequest.model_validate(payload)
-        except ValueError as error:
-            raise _invalid(error) from error
+        message = await _read_bounded_json(
+            request,
+            cap=MAX_ADMIN_SEND_MESSAGE_BODY_BYTES,
+            model=AdminSendMessageRequest,
+        )
         await asyncio.to_thread(whatsapp_sender.send, message.to, message.text)
         return {"sent": True}
 
