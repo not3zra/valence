@@ -1,8 +1,9 @@
-"""Composition root for the standalone MCP server (issue #63).
+"""Composition root for the standalone MCP CLI (issue #63).
 
 Builds the same auth and service layer the REST app uses, then hands them to
-:func:`src.mcp_server.build_mcp_operations`. The MCP server is a separate
-process from the web app, so nothing here imports the FastAPI app.
+:func:`src.mcp_server.build_mcp_operations`. The CLI runs its own process for
+local clients; hosted instances mount the same server on the main app at
+``/mcp`` instead, so neither path imports the other.
 """
 
 from __future__ import annotations
@@ -11,8 +12,7 @@ from mcp.server.mcpserver import MCPServer
 
 from .composition import build_agent_services, build_auth
 from .config import settings
-from .mcp_auth import McpToolGateway
-from .mcp_server import build_mcp_operations, build_mcp_server
+from .mcp_server import build_mcp_server_for_services
 from .runtime import build_runtime
 from .tally import TallyPushService
 from .voucher import default_voucher_storage
@@ -35,11 +35,4 @@ def create_mcp_server(*, api_key: str = "") -> MCPServer:
         else None
     )
     services = build_agent_services(runtime, storage, tally_push)
-    operations = build_mcp_operations(
-        auth=auth,
-        admin=services.admin,
-        intake=services.intake,
-        orders=services.orders,
-        loading=services.loading,
-    )
-    return build_mcp_server(McpToolGateway(auth, operations), api_key=api_key)
+    return build_mcp_server_for_services(auth, services, api_key=api_key)

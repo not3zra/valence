@@ -211,5 +211,9 @@ def test_compose_waits_for_a_healthy_postgres_and_exposes_the_healthcheck():
     assert {"app", "postgres"} <= set(services)
     assert services["app"]["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert services["postgres"]["healthcheck"]["test"]
-    assert services["app"]["healthcheck"]["test"]
+    healthcheck = str(services["app"]["healthcheck"]["test"])
+    assert "/health" in healthcheck
+    assert "/mcp" in healthcheck
+    assert len(services["app"]["ports"]) == 1
+    assert "8000" not in str(services["app"]["ports"])
     assert "alembic upgrade head" in (ROOT / "scripts/docker-entrypoint.sh").read_text()

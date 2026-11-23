@@ -13,7 +13,7 @@ Connection variables, shared by every client:
 | Variable | Purpose |
 | --- | --- |
 | `VALENCE_API_KEY` | Bearer key for the agent's role. For stdio it is given to the server process; for streamable HTTP it is sent as `Authorization: Bearer ...` on each call. |
-| `VALENCE_URL` | Base URL of a hosted Instance. The MCP endpoint is `VALENCE_URL/mcp`. Not needed for stdio. |
+| `VALENCE_URL` | Base URL of a hosted Instance. The MCP endpoint is `VALENCE_URL/mcp`, mounted on the same app and port as REST and the web UI — no separate MCP process or port. Not needed for stdio. |
 
 ## Claude Code
 

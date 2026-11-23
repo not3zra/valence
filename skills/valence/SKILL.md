@@ -25,15 +25,18 @@ chat about orders in the abstract: if there is no connected Instance, say so.
 
 ## Connection
 
-The server is started by `valence mcp`. See `INSTALL.md` for per-client
-snippets (Claude Code, Codex, opencode, and a generic MCP client).
+A hosted Instance serves MCP at `VALENCE_URL/mcp` on the same app and port as
+its REST Agent Interface and web UI; a local client can spawn a stdio server
+instead. See `INSTALL.md` for per-client snippets (Claude Code, Codex, opencode,
+and a generic MCP client).
 
 - **stdio (local clients):** `valence mcp --transport stdio` with
   `VALENCE_API_KEY` in the server process environment. Every call runs as that
   key's principal.
 - **streamable HTTP (hosted Instance):** connect to `VALENCE_URL` with the
   `/mcp` path appended, and send `Authorization: Bearer <VALENCE_API_KEY>` on
-  every request. A header key overrides the process key.
+  every request. The hosted endpoint has no process key: every call must carry
+  its own Bearer key, authorized by the same roles as REST.
 
 Keys carry a server-side role: `admin`, `operator`, `approver`, `viewer`.
 `operator` places and reads orders; only `approver` can decide orders or read
