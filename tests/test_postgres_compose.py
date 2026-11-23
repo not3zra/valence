@@ -98,6 +98,7 @@ def test_initial_migration_creates_application_schema_on_sqlite(tmp_path):
     assert _alembic("upgrade", "head", url=url).returncode == 0
 
 
+@pytest.mark.postgres
 @requires_postgres
 def test_initial_migration_creates_application_schema_on_postgres():
     result = _alembic("upgrade", "head", url=POSTGRES_URL)
@@ -154,6 +155,7 @@ async def test_store_conformance_across_sql_backends(store_url):
     assert await restarted.get_pending_approvals_list(approver) == [order.order_id]
 
 
+@pytest.mark.postgres
 @requires_postgres
 def test_order_flow_on_postgres_uses_the_composed_runtime(tmp_path):
     with ExitStack() as stack:

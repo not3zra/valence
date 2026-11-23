@@ -41,6 +41,9 @@ include = ["src*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "postgres: exercises the Postgres SQL backend (needs TEST_POSTGRES_URL)",
+]
 
 [tool.ruff]
 line-length = 88
