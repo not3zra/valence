@@ -279,6 +279,19 @@ All keys are Bearer tokens with server-side roles (`admin`, `operator`,
 the MCP gateway share this authorization layer, so neither can bypass roles or
 `confirm: true`.
 
+### Agent Interface and Skill
+
+External agents (Claude Code, Codex, opencode, or any MCP client) operate an
+Instance through nine tools — instance discovery, intake, order list/detail,
+order actions, voucher download, Loading Lists, stats and catalogue. Connect a
+local client over stdio with `valence mcp --transport stdio` and
+`VALENCE_API_KEY`, or a hosted Instance over streamable HTTP at
+`$VALENCE_URL/mcp` with a Bearer key. The reusable Skill at
+`skills/valence/SKILL.md` documents the workflow and its safety rules; install
+snippets for each client are in `skills/valence/INSTALL.md`. Approval and billing
+always require explicit human confirmation, intake is untrusted, orders are
+never fabricated, and escalation reasons are always surfaced.
+
 ### Catalogue, config, and Integration setup
 
 Once an admin key exists, `valence setup` applies a sample fixture over the
