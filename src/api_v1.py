@@ -12,11 +12,12 @@ import asyncio
 import json
 from collections.abc import Collection
 from datetime import date as _date
+from datetime import timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .admin import AdminService, CatalogValidationError
 from .auth import (
@@ -64,6 +65,8 @@ from .whatsapp import WhatsAppSender
 MAX_ADMIN_SEND_MESSAGE_BODY_BYTES = 64 * 1024
 MAX_TEXT_INTAKE_BODY_BYTES = 64 * 1024
 MAX_MEDIA_INTAKE_BODY_BYTES = 8 * 1024 * 1024
+MAX_LOADING_LIST_BODY_BYTES = 8 * 1024
+MAX_LOADING_LIST_WINDOW_DAYS = 31
 
 
 class SetupRequest(BaseModel):
@@ -205,6 +208,34 @@ class StatsResponse(BaseModel):
     approved_today: int
     billed_today: int
     late_orders: int
+
+
+class LoadingListWindow(BaseModel):
+    start: str
+    end: str
+
+
+class LoadingListRequest(BaseModel):
+    day: str | None = None
+    window: LoadingListWindow | None = None
+
+    @model_validator(mode="after")
+    def _validate_selectors(self) -> LoadingListRequest:
+        if self.day is not None and self.window is not None:
+            raise ValueError("supply either day or window, not both")
+        if self.window is None:
+            return self
+        try:
+            start = parse_delivery_day(self.window.start)
+            end = parse_delivery_day(self.window.end)
+        except ValueError as error:
+            raise ValueError(f"invalid window: {error}") from error
+        assert start is not None and end is not None
+        if end < start:
+            raise ValueError("window end must not precede start")
+        if (end - start).days >= MAX_LOADING_LIST_WINDOW_DAYS:
+            raise ValueError("window is too large")
+        return self
 
 
 def _fail(error: AuthError) -> HTTPException:
@@ -678,13 +709,54 @@ def build_api_v1_router(
             return StatsResponse(**await loading_service.stats())
 
         @router.post(
+            "/loading-lists",
+            response_model=LoadingListResponse | list[LoadingListResponse],
+            tags=["loading"],
+            openapi_extra={
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": LoadingListRequest.model_json_schema()
+                        }
+                    },
+                }
+            },
+        )
+        async def render_loading_list(
+            request: Request,
+        ) -> LoadingListResponse | list[LoadingListResponse]:
+            await require_admin(request)
+            payload = await _read_bounded_json(
+                request, cap=MAX_LOADING_LIST_BODY_BYTES, model=LoadingListRequest
+            )
+            if payload.window is not None:
+                start = _delivery_day(payload.window.start)
+                end = _delivery_day(payload.window.end)
+                assert start is not None and end is not None
+                return [
+                    LoadingListResponse(
+                        **await loading_service.render_cutoff(
+                            start + timedelta(days=offset)
+                        )
+                    )
+                    for offset in range((end - start).days + 1)
+                ]
+            return LoadingListResponse(
+                **await loading_service.render_cutoff(_delivery_day(payload.day))
+            )
+
+        @router.post(
             "/cutoff/render",
             response_model=LoadingListResponse,
             tags=["loading"],
+            deprecated=True,
+            summary="Render a loading list (compatible alias)",
         )
         async def render_cutoff(
             request: Request, day: str | None = None
         ) -> LoadingListResponse:
+            """Compatible alias for POST /api/v1/loading-lists."""
             await require_admin(request)
             return LoadingListResponse(
                 **await loading_service.render_cutoff(_delivery_day(day))
