@@ -31,9 +31,8 @@ generate_secret() {
 }
 
 # Local-only auth values: use exported values when present, otherwise generate
-# fresh random values for this run. Never ship a demo passcode or token.
-export ROUNDTRIP_TOKEN="${ROUNDTRIP_TOKEN:-$(generate_secret)}"
-export VOICE_INGEST_TOKEN="${VOICE_INGEST_TOKEN:-$(generate_secret)}"
+# fresh random values for this run. Never ship a demo passcode or token. The
+# retired pre-v1 API tokens are gone; the Agent Interface uses API keys.
 export WEB_PASSCODE="${WEB_PASSCODE:-$(generate_secret)}"
 export WEB_PASSCODE_SALT="${WEB_PASSCODE_SALT:-$(generate_secret)}"
 export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"
@@ -41,8 +40,6 @@ export WEB_COOKIE_SECURE="${WEB_COOKIE_SECURE:-0}"
 export VOUCHER_BUCKET="${VOUCHER_BUCKET:-}"
 
 echo "==> Local dev credentials:"
-echo "    ROUNDTRIP_TOKEN=$ROUNDTRIP_TOKEN"
-echo "    VOICE_INGEST_TOKEN=$VOICE_INGEST_TOKEN"
 echo "    WEB_PASSCODE=$WEB_PASSCODE"
 
 # Model access: set GOOGLE_API_KEY, or opt into Vertex AI with

@@ -21,7 +21,7 @@ from .fakes import FakeEchoLlm
 SEND_URL = "/api/v1/admin/send-message"
 SETUP_URL = "/api/v1/setup"
 SETUP_TOKEN = "setup-secret"
-INGEST_TOKEN = "ingest-token"
+NON_KEY_TOKEN = "not-an-api-key"
 
 
 def _client(*, sender=None) -> TestClient:
@@ -30,7 +30,6 @@ def _client(*, sender=None) -> TestClient:
         session_service=InMemorySessionService(),
         auth=AuthService(InMemoryAuthStore(), setup_token=SETUP_TOKEN),
         whatsapp_sender=sender or MockWhatsAppSender(),
-        voice_ingest_token=INGEST_TOKEN,
     )
     return TestClient(app)
 
@@ -71,13 +70,13 @@ def test_admin_key_can_send_a_message():
     assert sender.sent == [("+919812345001", "hello")]
 
 
-def test_voice_ingest_bearer_is_rejected():
+def test_an_unrelated_bearer_is_rejected():
     client = _client()
     _admin(client)
     response = client.post(
         SEND_URL,
         json={"to": "+919812345001", "text": "hello"},
-        headers=_auth(INGEST_TOKEN),
+        headers=_auth(NON_KEY_TOKEN),
     )
     assert response.status_code == 401
 
@@ -155,7 +154,7 @@ def test_legacy_route_is_gone():
     assert client.post(
         "/api/admin/send-message",
         json={"to": "+919812345001", "text": "hello"},
-        headers=_auth(INGEST_TOKEN),
+        headers=_auth(NON_KEY_TOKEN),
     ).status_code == 404
 
 

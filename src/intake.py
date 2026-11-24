@@ -49,7 +49,7 @@ IMAGE_MIME_TYPES: frozenset[str] = frozenset(
 )
 
 # The voice path has no customer text to read; this nudge tells the agent the
-# inline audio is a call in which an order was placed (same as /api/voice/ingest).
+# inline audio is a call in which an order was placed (same as the v1 voice route).
 VOICE_NUDGE = (
     "This audio is a recording of a phone call in which the caller placed an "
     "order. Understand the recording and commit it as a structured order."

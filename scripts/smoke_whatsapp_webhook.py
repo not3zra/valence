@@ -31,7 +31,7 @@ from src.store import FirestoreOrderStore
 from src.web import create_app
 from src.whatsapp import MockWhatsAppSender
 
-WEBHOOK_URL = "/api/whatsapp/webhook"
+WEBHOOK_URL = "/api/v1/webhooks/whatsapp"
 
 
 def main() -> None:

@@ -8,6 +8,7 @@ injected as in-memory doubles.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from src.auth import AuthService, InMemoryAuthStore, Role
 from src.config import settings
 from src.model_provider import FakeModelProvider, ModelCapabilities
 from src.runtime import build_runtime
@@ -28,19 +30,26 @@ from .fakes import FakeRuntime
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _roundtrip(client: TestClient, message: str = "hello"):
+def _operator() -> tuple[AuthService, dict[str, str]]:
+    auth = AuthService(InMemoryAuthStore(), setup_token="setup-secret")
+    token = asyncio.run(auth.issue_key(name="operator", role=Role.OPERATOR)).token
+    return auth, {"Authorization": f"Bearer {token}"}
+
+
+def _intake(client: TestClient, headers: dict[str, str], message: str = "hello"):
     return client.post(
-        "/api/roundtrip",
+        "/api/v1/intake",
         json={"sender_id": "+919812345001", "message": message},
-        headers={"Authorization": "Bearer probe-token"},
+        headers=headers,
     )
 
 
-def test_roundtrip_drives_turns_through_an_injected_runtime():
-    runtime = FakeRuntime(reply="from the fake runtime")
-    client = TestClient(create_app(runtime=runtime, roundtrip_token="probe-token"))
+def test_rest_intake_drives_turns_through_an_injected_runtime():
+    runtime = FakeRuntime(reply="from the fake runtime", store=InMemoryOrderStore())
+    auth, headers = _operator()
+    client = TestClient(create_app(runtime=runtime, auth=auth))
 
-    response = _roundtrip(client, "two drums of acid")
+    response = _intake(client, headers, "two drums of acid")
 
     assert response.status_code == 200
     assert response.json()["reply"] == "from the fake runtime"
@@ -48,17 +57,20 @@ def test_roundtrip_drives_turns_through_an_injected_runtime():
 
 
 def test_runtime_capabilities_gate_voice_intake_before_a_turn():
-    runtime = FakeRuntime(capabilities=ModelCapabilities(audio=False))
-    client = TestClient(create_app(runtime=runtime, voice_ingest_token="ingest"))
+    runtime = FakeRuntime(
+        capabilities=ModelCapabilities(audio=False), store=InMemoryOrderStore()
+    )
+    auth, headers = _operator()
+    client = TestClient(create_app(runtime=runtime, auth=auth))
 
     response = client.post(
-        "/api/voice/ingest",
+        "/api/v1/intake/voice",
         json={
             "caller": "+919812345001",
             "audio_base64": base64.b64encode(b"audio").decode(),
             "mime_type": "audio/wav",
         },
-        headers={"Authorization": "Bearer ingest"},
+        headers=headers,
     )
 
     assert response.status_code == 503
@@ -111,14 +123,16 @@ def test_build_runtime_selects_adapters_from_configuration():
 def test_production_entry_point_uses_the_shared_composition_root():
     from src import main as main_module
 
-    runtime = FakeRuntime(reply="composed by build_runtime")
+    runtime = FakeRuntime(reply="composed by build_runtime", store=InMemoryOrderStore())
+    auth, headers = _operator()
     with (
         mock.patch.object(main_module, "build_runtime", return_value=runtime),
-        mock.patch.object(settings, "roundtrip_token", "probe-token"),
+        mock.patch.object(main_module, "build_auth", return_value=auth),
     ):
         app = main_module.create_valence_app()
 
-    response = _roundtrip(TestClient(app))
+    response = _intake(TestClient(app), headers)
+    assert response.status_code == 200
     assert response.json()["reply"] == "composed by build_runtime"
     assert runtime.turns
 
