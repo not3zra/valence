@@ -40,8 +40,8 @@ These environment values are ignored by the current app. Use `VALENCE_API_KEY`
 - `scripts/tally_sync.py` lists through `/api/v1/orders` and downloads through
   `/api/v1/orders/{order_id}/voucher` with an approver-role `VALENCE_API_KEY`.
 
-`infra/provision.sh` and `scripts/run_local.sh` are legacy GCP development
-helpers; their references to the retired routes are historical. The
+The legacy GCP provisioning and Cloud Build files have been removed from the
+release. `scripts/run_local.sh` remains a local development helper; the
 `valence` CLI and Docker Compose path are the supported way to run a v1
 Instance.
 
