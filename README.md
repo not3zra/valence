@@ -378,10 +378,16 @@ valence/
 ├── .env.example
 ├── alembic.ini
 ├── LEGACY_API.md
+├── CHANGELOG.md
 └── pyproject.toml
 ```
 
 ---
+
+## Release notes
+
+See [CHANGELOG.md](CHANGELOG.md) for the v1.0.0 changes, supported surface, and
+known limitations.
 
 ## License
 
