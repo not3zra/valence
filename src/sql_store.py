@@ -14,6 +14,7 @@ loops, so no connection is shared across loops.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -565,6 +566,7 @@ class SqlIdempotencyStore:
         *,
         engine: AsyncEngine | None = None,
         ttl_s: float | None = None,
+        cleanup_interval_s: float = 60.0,
     ) -> None:
         if engine is None:
             if not url:
@@ -575,6 +577,8 @@ class SqlIdempotencyStore:
         self._engine = engine
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
         self._ttl_s = settings.idempotency_ttl_s if ttl_s is None else ttl_s
+        self._cleanup_interval_s = cleanup_interval_s
+        self._last_cleanup_s = 0.0
         self._ready = False
         self._lock = asyncio.Lock()
 
@@ -590,10 +594,24 @@ class SqlIdempotencyStore:
                 await connection.run_sync(Base.metadata.create_all)
             self._ready = True
 
+    async def _maybe_cleanup_expired(self) -> None:
+        """Reclaim stale rows periodically, not only on a same-key retry.
+
+        Every unique idempotency key creates a row; without this a long-lived
+        Instance accumulates rows forever. A throttled opportunistic sweep
+        covers REST, MCP, and CLI callers without a separate scheduler.
+        """
+        now = time.monotonic()
+        if now - self._last_cleanup_s < self._cleanup_interval_s:
+            return
+        await self.cleanup_expired()
+        self._last_cleanup_s = now
+
     async def try_claim(
         self, scope: str, key: str, fingerprint: str
     ) -> IdempotencyClaim:
         await self.init_schema()
+        await self._maybe_cleanup_expired()
         now = datetime.now(UTC)
         try:
             async with self._sessions() as session, session.begin():

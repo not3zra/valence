@@ -249,6 +249,19 @@ async def test_cleanup_expired_removes_only_expired_records(tmp_path):
     ).status is ClaimStatus.COMPLETE
 
 
+async def test_a_new_claim_reclaims_expired_rows_without_a_same_key_retry(store_url):
+    store = SqlIdempotencyStore(store_url, ttl_s=-1, cleanup_interval_s=0)
+    await store.init_schema()
+    await store.try_claim("principal:text", "first-unique-key", "fp-first")
+    await store.complete(
+        "principal:text", "first-unique-key", "fp-first", {"reply": "first"}
+    )
+
+    await store.try_claim("principal:text", "second-unique-key", "fp-second")
+
+    assert await store._row("principal:text", "first-unique-key") is None
+
+
 async def test_build_agent_services_wires_durable_idempotency_for_sql_orders(tmp_path):
     url = _sqlite_url(tmp_path)
     numbers = itertools.count(1)
