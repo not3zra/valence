@@ -200,11 +200,11 @@ class VoucherStore(Protocol):
 
 
 class GcsVoucherStore:
-    """VoucherStore backed by the Cloud Storage bucket the scaffold provisions.
+    """VoucherStore backed by an operator-provisioned Cloud Storage bucket.
 
     One blob per voucher, named ``{voucher_id}.xml``, stored with the XML media
     type so a manual download imports directly into Tally. The runtime service
-    account holds ``roles/storage.objectUser`` on the project (provision.sh).
+    account needs ``roles/storage.objectUser`` on the project.
     """
 
     def __init__(self, bucket_name: str, client: gcs_storage.Client | None = None):
