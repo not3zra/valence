@@ -142,7 +142,6 @@ def test_doctor_never_prints_secret_values(healthy, capsys):
         "meta_app_secret": "app-secret-doctor-secret",
         "web_passcode": "passcode-doctor-secret",
         "web_passcode_salt": "salt-doctor-secret",
-        "cutoff_secret": "cutoff-doctor-secret",
         "setup_token": "setup-doctor-secret",
     }
     with ExitStack() as stack:

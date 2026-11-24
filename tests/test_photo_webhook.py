@@ -25,7 +25,7 @@ from src.whatsapp import MockWhatsAppSender
 
 from .fakes import FakeMediaFetcher, PhotoReadingLlm, UnreadablePhotoLlm
 
-WEBHOOK_URL = "/api/whatsapp/webhook"
+WEBHOOK_URL = "/api/v1/webhooks/whatsapp"
 APP_SECRET = "test-app-secret"
 VERIFY_TOKEN = "test-verify-token"
 MEDIA_ID = "1234567890"

@@ -1,21 +1,17 @@
 """FastAPI web layer served from the same Cloud Run instance.
 
-Serves the health page, a liveness probe for Cloud Run, the round-trip probe
-that exercises the deployed agent (message in -> reply out), the webhooks
-that receive inbound orders (the Meta Cloud API WhatsApp webhook, ticket 3,
-#4, swapped to Meta in #13), and the token-gated company-recorded call
-ingestion endpoint (issue #35). The approver-facing review web view is ticket
-5 (#6) and the dispatch-facing Loading List web view is ticket 8 (#9).
+Serves the health page, a liveness probe for Cloud Run, the Agent Interface
+(``/api/v1`` REST and ``/mcp``), the Meta Cloud API WhatsApp webhook that
+receives inbound orders, and the human-facing review and dispatch web views.
+The pre-v1 API paths are retired; see ``LEGACY_API.md`` for the old-to-new
+mapping (issue #99).
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import hmac
-import json
-import re
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import date
@@ -23,7 +19,6 @@ from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import BaseModel, Field
 from starlette.routing import Route
 
 from . import review
@@ -47,13 +42,7 @@ from .loading import (
 )
 from .loading_service import LoadingService
 from .mcp_server import build_mcp_server_for_services, mcp_lifespan, mounted_mcp_app
-from .media import (
-    AUDIO_MIME_TYPES,
-    MAX_MEDIA_BYTES,
-    MediaFetcher,
-    MediaObject,
-    MetaMediaFetcher,
-)
+from .media import MediaFetcher, MediaObject, MetaMediaFetcher
 from .meta_whatsapp import MetaCredentials, MetaWhatsAppParser, MetaWhatsAppSender
 from .order_actions import OrderActionService
 from .orders import Order, OrderStatus
@@ -72,13 +61,8 @@ from .whatsapp import MockWhatsAppSender, WhatsAppSender, WhatsAppWebhookParser
 # The WhatsApp webhook is unauthenticated at the network layer (signature
 # verification gates it), so the body is capped before it is read — a real Meta
 # delivery is a few kilobytes; anything larger is not one. Mirrors the 64 KiB
-# cap on the Pub/Sub-adjacent /api/cutoff envelope.
+# body cap on text intake in the Agent Interface.
 MAX_WEBHOOK_BODY_BYTES = 64 * 1024
-
-# The voice-ingest endpoint (issue #35) is token-gated at the network layer, so
-# the cap only has to bound a well-intentioned company recording: base64 of the
-# 5 MiB audio cap (MAX_MEDIA_BYTES) plus the JSON envelope.
-MAX_VOICE_INGEST_BODY_BYTES = 8 * 1024 * 1024
 
 
 def _meta_ack() -> Response:
@@ -89,14 +73,6 @@ def _meta_ack() -> Response:
     """
     return Response(content="OK", media_type="text/plain")
 
-
-# The voice intake path has no customer text to read, only the recording. This
-# nudge tells the model the inline audio is a call in which an order was placed
-# (issue #10); the agent instruction (src.agent) drives how it is understood.
-VOICE_NUDGE = (
-    "This audio is a recording of a phone call in which the caller placed an "
-    "order. Understand the recording and commit it as a structured order."
-)
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -176,39 +152,11 @@ INDEX_HTML = """<!doctype html>
     </div>
   </div>
   <div class="footer">
-    <p>API: <code>POST /api/roundtrip</code> &middot;
-    <code>POST /api/voice/ingest</code></p>
+    <p>Agent Interface: <code>/api/v1</code> &middot; <code>/mcp</code></p>
   </div>
 </body>
 </html>
 """
-
-
-E164_PATTERN = r"^\+[1-9]\d{1,14}$"
-
-
-def _valid_e164(value: str) -> bool:
-    """True only for a whole-string E.164 number (anchored, not a substring).
-
-    ``re.fullmatch`` is stricter than Pydantic's ``pattern`` (``re.search``): a
-    trailing space or embedded phone number in a longer string is rejected, so
-    the ingest caller identity cannot be smuggled past validation.
-    """
-    return re.fullmatch(E164_PATTERN, value) is not None
-
-
-class RoundTripRequest(BaseModel):
-    sender_id: str = Field(
-        pattern=E164_PATTERN,
-        min_length=3,
-        description="Verified phone number of the sender (E.164)",
-    )
-    message: str = Field(min_length=1, description="Inbound message text")
-
-
-class RoundTripResponse(BaseModel):
-    sender_id: str
-    reply: str
 
 
 def create_app(
@@ -220,8 +168,6 @@ def create_app(
     webhook_parser: WhatsAppWebhookParser | None = None,
     media_fetcher: MediaFetcher | None = None,
     store: OrderStore | None = None,
-    roundtrip_token: str | None = None,
-    voice_ingest_token: str | None = None,
     web_passcode: str | None = None,
     web_passcode_salt: str | None = None,
     web_cookie_secure: bool | None = None,
@@ -260,28 +206,17 @@ def create_app(
     Agent Interface; they default to environment settings and fail closed when
     unset (no handshake or signature verifies).
 
-    ``roundtrip_token`` gates ``/api/roundtrip``: it must be set (defaulting to
-    ``ROUNDTRIP_TOKEN``) and presented as a Bearer token, or the probe is
-    closed — an unauthenticated probe could drive the agent under an arbitrary
-    identity including an allowlisted approver (issue #7, security #28).
-    ``voice_ingest_token`` gates the company-recorded call ingestion endpoint
-    ``/api/voice/ingest`` (issue #35): it must be set (defaulting to
-    ``VOICE_INGEST_TOKEN``) and presented as a Bearer token, or the endpoint is
-    closed. Because the caller is taken from the token-authenticated payload,
-    it is trusted company metadata, not caller-ID — the bearer is the only way
-    in.
     ``web_passcode`` / ``web_passcode_salt`` gate the review web view; the
     salt makes the session cookie unforgeable without the per-deploy secret
     (security #27). Both default to their environment settings.
 
     ``store``, when supplied, registers the passcode-gated review web view
-    (``/review``, issue #6), the dispatch-facing Loading List web view
-    (``/loading``, issue #9) behind the same passcode, and the secret-gated
-    Cutoff render endpoint (``/api/cutoff``). The Loading List web view and the
-    Cutoff endpoint run off the same ``load_loading_list`` render the ADK tool
-    uses. ``voucher_storage`` backs the review view's prepare/download/mark-
-    billed voucher actions (issue #8); it defaults to the configured Cloud
-    Storage bucket, or the in-memory double when none is set.
+    (``/review``, issue #6) and the dispatch-facing Loading List web view
+    (``/loading``, issue #9) behind the same passcode. Both use the same
+    ``load_loading_list`` render as the ADK tool. ``voucher_storage`` backs the
+    review view's prepare/download/mark-billed voucher actions (issue #8); it
+    defaults to the configured Cloud Storage bucket, or the in-memory double
+    when none is set.
 
     ``webhook_rate_limit`` caps agent turns per WhatsApp sender per minute on
     the webhook path (security #32); it defaults to ``WEBHOOK_RATE_LIMIT_PER_SENDER``
@@ -292,7 +227,7 @@ def create_app(
     ``model_provider`` selects the model and its capabilities; it defaults to
     the configured provider. Capabilities gate the two media intake paths:
     a provider without image support never fetches a WhatsApp photo, and voice
-    ingest is closed (503) without audio support. Text intake is always open.
+    intake is closed (503) without audio support. Text intake is always open.
     ``auth``, when supplied, mounts the ``/api/v1`` bootstrap, key, instance,
     and Integration routes and the streamable HTTP MCP endpoint at ``/mcp`` on
     this same app; the MCP gateway uses the same service instances and the same
@@ -389,16 +324,6 @@ def create_app(
             )
         return meta_fallback
 
-    probe_token = (
-        roundtrip_token
-        if roundtrip_token is not None
-        else settings.roundtrip_token
-    )
-    ingest_token = (
-        voice_ingest_token
-        if voice_ingest_token is not None
-        else settings.voice_ingest_token
-    )
     passcode = (
         web_passcode if web_passcode is not None else settings.web_passcode
     )
@@ -482,38 +407,6 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/api/roundtrip", response_model=RoundTripResponse)
-    async def roundtrip(
-        request: Request, payload: RoundTripRequest
-    ) -> RoundTripResponse:
-        # Debug probe (issue #4): the caller supplies the sender id, so the
-        # probe is gated by a dedicated bearer token that must be configured —
-        # otherwise an unauthenticated caller could drive the agent under an
-        # arbitrary identity (including an allowlisted approver, issue #7,
-        # security #28). The webhook path is the real sender-verified channel.
-        expected = f"Bearer {probe_token}"
-        if not probe_token:
-            raise HTTPException(
-                status_code=503, detail="roundtrip probe is not configured"
-            )
-        if not hmac.compare_digest(
-            request.headers.get("Authorization", ""), expected
-        ):
-            raise HTTPException(
-                status_code=401, detail="invalid bearer token"
-            )
-        try:
-            reply = await _run_turn(
-                sender_id=payload.sender_id, message=payload.message
-            )
-        except TimeoutError:
-            raise HTTPException(
-                status_code=504, detail="agent turn timed out"
-            ) from None
-        return RoundTripResponse(sender_id=payload.sender_id, reply=reply)
-
-    @app.get("/api/whatsapp/webhook", operation_id="whatsapp_webhook_legacy_get")
-    @app.post("/api/whatsapp/webhook", operation_id="whatsapp_webhook_legacy_post")
     @app.get("/api/v1/webhooks/whatsapp", operation_id="whatsapp_webhook_get")
     @app.post("/api/v1/webhooks/whatsapp", operation_id="whatsapp_webhook_post")
     async def whatsapp_webhook(request: Request) -> Response:
@@ -618,89 +511,6 @@ def create_app(
                 reply_sender.send(message.sender, reply)
         return _meta_ack()
 
-    @app.post("/api/voice/ingest")
-    async def voice_ingest(request: Request) -> Response:
-        """Company-recorded call ingestion (issue #35).
-
-        The company's own system feeds the day's recorded calls here: an audio
-        body plus the caller's E.164 number, posted with a per-deploy bearer
-        token. The audio is passed to the same ADK agent as inline audio with
-        the same ``VOICE_NUDGE`` the recording-status callback used (issue #10),
-        so a voice order with a missing field escalates as flagged and is never
-        clarified (ADR-0004).
-
-        The caller is taken from the token-authenticated payload, never from
-        the message — trusted company metadata, not caller-ID. The token is
-        verified before the body is read or anything parsed; the body is read
-        in bounded chunks (8 MiB cap, 413 on overflow); the caller must be a
-        whole-string E.164 number; the audio is base64 and capped at the same
-        5 MiB as fetched media. A missing or wrong token is rejected with 401
-        (and the endpoint is closed with 503 when no token is configured).
-        There is no outbound voice channel, so the agent's reply is not
-        delivered anywhere.
-        """
-        expected = f"Bearer {ingest_token}"
-        if not ingest_token:
-            return Response(
-                status_code=503, content="voice ingest is not configured"
-            )
-        if not hmac.compare_digest(
-            request.headers.get("Authorization", ""), expected
-        ):
-            return Response(status_code=401)
-        if not capabilities.audio:
-            return Response(
-                status_code=503,
-                content="voice intake is not supported by the model provider",
-            )
-        chunks: list[bytes] = []
-        size = 0
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > MAX_VOICE_INGEST_BODY_BYTES:
-                return Response(status_code=413)
-            chunks.append(chunk)
-        raw_body = b"".join(chunks)
-        try:
-            payload = json.loads(raw_body)
-        except (ValueError, TypeError):
-            return Response(status_code=400)
-        if not isinstance(payload, dict):
-            return Response(status_code=400)
-        caller = payload.get("caller")
-        if not isinstance(caller, str) or not _valid_e164(caller):
-            return Response(status_code=400)
-        audio_b64 = payload.get("audio_base64")
-        if not isinstance(audio_b64, str):
-            return Response(status_code=400)
-        try:
-            audio = base64.b64decode(audio_b64, validate=True)
-        except (ValueError, TypeError):
-            return Response(status_code=400)
-        if not audio:
-            return Response(status_code=400)
-        if len(audio) > MAX_MEDIA_BYTES:
-            return Response(status_code=413)
-        mime = payload.get("mime_type", "audio/wav")
-        if not isinstance(mime, str) or mime not in AUDIO_MIME_TYPES:
-            return Response(status_code=400)
-        try:
-            reply = await _run_turn(
-                sender_id=caller,
-                message=VOICE_NUDGE,
-                media=MediaObject(data=audio, mime_type=mime),
-            )
-        except TimeoutError:
-            raise HTTPException(
-                status_code=504, detail="agent turn timed out"
-            ) from None
-        print(
-            f"[voice_ingest] caller={caller} audio_bytes={len(audio)} "
-            f"reply={reply[:200] if reply else '(empty)'}",
-            flush=True,
-        )
-        return Response(content="OK", media_type="text/plain")
-
     if store is not None:
         web_store = store
 
@@ -717,8 +527,6 @@ def create_app(
         _register_loading_routes(
             app, web_store, passcode, passcode_salt, cookie_secure
         )
-        if loading_service is not None:
-            _register_cutoff_endpoint(app, loading_service)
 
     return app
 
@@ -1132,23 +940,6 @@ def _register_review_routes(
             "voucher_id": order.voucher_id if order else None,
         }
 
-    @app.get("/api/vouchers")
-    async def list_vouchers(request: Request):
-        """List all orders that have prepared vouchers."""
-        await _require(request)
-        orders = await store.list_all_orders()
-        vouchers = []
-        for order in orders:
-            if order.voucher_id:
-                vouchers.append({
-                    "order_id": order.order_id,
-                    "voucher_id": order.voucher_id,
-                    "customer": order.customer,
-                    "total": order.draft_value_inr,
-                    "status": order.status.value,
-                })
-        return {"vouchers": vouchers}
-
     @app.post("/review/orders/{order_id}/billed")
     async def review_mark_billed(request: Request, order_id: str):
         """Mark a prepared voucher's order as billed (issue #8).
@@ -1255,68 +1046,3 @@ def _register_loading_routes(
                 status_code=409, detail="order cannot be dispatched"
             ) from None
         return RedirectResponse("/loading", status_code=303)
-
-
-def _register_cutoff_endpoint(
-    app: FastAPI, loading_service: LoadingService
-) -> None:
-    """Register the secret-gated daily Cutoff render endpoint (issue #9, #62).
-
-    The Cloud Scheduler job fires this endpoint after the daily cutoff; it runs
-    the same ``LoadingService`` render path as the admin REST trigger, returns
-    the live Loading List for today as JSON, and raises the dispatch heads-up
-    for late orders (idempotently — an order already notified at approval is
-    skipped). This is the scheduler gate; the admin REST trigger is the other.
-
-    Auth follows the scaffold's pipeline: Cloud Scheduler publishes to the
-    ``valence-cutoff`` topic, whose push subscription (push-auth service
-    account) delivers a Pub/Sub push envelope to this endpoint. Because the
-    service is deployed ``--allow-unauthenticated``, the envelope alone proves
-    nothing — so the scheduled message body carries the configured
-    ``CUTOFF_SECRET`` and the endpoint verifies it constant-time, the same way
-    a direct call presents it as a bearer token. The endpoint is closed (503)
-    when no secret is configured, so a misdeployed job fails loudly instead of
-    silently rendering without auth.
-    """
-    async def _authorized(request: Request) -> bool:
-        if not settings.cutoff_secret:
-            raise HTTPException(
-                status_code=503, detail="cutoff endpoint is not configured"
-            )
-        # Direct invocation: bearer token.
-        expected = f"Bearer {settings.cutoff_secret}"
-        if hmac.compare_digest(request.headers.get("Authorization", ""), expected):
-            return True
-        # Pub/Sub push envelope: the message data carries the secret. The
-        # endpoint is otherwise unauthenticated, so cap the body before parsing
-        # an attacker-controlled payload (a real envelope is a few hundred
-        # bytes; anything larger is not one).
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                too_large = int(content_length) > 64 * 1024
-            except ValueError:
-                too_large = True
-            if too_large:
-                return False
-        try:
-            body = await request.json()
-        except Exception:
-            return False
-        message = body.get("message")
-        data = message.get("data") if isinstance(message, dict) else None
-        if not isinstance(data, str):
-            return False
-        try:
-            payload = json.loads(base64.b64decode(data))
-        except Exception:
-            return False
-        submitted = payload.get("secret") if isinstance(payload, dict) else None
-        return hmac.compare_digest(str(submitted), settings.cutoff_secret)
-
-    @app.post("/api/cutoff")
-    async def cutoff_render(request: Request, day: str | None = None):
-        if not await _authorized(request):
-            raise HTTPException(status_code=401)
-        delivery_day = _parse_day(day)
-        return await loading_service.render_cutoff(delivery_day)

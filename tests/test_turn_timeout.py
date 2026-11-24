@@ -7,15 +7,14 @@ import asyncio
 import httpx
 from fastapi.testclient import TestClient
 
-from src.auth import AuthService, InMemoryAuthStore
+from src.auth import AuthService, InMemoryAuthStore, Role
 from src.intake import IntakeService
 from src.store import InMemoryOrderStore
 from src.web import create_app
 
 from .fakes import FakeRuntime
 
-ROUTE = "/api/roundtrip"
-HEADERS = {"Authorization": "Bearer probe-token"}
+ROUTE = "/api/v1/intake"
 PAYLOAD = {"sender_id": "+919812345001", "message": "two drums of acid"}
 
 
@@ -31,21 +30,26 @@ class _HangingRuntime(FakeRuntime):
         return self.reply
 
 
-def _app(runtime, *, timeout: float = 1.0) -> object:
-    return create_app(
+async def _app(runtime, *, timeout: float = 1.0):
+    store = InMemoryOrderStore()
+    runtime.store = store
+    auth = AuthService(InMemoryAuthStore(), setup_token="setup-secret")
+    token = (await auth.issue_key(name="operator", role=Role.OPERATOR)).token
+    app = create_app(
         runtime=runtime,
-        roundtrip_token="probe-token",
+        auth=auth,
+        store=store,
         agent_turn_timeout_s=timeout,
     )
+    return app, {"Authorization": f"Bearer {token}"}
 
 
 async def test_slow_turn_does_not_block_health_check():
     runtime = _HangingRuntime()
-    transport = httpx.ASGITransport(app=_app(runtime))
+    app, headers = await _app(runtime)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        turn = asyncio.create_task(
-            client.post(ROUTE, json=PAYLOAD, headers=HEADERS)
-        )
+        turn = asyncio.create_task(client.post(ROUTE, json=PAYLOAD, headers=headers))
         await asyncio.wait_for(runtime.started.wait(), timeout=1)
         health = await asyncio.wait_for(client.get("/health"), timeout=1)
         assert health.status_code == 200
@@ -57,10 +61,11 @@ async def test_slow_turn_does_not_block_health_check():
 
 async def test_hung_turn_returns_504_within_the_timeout():
     runtime = _HangingRuntime()
-    transport = httpx.ASGITransport(app=_app(runtime, timeout=0.02))
+    app, headers = await _app(runtime, timeout=0.02)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await asyncio.wait_for(
-            client.post(ROUTE, json=PAYLOAD, headers=HEADERS), timeout=1
+            client.post(ROUTE, json=PAYLOAD, headers=headers), timeout=1
         )
     assert response.status_code == 504
 

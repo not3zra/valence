@@ -23,7 +23,7 @@ from src.whatsapp import MockWhatsAppSender
 
 from .fakes import ApprovingToolCallingLlm, ConfirmingToolCallingLlm
 
-WEBHOOK_URL = "/api/whatsapp/webhook"
+WEBHOOK_URL = "/api/v1/webhooks/whatsapp"
 APP_SECRET = "test-app-secret"
 VERIFY_TOKEN = "test-verify-token"
 APPROVER_PHONE = "+919845000001"  # a_nikhil

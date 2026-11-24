@@ -218,11 +218,13 @@ The service is now live at `http://localhost:8080`.
 
 #### Step 5: Test it
 
-**Send a test order via the API:**
+**Send a test order via the Agent Interface:**
+
+Bootstrap an Instance first (`valence init`, below) to obtain an API key.
 
 ```bash
-curl -s localhost:8080/api/roundtrip \
-  -H 'authorization: Bearer <roundtrip-token>' \
+curl -s -X POST localhost:8080/api/v1/intake \
+  -H "Authorization: Bearer <VALENCE_API_KEY>" \
   -H 'content-type: application/json' \
   -d '{"sender_id": "+919812345001", "message": "Namaste, 2 drums sulfuric acid chahiye"}'
 ```
@@ -249,7 +251,6 @@ text intake stays available.
 # Set environment variables
 export MODEL_PROVIDER=gemini
 export SESSION_SERVICE=memory
-export ROUNDTRIP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 export WEB_PASSCODE="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 export WEB_PASSCODE_SALT="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 export GOOGLE_API_KEY=<your-api-key>
@@ -375,11 +376,8 @@ echo -n "your-meta-app-secret" | gcloud secrets create META_APP_SECRET --data-fi
 echo -n "your-meta-verify-token" | gcloud secrets create META_VERIFY_TOKEN --data-file=-
 echo -n "your-meta-access-token" | gcloud secrets create META_ACCESS_TOKEN --data-file=-
 echo -n "your-meta-phone-number-id" | gcloud secrets create META_PHONE_NUMBER_ID --data-file=-
-echo -n "your-roundtrip-token" | gcloud secrets create ROUNDTRIP_TOKEN --data-file=-
-echo -n "your-voice-ingest-token" | gcloud secrets create VOICE_INGEST_TOKEN --data-file=-
 echo -n "your-web-passcode" | gcloud secrets create WEB_PASSCODE --data-file=-
 echo -n "your-web-passcode-salt" | gcloud secrets create WEB_PASSCODE_SALT --data-file=-
-echo -n "your-cutoff-secret" | gcloud secrets create CUTOFF_SECRET --data-file=-
 ```
 
 #### Step 2: Deploy
@@ -391,7 +389,7 @@ gcloud run deploy valence \
   --project=<your-project> \
   --allow-unauthenticated \
   --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<your-project>,GOOGLE_CLOUD_LOCATION=asia-southeast1,VOUCHER_BUCKET=<your-project>-vouchers" \
-  --set-secrets="META_APP_SECRET=META_APP_SECRET:latest,META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest,ROUNDTRIP_TOKEN=ROUNDTRIP_TOKEN:latest,VOICE_INGEST_TOKEN=VOICE_INGEST_TOKEN:latest,WEB_PASSCODE=WEB_PASSCODE:latest,WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest"
+  --set-secrets="META_APP_SECRET=META_APP_SECRET:latest,META_VERIFY_TOKEN=META_VERIFY_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,META_PHONE_NUMBER_ID=META_PHONE_NUMBER_ID:latest,WEB_PASSCODE=WEB_PASSCODE:latest,WEB_PASSCODE_SALT=WEB_PASSCODE_SALT:latest"
 ```
 
 #### Step 3: Redirect traffic
@@ -421,11 +419,8 @@ META_APP_SECRET=your-secret
 META_VERIFY_TOKEN=your-token
 META_ACCESS_TOKEN=your-token
 META_PHONE_NUMBER_ID=your-id
-ROUNDTRIP_TOKEN=your-token
-VOICE_INGEST_TOKEN=your-token
 WEB_PASSCODE=your-passcode
 WEB_PASSCODE_SALT=your-salt
-CUTOFF_SECRET=your-secret
 EOF
 
 source .env.provision
@@ -625,31 +620,38 @@ valence/
 
 ## API Reference
 
-### `POST /api/roundtrip`
+Every public API route lives under `/api/v1` (plus `/health`, and the Meta
+webhook at `/api/v1/webhooks/whatsapp`). Routes require
+`Authorization: Bearer <VALENCE_API_KEY>`; privileged order actions also require
+`confirm: true`. The OpenAPI document is served at `/openapi.json`. Pre-v1
+paths are retired — see [LEGACY_API.md](LEGACY_API.md) for the old-to-new map.
 
-Debug probe — drive the agent directly without WhatsApp.
+### `POST /api/v1/intake`
+
+Text intake — drive the agent directly without WhatsApp.
 
 ```bash
-curl -X POST http://localhost:8080/api/roundtrip \
-  -H "Authorization: Bearer <roundtrip-token>" \
+curl -X POST http://localhost:8080/api/v1/intake \
+  -H "Authorization: Bearer <VALENCE_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"sender_id": "+919812345001", "message": "2 drums sulfuric acid"}'
 ```
 
-### `POST /api/voice/ingest`
+### `POST /api/v1/intake/voice`
 
 Company-recorded call ingestion.
 
 ```bash
-curl -X POST http://localhost:8080/api/voice/ingest \
-  -H "Authorization: Bearer <voice-ingest-token>" \
+curl -X POST http://localhost:8080/api/v1/intake/voice \
+  -H "Authorization: Bearer <VALENCE_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"caller": "+919812345001", "audio_base64": "<base64>", "mime_type": "audio/wav"}'
 ```
 
-### `GET /api/vouchers`
+### `GET /api/v1/orders` and `GET /api/v1/orders/{id}/voucher`
 
-List all prepared vouchers (passcode-gated).
+List orders (each carries a `voucher_id` when a voucher is prepared) and
+download a prepared order's voucher XML.
 
 ### `POST /review/orders/{id}/push-to-tally`
 

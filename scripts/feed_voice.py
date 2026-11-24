@@ -1,20 +1,20 @@
-"""Feed a batch of company-recorded calls into the token-gated ingest endpoint.
+"""Feed a batch of company-recorded calls into Agent Interface voice intake.
 
 The company records its own sales calls and feeds them here, one order per
 recording (issue #35). Each recording's caller number is read from trusted
 company metadata — a ``<name>.caller`` sidecar next to a folder recording, or
 the blob's ``caller`` metadata in Cloud Storage — never guessed and never
-spoofable from outside the token-authenticated path. Each recording is POSTed
-to ``/api/voice/ingest``, which runs it through the same ADK agent turn as the
+spoofable from outside the authenticated path. Each recording is POSTed to
+``/api/v1/intake/voice``, which runs it through the same ADK agent turn as the
 other channels and commits a voice order (a missing field escalates per
-ADR-0004). The endpoint is token-gated; the token comes from ``--token`` or the
-``VOICE_INGEST_TOKEN`` environment variable.
+ADR-0004). The route requires an intake-role API key, passed with ``--api-key``
+or the ``VALENCE_API_KEY`` environment variable.
 
 Usage:
     python scripts/feed_voice.py --folder path/to/calls
-    python scripts/feed_voice.py --folder path/to/calls --token INGEST_TOKEN
+    python scripts/feed_voice.py --folder path/to/calls --api-key VALENCE_KEY
     python scripts/feed_voice.py --bucket my-bucket --prefix calls/2026-08-18/
-    python scripts/feed_voice.py --bucket my-bucket --endpoint https://<service>/api/voice/ingest
+    python scripts/feed_voice.py --bucket my-bucket --endpoint https://<service>/api/v1/intake/voice
 
 A folder recording is ingested only when a ``<name>.caller`` sidecar next to it
 holds the caller's E.164 number:
@@ -38,10 +38,10 @@ from pathlib import Path
 
 import httpx
 
+from src.intake import E164_PATTERN
 from src.media import MAX_MEDIA_BYTES, audio_mime_for_name
-from src.web import E164_PATTERN
 
-DEFAULT_ENDPOINT = "http://localhost:8080/api/voice/ingest"
+DEFAULT_ENDPOINT = "http://localhost:8080/api/v1/intake/voice"
 
 
 @dataclass(frozen=True)
@@ -149,10 +149,10 @@ def _default_storage_client():
 async def feed(
     client: httpx.AsyncClient,
     endpoint: str,
-    token: str,
+    api_key: str,
     recordings: list[Recording],
 ) -> list[FeedResult]:
-    """POST each recording to the ingest endpoint and report the outcomes."""
+    """POST each recording to the v1 intake endpoint and report the outcomes."""
     results: list[FeedResult] = []
     for recording in recordings:
         if len(recording.data) > MAX_MEDIA_BYTES:
@@ -173,7 +173,7 @@ async def feed(
             response = await client.post(
                 endpoint,
                 json=payload,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {api_key}"},
             )
         except httpx.HTTPError as exc:
             results.append(
@@ -193,8 +193,8 @@ async def feed(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Feed company-recorded calls into the token-gated voice ingest "
-            "endpoint, one order per recording (issue #35)."
+            "Feed company-recorded calls into Agent Interface voice intake, "
+            "one order per recording (issue #35)."
         )
     )
     parser.add_argument(
@@ -214,22 +214,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--endpoint",
         default=DEFAULT_ENDPOINT,
-        help=f"ingest endpoint URL (default: {DEFAULT_ENDPOINT})",
+        help=f"voice intake endpoint URL (default: {DEFAULT_ENDPOINT})",
     )
     parser.add_argument(
-        "--token",
+        "--api-key",
         default="",
-        help="bearer token for the ingest endpoint (default: VOICE_INGEST_TOKEN env)",
+        help="intake-role API key (default: VALENCE_API_KEY env)",
     )
     parser.add_argument(
         "--timeout", type=float, default=60.0, help="HTTP timeout in seconds"
     )
     args = parser.parse_args(argv)
 
-    token = args.token or os.environ.get("VOICE_INGEST_TOKEN", "")
-    if not token:
+    api_key = args.api_key or os.environ.get("VALENCE_API_KEY", "")
+    if not api_key:
         print(
-            "no ingest token: pass --token or set VOICE_INGEST_TOKEN",
+            "no API key: pass --api-key or set VALENCE_API_KEY",
             file=sys.stderr,
         )
         return 2
@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
 
     async def _run() -> list[FeedResult]:
         async with httpx.AsyncClient(timeout=args.timeout) as client:
-            return await feed(client, args.endpoint, token, recordings)
+            return await feed(client, args.endpoint, api_key, recordings)
 
     results = asyncio.run(_run())
     ok = sum(1 for result in results if result.ok)

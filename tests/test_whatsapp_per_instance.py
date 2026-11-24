@@ -24,7 +24,6 @@ from src.whatsapp import MockWhatsAppSender
 
 from .fakes import ConfirmingToolCallingLlm, PhotoReadingLlm
 
-LEGACY_PATH = "/api/whatsapp/webhook"
 SPEC_PATH = "/api/v1/webhooks/whatsapp"
 
 
@@ -119,7 +118,7 @@ async def test_handshake_uses_the_instance_verify_token():
     client, _, _ = _client(auth, sender=MockWhatsAppSender())
 
     good = client.get(
-        LEGACY_PATH,
+        SPEC_PATH,
         params={
             "hub.mode": "subscribe",
             "hub.verify_token": "instance-verify-token",
@@ -130,7 +129,7 @@ async def test_handshake_uses_the_instance_verify_token():
     assert good.text == "challenge-abc"
 
     wrong = client.get(
-        LEGACY_PATH,
+        SPEC_PATH,
         params={
             "hub.mode": "subscribe",
             "hub.verify_token": "some-other-token",
@@ -146,11 +145,11 @@ async def test_signature_uses_the_instance_app_secret_and_fails_closed():
     client, _, store = _client(auth, sender=MockWhatsAppSender())
     payload = _payload("2 drums sulfuric acid chahiye")
 
-    assert _post(client, LEGACY_PATH, payload, "instance-app-secret").status_code == 200
+    assert _post(client, SPEC_PATH, payload, "instance-app-secret").status_code == 200
     assert len(store.orders) == 1
 
     before = len(store.orders)
-    assert _post(client, LEGACY_PATH, payload, "wrong-secret").status_code == 403
+    assert _post(client, SPEC_PATH, payload, "wrong-secret").status_code == 403
     assert len(store.orders) == before
 
 
@@ -181,7 +180,7 @@ async def test_reply_uses_the_instance_access_token_and_phone_number(monkeypatch
     client, _, store = _client(auth)
 
     response = _post(
-        client, LEGACY_PATH, _payload("2 drums sulfuric acid chahiye"),
+        client, SPEC_PATH, _payload("2 drums sulfuric acid chahiye"),
         "instance-app-secret",
     )
     assert response.status_code == 200
@@ -208,7 +207,7 @@ async def test_media_fetch_uses_the_instance_access_token(monkeypatch):
         auth, sender=MockWhatsAppSender(), model=PhotoReadingLlm()
     )
 
-    response = _post(client, LEGACY_PATH, _image_payload(), "instance-app-secret")
+    response = _post(client, SPEC_PATH, _image_payload(), "instance-app-secret")
     assert response.status_code == 200
     assert captured["token"] == "instance-access-token"
     assert len(store.orders) == 1
@@ -229,7 +228,7 @@ async def test_two_instances_have_independent_credentials():
 
     def handshake(client, token):
         return client.get(
-            LEGACY_PATH,
+            SPEC_PATH,
             params={
                 "hub.mode": "subscribe",
                 "hub.verify_token": token,
@@ -243,8 +242,8 @@ async def test_two_instances_have_independent_credentials():
     assert handshake(client_b, "token-a") == 403
 
     payload = _payload("2 drums sulfuric acid chahiye")
-    assert _post(client_a, LEGACY_PATH, payload, "secret-a").status_code == 200
-    assert _post(client_b, LEGACY_PATH, payload, "secret-a").status_code == 403
+    assert _post(client_a, SPEC_PATH, payload, "secret-a").status_code == 200
+    assert _post(client_b, SPEC_PATH, payload, "secret-a").status_code == 403
     assert len(store_a.orders) == 1
     assert store_b.orders == []
 
@@ -254,7 +253,7 @@ async def test_webhook_fails_closed_without_stored_credentials():
     client, _, store = _client(auth, sender=MockWhatsAppSender())
 
     handshake = client.get(
-        LEGACY_PATH,
+        SPEC_PATH,
         params={
             "hub.mode": "subscribe",
             "hub.verify_token": "anything",
@@ -263,40 +262,9 @@ async def test_webhook_fails_closed_without_stored_credentials():
     )
     assert handshake.status_code == 403
 
-    post = _post(client, LEGACY_PATH, _payload("Namaste"), "anything")
+    post = _post(client, SPEC_PATH, _payload("Namaste"), "anything")
     assert post.status_code == 403
     assert store.orders == []
-
-
-async def test_webhook_is_also_served_at_the_spec_path():
-    auth = AuthService(InMemoryAuthStore())
-    await auth.set_integration("meta", _creds())
-    client, _, _ = _client(auth, sender=MockWhatsAppSender())
-
-    response = client.get(
-        SPEC_PATH,
-        params={
-            "hub.mode": "subscribe",
-            "hub.verify_token": "instance-verify-token",
-            "hub.challenge": "spec-path-challenge",
-        },
-    )
-    assert response.status_code == 200
-    assert response.text == "spec-path-challenge"
-
-
-async def test_spec_path_accepts_a_signed_order():
-    auth = AuthService(InMemoryAuthStore())
-    await auth.set_integration("meta", _creds())
-    client, _, store = _client(auth, sender=MockWhatsAppSender())
-
-    response = _post(
-        client, SPEC_PATH, _payload("2 drums sulfuric acid chahiye"),
-        "instance-app-secret",
-    )
-    assert response.status_code == 200
-    assert len(store.orders) == 1
-    assert store.orders[0].phone == "+919812345001"
 
 
 async def test_integration_secrets_are_not_exposed_and_keys_cannot_sign():
@@ -314,6 +282,6 @@ async def test_integration_secrets_are_not_exposed_and_keys_cannot_sign():
 
     # A user API key is not a webhook credential: signing with it is rejected.
     payload = _payload("2 drums sulfuric acid chahiye")
-    response = _post(client, LEGACY_PATH, payload, admin.token)
+    response = _post(client, SPEC_PATH, payload, admin.token)
     assert response.status_code == 403
     assert store.orders == []

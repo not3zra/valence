@@ -2,15 +2,15 @@
 """Local Tally sync script.
 
 Run this on your PC to automatically push prepared vouchers to your local
-Tally instance. It polls the Valence service for new vouchers and pushes
-them to Tally via HTTP import.
+Tally instance. It polls the Valence Agent Interface for orders with prepared
+vouchers and pushes their XML to Tally via HTTP import.
 
 Usage:
     python scripts/tally_sync.py
 
 Environment variables:
     VALENCE_SERVICE_URL  - The Valence service URL (required)
-    VALENCE_WEB_PASSCODE - The web passcode for authentication (required)
+    VALENCE_API_KEY      - An approver-role Agent Interface key (required)
     TALLY_URL            - Your local Tally import URL (default: http://localhost:9000)
 """
 
@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 
 # Config
@@ -37,7 +38,7 @@ def _require_http_url(name: str, value: str) -> str:
 
 
 SERVICE_URL = ""
-WEB_PASSCODE = ""
+API_KEY = ""
 TALLY_URL = os.environ.get("TALLY_URL", "http://localhost:9000")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 STATE_FILE = Path(__file__).parent / ".tally_sync_state.json"
@@ -54,20 +55,36 @@ def save_state(state: dict):
 
 
 def fetch_vouchers() -> list[dict]:
-    """Fetch the list of vouchers from the Valence service."""
+    """List orders that carry a prepared voucher through the v1 Agent Interface.
+
+    ``GET /api/v1/orders`` already exposes each order's ``voucher_id``, so the
+    retired ``/api/vouchers`` aggregate needs no replacement route — the script
+    projects the same polling shape from the versioned order listing.
+    """
     req = urllib.request.Request(
-        f"{SERVICE_URL}/api/vouchers",
-        headers={"Authorization": f"Bearer {WEB_PASSCODE}"},
+        f"{SERVICE_URL}/api/v1/orders",
+        headers={"Authorization": f"Bearer {API_KEY}"},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())["vouchers"]
+        orders = json.loads(resp.read())
+    return [
+        {
+            "order_id": order["order_id"],
+            "voucher_id": order["voucher_id"],
+            "customer": order["customer"],
+            "total": order["draft_value_inr"],
+            "status": order["status"],
+        }
+        for order in orders
+        if order.get("voucher_id")
+    ]
 
 
 def fetch_voucher_xml(order_id: str) -> str:
-    """Download the voucher XML for a given order."""
+    """Download a prepared order's voucher XML through the v1 Agent Interface."""
     req = urllib.request.Request(
-        f"{SERVICE_URL}/review/orders/{order_id}/voucher",
-        headers={"Authorization": f"Bearer {WEB_PASSCODE}"},
+        f"{SERVICE_URL}/api/v1/orders/{quote(order_id, safe='')}/voucher",
+        headers={"Authorization": f"Bearer {API_KEY}"},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read().decode()
@@ -145,11 +162,11 @@ def poll():
 
 
 def main():
-    global SERVICE_URL, WEB_PASSCODE
+    global SERVICE_URL, API_KEY
     SERVICE_URL = _require_http_url(
         "VALENCE_SERVICE_URL", _required_env("VALENCE_SERVICE_URL").rstrip("/")
     )
-    WEB_PASSCODE = _required_env("VALENCE_WEB_PASSCODE")
+    API_KEY = _required_env("VALENCE_API_KEY")
     _require_http_url("TALLY_URL", TALLY_URL)
 
     print("[tally_sync] Starting Tally sync", flush=True)

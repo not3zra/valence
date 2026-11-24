@@ -1,23 +1,20 @@
-"""The Loading List web view and the Cutoff render endpoint (issue #9).
+"""The dispatch-facing Loading List web view (issue #9).
 
-The dispatch-facing page renders live approved orders through the same
-``load_loading_list`` path as the ADK tool, behind the configured passcode
-from the store config. The Cutoff endpoint renders the same list behind the
-configured bearer secret and is closed (503) when no secret is set.
+The page renders live approved orders through the same ``load_loading_list``
+path as the ADK tool, behind the configured passcode from the store config.
+The retired pre-v1 Cutoff endpoint is covered as gone by the retirement tests;
+the versioned trigger is ``POST /api/v1/loading-lists``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 
 import pytest
 from fastapi.testclient import TestClient
 from google.adk.sessions import InMemorySessionService
 
 from src.agent import build_agent
-from src.config import settings
 from src.orders import Order, OrderItem, OrderStatus
 from src.store import InMemoryOrderStore
 from src.web import create_app
@@ -80,11 +77,6 @@ def _login(client) -> None:
 
 def _post(client, url, **kwargs):
     return client.post(url, headers={"Origin": ORIGIN}, **kwargs)
-
-
-@pytest.fixture(autouse=True)
-def _cutoff_secret(monkeypatch):
-    monkeypatch.setattr(settings, "cutoff_secret", "test-secret")
 
 
 def test_loading_page_is_gated_behind_the_passcode(client):
@@ -180,110 +172,6 @@ def test_dispatch_action_is_recorded_as_an_order_event(client, store):
     _post(client, "/loading/orders/ord_east/dispatch")
     events = store.events
     assert any(e.event_type == "order_dispatched" for e in events)
-
-
-def test_cutoff_endpoint_requires_bearer_secret(client):
-    response = client.post("/api/cutoff")
-    assert response.status_code == 401
-
-
-def test_cutoff_endpoint_is_closed_when_secret_unconfigured(store):
-    settings.cutoff_secret = ""
-    app = create_app(
-        agent=build_agent(model=FakeEchoLlm()),
-        session_service=InMemorySessionService(),
-        store=store,
-    )
-    response = TestClient(app).post(
-        "/api/cutoff", headers={"Authorization": "Bearer anything"}
-    )
-    assert response.status_code == 503
-
-
-def test_cutoff_endpoint_renders_live_loading_list(client):
-    settings.cutoff_secret = "test-secret"
-    response = client.post(
-        "/api/cutoff", headers={"Authorization": "Bearer test-secret"}
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["delivery_day"]
-    ids = [
-        entry["order_id"]
-        for section in body["sections"]
-        for entry in section["entries"]
-    ]
-    assert "ord_west" in ids and "ord_east" in ids
-    assert "rate" not in str(body)
-    assert "inr" not in str(body).lower()
-
-
-def test_cutoff_endpoint_accepts_a_delivery_day(client):
-    settings.cutoff_secret = "test-secret"
-    response = client.post(
-        "/api/cutoff?day=2026-08-14",
-        headers={"Authorization": "Bearer test-secret"},
-    )
-    assert response.status_code == 200
-    assert response.json()["delivery_day"] == "2026-08-14"
-
-
-def test_cutoff_endpoint_notifies_late_orders(client, store):
-    settings.cutoff_secret = "test-secret"
-    late = _approved_order("ord_late")
-    late.created_at = "2026-08-14T13:00:00+00:00"
-    late.updated_at = "2026-08-14T13:00:00+00:00"
-    store.orders.append(late)
-
-    response = client.post(
-        "/api/cutoff?day=2026-08-14",
-        headers={"Authorization": "Bearer test-secret"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert [e["order_id"] for e in response.json()["late"]] == ["ord_late"]
-    assert any(
-        e.event_type == "order_late" and e.order_id == "ord_late"
-        for e in store.events
-    )
-
-
-def test_cutoff_endpoint_accepts_pubsub_push_envelope(client):
-    data = base64.b64encode(
-        json.dumps({"secret": "test-secret"}).encode()
-    ).decode()
-    response = client.post(
-        "/api/cutoff", json={"message": {"data": data}}
-    )
-    assert response.status_code == 200
-    assert response.json()["delivery_day"]
-
-
-def test_cutoff_endpoint_rejects_forged_push_envelope(client):
-    data = base64.b64encode(
-        json.dumps({"secret": "wrong"}).encode()
-    ).decode()
-    response = client.post(
-        "/api/cutoff", json={"message": {"data": data}}
-    )
-    assert response.status_code == 401
-
-
-def test_cutoff_endpoint_rejects_an_oversized_push_envelope(client):
-    response = client.post(
-        "/api/cutoff",
-        headers={"Content-Length": "70000"},
-        content=b"x" * 70000,
-    )
-    assert response.status_code == 401
-
-
-def test_cutoff_endpoint_rejects_a_malformed_delivery_day(client):
-    response = client.post(
-        "/api/cutoff?day=not-a-date",
-        headers={"Authorization": "Bearer test-secret"},
-    )
-    assert response.status_code == 400
 
 
 def test_loading_view_is_closed_when_passcode_unconfigured(store):

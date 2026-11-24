@@ -196,13 +196,13 @@ def test_parser_verifies_signature_over_the_raw_body():
     parser = MetaWhatsAppParser(APP_SECRET, VERIFY_TOKEN)
     assert parser.verify_signature(
         method="POST",
-        url="http://testserver/api/whatsapp/webhook",
+        url="http://testserver/api/v1/webhooks/whatsapp",
         headers={"X-Hub-Signature-256": signature},
         body=body,
     )
     assert not parser.verify_signature(
         method="POST",
-        url="http://testserver/api/whatsapp/webhook",
+        url="http://testserver/api/v1/webhooks/whatsapp",
         headers={"X-Hub-Signature-256": signature},
         body=b"tampered",
     )
