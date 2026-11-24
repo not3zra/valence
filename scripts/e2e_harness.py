@@ -255,10 +255,11 @@ def _whatsapp_payload(message: str, sender: str) -> dict[str, Any]:
 
 
 def _contains_order(render: dict[str, Any], order_id: str) -> bool:
-    groups = [*render["sections"], *render["late"]]
-    return any(
-        entry["order_id"] == order_id for group in groups for entry in group["entries"]
-    ) or any(entry["order_id"] == order_id for entry in render["unrouted"])
+    section_entries = [
+        entry for section in render["sections"] for entry in section["entries"]
+    ]
+    entries = [*section_entries, *render["late"], *render["unrouted"]]
+    return any(entry["order_id"] == order_id for entry in entries)
 
 
 def _business_day(order: dict[str, Any]) -> str:
